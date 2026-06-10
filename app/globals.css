@@ -1,26 +1,39 @@
 @import "tailwindcss";
 
+/* Design system mirrored from spec-study-app (the study portal) so the analysis
+   tool reads as the same product: warm editorial-academic palette + serif body. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #fbfaf7;
+  --foreground: #1a1a1a;
+  --muted: #6b6b6b;
+  --rule: #d8d4c8;
+  --rule-soft: #ece8dc;
+  --accent: #5a3d2b;
+  --danger: #963b2a;
+  --panel: #ffffff;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-muted: var(--muted);
+  --color-rule: var(--rule);
+  --color-rule-soft: var(--rule-soft);
+  --color-accent: var(--accent);
+  --color-danger: var(--danger);
+  --color-panel: var(--panel);
+  --font-sans: "Iowan Old Style", "Palatino Linotype", "Palatino", "Charter", Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+input, textarea, select, button {
+  font-family: inherit;
 }
