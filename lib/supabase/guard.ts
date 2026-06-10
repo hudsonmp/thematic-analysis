@@ -10,8 +10,13 @@ type CbTable = Extract<keyof Database['public']['Tables'], `cb_${string}`>;
 
 /** Use for ALL codebook writes. The `CbTable` bound enforces the `cb_` prefix at
  *  compile time; `assertCbTable` is the matching runtime guard (service-role key
- *  bypasses RLS, so study data must never be reachable through this helper). */
-export function cbFrom(table: CbTable) {
+ *  bypasses RLS, so study data must never be reachable through this helper).
+ *
+ *  Generic over the literal table name `T` so the returned query builder is bound
+ *  to that single table's Row/Insert/Update types. Without the generic, `table`'s
+ *  type is the union of every cb_ table and the client widens all columns to
+ *  `never`, making concrete `.insert()/.update()` payloads untypable at call sites. */
+export function cbFrom<T extends CbTable>(table: T) {
   assertCbTable(table);
   return createServiceRoleClient().from(table);
 }

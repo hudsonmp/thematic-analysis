@@ -1,0 +1,166 @@
+'use server';
+
+import { cbFrom } from '@/lib/supabase/guard';
+import type { Tables } from '@/lib/types/cb-db';
+
+type Facet = Tables<'cb_facets'>;
+type FacetValue = Tables<'cb_facet_values'>;
+
+export type Cardinality = 'single' | 'multi';
+
+// ---------------------------------------------------------------------------
+// Facets
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a facet under a codebook. `position` is appended after the current max
+ * so new facets land at the end of the ordered list. Cardinality defaults to
+ * 'single'. Returns the inserted row.
+ */
+export async function createFacet(
+  codebookId: string,
+  { key, label, cardinality = 'single' as Cardinality }: { key: string; label: string; cardinality?: Cardinality },
+): Promise<Facet> {
+  const position = await nextPosition('cb_facets', codebookId);
+  const { data, error } = await cbFrom('cb_facets')
+    .insert({ codebook_id: codebookId, key, label, cardinality, position })
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(`createFacet failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
+export async function renameFacet(
+  facetId: string,
+  { label, description }: { label: string; description?: string },
+): Promise<Facet> {
+  const patch: { label: string; description?: string } = { label };
+  if (description !== undefined) patch.description = description;
+  const { data, error } = await cbFrom('cb_facets')
+    .update(patch)
+    .eq('id', facetId)
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(`renameFacet failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
+/**
+ * Set `position` = array index for each facet id, in the given order. Issued as
+ * independent updates (Supabase has no single-statement bulk-reorder); awaited
+ * together. Throws on the first error.
+ */
+export async function reorderFacets(orderedFacetIds: string[]): Promise<void> {
+  const results = await Promise.all(
+    orderedFacetIds.map((id, index) =>
+      cbFrom('cb_facets').update({ position: index }).eq('id', id),
+    ),
+  );
+  const firstError = results.find((r) => r.error)?.error;
+  if (firstError) throw new Error(`reorderFacets failed: ${firstError.message}`);
+}
+
+/** Delete a facet. Values cascade (cb_facet_values FK on delete cascade). */
+export async function deleteFacet(facetId: string): Promise<void> {
+  const { error } = await cbFrom('cb_facets').delete().eq('id', facetId);
+  if (error) throw new Error(`deleteFacet failed: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// Facet values
+// ---------------------------------------------------------------------------
+
+export async function createFacetValue(
+  facetId: string,
+  { key, label, description, color }: { key: string; label: string; description?: string; color?: string },
+): Promise<FacetValue> {
+  const position = await nextPosition('cb_facet_values', facetId);
+  const { data, error } = await cbFrom('cb_facet_values')
+    .insert({
+      facet_id: facetId,
+      key,
+      label,
+      description: description ?? null,
+      color: color ?? null,
+      position,
+    })
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(`createFacetValue failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
+export async function updateFacetValue(
+  valueId: string,
+  { label, description, color }: { label?: string; description?: string; color?: string },
+): Promise<FacetValue> {
+  const patch: { label?: string; description?: string; color?: string } = {};
+  if (label !== undefined) patch.label = label;
+  if (description !== undefined) patch.description = description;
+  if (color !== undefined) patch.color = color;
+  const { data, error } = await cbFrom('cb_facet_values')
+    .update(patch)
+    .eq('id', valueId)
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(`updateFacetValue failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
+export async function reorderFacetValues(orderedValueIds: string[]): Promise<void> {
+  const results = await Promise.all(
+    orderedValueIds.map((id, index) =>
+      cbFrom('cb_facet_values').update({ position: index }).eq('id', id),
+    ),
+  );
+  const firstError = results.find((r) => r.error)?.error;
+  if (firstError) throw new Error(`reorderFacetValues failed: ${firstError.message}`);
+}
+
+export async function deleteFacetValue(valueId: string): Promise<void> {
+  const { error } = await cbFrom('cb_facet_values').delete().eq('id', valueId);
+  if (error) throw new Error(`deleteFacetValue failed: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// Internal
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the next append position for a child row: (max existing position
+ * within the parent scope) + 1, or 0 if none exist. Read via cbFrom's client
+ * (a cb_ table, so the guard is satisfied; we only call `.select`).
+ *
+ * The `cb_facets` / `cb_facet_values` cases are split because `cbFrom<T>` is
+ * generic per literal table — passing a `'cb_facets' | 'cb_facet_values'`
+ * union would narrow the usable `.eq()` columns to only those common to both.
+ */
+async function nextPosition(
+  table: 'cb_facets' | 'cb_facet_values',
+  parentId: string,
+): Promise<number> {
+  const result =
+    table === 'cb_facets'
+      ? await cbFrom('cb_facets')
+          .select('position')
+          .eq('codebook_id', parentId)
+          .order('position', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      : await cbFrom('cb_facet_values')
+          .select('position')
+          .eq('facet_id', parentId)
+          .order('position', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+  if (result.error) throw new Error(`nextPosition(${table}) failed: ${result.error.message}`);
+  return result.data ? result.data.position + 1 : 0;
+}
