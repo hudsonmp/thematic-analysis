@@ -24,7 +24,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # Study tables that are read-only for this app.
-STUDY_FROM_RE="from\((['\"])(studies|study_events|study_snapshots|users|onboarding)"
+STUDY_FROM_RE="from\((['\"])(studies|study_events|study_snapshots|study_responses|study_scripts|users|onboarding)"
 WRITE_VERB_RE="\.(insert|update|delete|upsert)\("
 WINDOW=5  # lines after a study `.from(` still considered part of the same chain
 
