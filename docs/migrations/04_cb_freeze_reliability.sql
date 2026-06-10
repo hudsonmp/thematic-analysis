@@ -8,10 +8,12 @@ create table cb_codebook_versions (
 create table cb_coder_comments (
   id uuid primary key default gen_random_uuid(),
   code_id uuid not null references cb_codes(id) on delete cascade,
+  -- code_version is a plain int (no composite FK): a (code_id, code_version) FK with
+  -- ON DELETE SET NULL conflicts with code_id NOT NULL. See migration 05. Versions are
+  -- append-only, so referential enforcement on the version int is unnecessary here.
   code_version int, author text not null, body text not null,
   resolved boolean not null default false,
-  created_at timestamptz not null default now(),
-  foreign key (code_id, code_version) references cb_code_versions(code_id, version) on delete set null
+  created_at timestamptz not null default now()
 );
 create table cb_reliability_runs (
   id uuid primary key default gen_random_uuid(),
