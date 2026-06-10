@@ -1,0 +1,272 @@
+'use client';
+
+import { useState, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
+import {
+  createFacet,
+  renameFacet,
+  deleteFacet,
+  createFacetValue,
+  updateFacetValue,
+  deleteFacetValue,
+  type Cardinality,
+} from '@/app/actions/facets';
+import type { FacetWithValues } from '@/app/actions/codebook';
+
+/**
+ * Collapsible "Edit scheme" panel. Calls the facets Server Actions from event
+ * handlers (NOT during render) and `router.refresh()` after each mutation so
+ * the parent Server Component re-fetches the codebook tree. Mutations run inside
+ * a transition so the panel can show a coarse "saving" state and disable the
+ * controls while the refresh round-trips.
+ */
+export default function FacetEditor({
+  codebookId,
+  facets,
+}: {
+  codebookId: string;
+  facets: FacetWithValues[];
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(facets.length === 0);
+  const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  // new-facet form
+  const [fKey, setFKey] = useState('');
+  const [fLabel, setFLabel] = useState('');
+  const [fCard, setFCard] = useState<Cardinality>('single');
+
+  // per-facet new-value drafts, keyed by facet id
+  const [valueDrafts, setValueDrafts] = useState<
+    Record<string, { key: string; label: string; color: string }>
+  >({});
+
+  function run(fn: () => Promise<unknown>) {
+    setError(null);
+    startTransition(async () => {
+      try {
+        await fn();
+        router.refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Mutation failed.');
+      }
+    });
+  }
+
+  function draftFor(facetId: string) {
+    return valueDrafts[facetId] ?? { key: '', label: '', color: '' };
+  }
+  function setDraft(facetId: string, patch: Partial<{ key: string; label: string; color: string }>) {
+    setValueDrafts((prev) => ({
+      ...prev,
+      [facetId]: { ...draftFor(facetId), ...patch },
+    }));
+  }
+
+  return (
+    <section className="border border-foreground/15">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-4 py-2 text-sm text-foreground/70 hover:text-foreground"
+        aria-expanded={open}
+      >
+        <span>Edit scheme {isPending && <span className="text-foreground/40">· saving…</span>}</span>
+        <span className="text-foreground/40">{open ? '−' : '+'}</span>
+      </button>
+
+      {open && (
+        <div className="border-t border-foreground/15 p-4 space-y-6">
+          {error && <p className="text-sm text-red-600">{error}</p>}
+
+          {/* Existing facets */}
+          {facets.map((facet) => (
+            <div key={facet.id} className="border border-foreground/10 p-3 space-y-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  defaultValue={facet.label}
+                  disabled={isPending}
+                  onBlur={(e) => {
+                    const label = e.target.value.trim();
+                    if (label && label !== facet.label) {
+                      run(() => renameFacet(facet.id, { label }));
+                    }
+                  }}
+                  className="border border-foreground/15 px-2 py-1 text-sm bg-background"
+                  aria-label={`Rename facet ${facet.label}`}
+                />
+                <span className="text-xs text-foreground/40 font-mono">{facet.key}</span>
+                <span className="text-xs text-foreground/40">({facet.cardinality})</span>
+                <button
+                  type="button"
+                  disabled={isPending}
+                  onClick={() => {
+                    if (confirm(`Delete facet "${facet.label}" and its values?`)) {
+                      run(() => deleteFacet(facet.id));
+                    }
+                  }}
+                  className="ml-auto text-xs text-red-600 hover:underline disabled:opacity-50"
+                >
+                  Delete facet
+                </button>
+              </div>
+
+              {/* Values */}
+              <ul className="space-y-1.5 pl-2">
+                {facet.values.map((value) => (
+                  <li key={value.id} className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      defaultValue={value.color ?? '#cccccc'}
+                      disabled={isPending}
+                      onBlur={(e) => {
+                        const color = e.target.value;
+                        if (color !== (value.color ?? '#cccccc')) {
+                          run(() => updateFacetValue(value.id, { color }));
+                        }
+                      }}
+                      className="h-6 w-6 border border-foreground/15 bg-background p-0"
+                      aria-label={`Color for ${value.label}`}
+                    />
+                    <input
+                      defaultValue={value.label}
+                      disabled={isPending}
+                      onBlur={(e) => {
+                        const label = e.target.value.trim();
+                        if (label && label !== value.label) {
+                          run(() => updateFacetValue(value.id, { label }));
+                        }
+                      }}
+                      className="border border-foreground/15 px-2 py-1 text-sm bg-background"
+                      aria-label={`Rename value ${value.label}`}
+                    />
+                    <span className="text-xs text-foreground/40 font-mono">{value.key}</span>
+                    <button
+                      type="button"
+                      disabled={isPending}
+                      onClick={() => {
+                        if (confirm(`Delete value "${value.label}"?`)) {
+                          run(() => deleteFacetValue(value.id));
+                        }
+                      }}
+                      className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+
+              {/* Add value */}
+              <div className="flex items-center gap-2 pl-2 flex-wrap">
+                <input
+                  value={draftFor(facet.id).key}
+                  onChange={(e) => setDraft(facet.id, { key: e.target.value })}
+                  placeholder="key"
+                  disabled={isPending}
+                  className="border border-foreground/15 px-2 py-1 text-xs bg-background w-24"
+                  aria-label={`New value key for ${facet.label}`}
+                />
+                <input
+                  value={draftFor(facet.id).label}
+                  onChange={(e) => setDraft(facet.id, { label: e.target.value })}
+                  placeholder="label"
+                  disabled={isPending}
+                  className="border border-foreground/15 px-2 py-1 text-xs bg-background"
+                  aria-label={`New value label for ${facet.label}`}
+                />
+                <input
+                  type="color"
+                  value={draftFor(facet.id).color || '#cccccc'}
+                  onChange={(e) => setDraft(facet.id, { color: e.target.value })}
+                  disabled={isPending}
+                  className="h-6 w-6 border border-foreground/15 bg-background p-0"
+                  aria-label={`New value color for ${facet.label}`}
+                />
+                <button
+                  type="button"
+                  disabled={isPending}
+                  onClick={() => {
+                    const d = draftFor(facet.id);
+                    const key = d.key.trim();
+                    const label = d.label.trim();
+                    if (!key || !label) {
+                      setError('Value needs a key and a label.');
+                      return;
+                    }
+                    run(async () => {
+                      await createFacetValue(facet.id, {
+                        key,
+                        label,
+                        color: d.color || undefined,
+                      });
+                      setValueDrafts((prev) => ({ ...prev, [facet.id]: { key: '', label: '', color: '' } }));
+                    });
+                  }}
+                  className="border border-foreground/30 px-2 py-1 text-xs hover:bg-foreground hover:text-background transition disabled:opacity-50"
+                >
+                  Add value
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {/* Add facet */}
+          <div className="border-t border-foreground/10 pt-4">
+            <p className="text-xs uppercase tracking-wider text-foreground/50 mb-2">New facet</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                value={fKey}
+                onChange={(e) => setFKey(e.target.value)}
+                placeholder="key (e.g. phase)"
+                disabled={isPending}
+                className="border border-foreground/15 px-2 py-1 text-sm bg-background w-40"
+                aria-label="New facet key"
+              />
+              <input
+                value={fLabel}
+                onChange={(e) => setFLabel(e.target.value)}
+                placeholder="label"
+                disabled={isPending}
+                className="border border-foreground/15 px-2 py-1 text-sm bg-background"
+                aria-label="New facet label"
+              />
+              <select
+                value={fCard}
+                onChange={(e) => setFCard(e.target.value as Cardinality)}
+                disabled={isPending}
+                className="border border-foreground/15 px-2 py-1 text-sm bg-background"
+                aria-label="New facet cardinality"
+              >
+                <option value="single">single</option>
+                <option value="multi">multi</option>
+              </select>
+              <button
+                type="button"
+                disabled={isPending}
+                onClick={() => {
+                  const key = fKey.trim();
+                  const label = fLabel.trim();
+                  if (!key || !label) {
+                    setError('Facet needs a key and a label.');
+                    return;
+                  }
+                  run(async () => {
+                    await createFacet(codebookId, { key, label, cardinality: fCard });
+                    setFKey('');
+                    setFLabel('');
+                    setFCard('single');
+                  });
+                }}
+                className="border border-foreground px-3 py-1 text-sm hover:bg-foreground hover:text-background transition disabled:opacity-50"
+              >
+                Add facet
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
