@@ -14,6 +14,9 @@
  *    display string can post-process. Quoted values may NOT contain a raw
  *    unescaped `"` (standard BibTeX restriction); brace values are preferred.
  *  - Malformed entries (no key, unbalanced braces) are skipped, not thrown.
+ *  - Non-reference macro entry types (`@string`, `@preamble`, `@comment`) are
+ *    skipped, as are entries whose key is empty or contains `=`, whitespace,
+ *    braces, or quotes (malformed input / macro residue).
  */
 
 export type ParsedCitation = {
@@ -117,8 +120,12 @@ export function parseBibtex(input: string): ParsedCitation[] {
   // Match `@type{` — type is letters; allow whitespace before the brace.
   const entryStart = /@([A-Za-z]+)\s*\{/g;
 
+  // Macro entry types carry no citation; they configure the bibliography.
+  const MACRO_TYPES = new Set(['string', 'preamble', 'comment']);
+
   let m: RegExpExecArray | null;
   while ((m = entryStart.exec(input)) !== null) {
+    const type = m[1].toLowerCase();
     const braceIdx = entryStart.lastIndex - 1; // position of the '{'
     const closeIdx = findMatchingBrace(input, braceIdx);
     if (closeIdx === -1) break; // unbalanced from here on; bail out
@@ -133,7 +140,11 @@ export function parseBibtex(input: string): ParsedCitation[] {
     // Advance scanner past this entry so nested @ inside values is not re-matched.
     entryStart.lastIndex = closeIdx + 1;
 
-    if (!key) continue; // malformed (e.g. `@string` macro or empty key) -> skip
+    if (MACRO_TYPES.has(type)) continue; // @string/@preamble/@comment -> skip
+
+    // Reject empty keys and keys carrying macro/malformed residue: a real
+    // BibTeX key is a single token with no `=`, whitespace, braces, or quotes.
+    if (!key || /[=\s{}"]/.test(key)) continue;
 
     const body = commaIdx === -1 ? '' : inner.slice(commaIdx + 1);
     const parsed = parseFields(body);

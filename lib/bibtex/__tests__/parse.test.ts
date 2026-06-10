@@ -37,4 +37,18 @@ describe('parseBibtex', () => {
     expect(parseBibtex('')).toEqual([]);
     expect(parseBibtex('not bibtex at all')).toEqual([]);
   });
+
+  it('skips @string / @preamble / @comment macros', () => {
+    expect(parseBibtex('@string{pub = "ACM"}')).toEqual([]);
+    expect(parseBibtex('@preamble{"\\newcommand{\\x}{y}"}')).toEqual([]);
+    expect(parseBibtex('@comment{anything here}')).toEqual([]);
+  });
+  it('parses real entries from a blob that starts with @string headers', () => {
+    const out = parseBibtex(`@string{j = "Journal"}
+    @article{real2020, title={Real}, year={2020}}`);
+    expect(out.map((e) => e.bibtex_key)).toEqual(['real2020']);
+  });
+  it('rejects entries whose "key" contains = or whitespace (malformed/macro residue)', () => {
+    expect(parseBibtex('@misc{bad = oops, title={X}}')).toEqual([]);
+  });
 });
