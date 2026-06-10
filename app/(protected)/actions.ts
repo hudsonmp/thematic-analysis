@@ -3,6 +3,19 @@
 import { redirect } from 'next/navigation';
 import { createCode } from '@/app/actions/codes';
 import type { CodeOrigin } from '@/app/actions/codes';
+import { exportCodebookJson } from '@/lib/export/json';
+
+/**
+ * Server-action shim over `exportCodebookJson` for the export page's JSON
+ * download. `lib/export/json.ts` imports `server-only` (it pulls the
+ * `'use server'` codebook action and the service-role client), so it CANNOT be
+ * imported into the Client `ExportView`. Wrapping it in a `'use server'`
+ * function lets the client invoke it over the action boundary and download the
+ * returned string. (The LaTeX renderer is pure and runs client-side directly.)
+ */
+export async function exportCodebookJsonAction(codebookId: string): Promise<string> {
+  return exportCodebookJson(codebookId);
+}
 
 export type NewCodeState = { error?: string };
 
