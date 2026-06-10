@@ -6,7 +6,7 @@
     "dev": "next dev --webpack -p 3200",
     "build": "next build",
     "start": "next start -p 3200",
-    "lint": "eslint",
+    "lint": "eslint && bash scripts/check-no-study-writes.sh",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -17,6 +17,7 @@
     "next": "16.2.6",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "server-only": "^0.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -28,7 +29,6 @@
     "eslint-config-next": "16.2.6",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^3",
-    "server-only": "^0.0.1"
+    "vitest": "^3"
   }
 }
