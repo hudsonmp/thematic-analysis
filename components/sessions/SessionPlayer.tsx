@@ -1,7 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import type { Segment } from '@/lib/transcript/srt';
+import { addCoding, deleteCoding, type CodingView } from '@/app/actions/codings';
+import { addMemo, deleteMemo, type MemoView } from '@/app/actions/memos';
+
+/** Minimal code shape the picker needs (flattened from the codebook tree). */
+type CodeOption = { id: string; mnemonic: string; name: string };
 
 /** Format a millisecond offset as `mm:ss` (minutes uncapped past 60). */
 function formatTime(ms: number): string {
@@ -9,6 +15,11 @@ function formatTime(ms: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+/** Render a span as `mm:ss–mm:ss`. */
+function formatSpan(startMs: number, endMs: number): string {
+  return `${formatTime(startMs)}–${formatTime(endMs)}`;
 }
 
 /**
@@ -28,7 +39,8 @@ function findActiveIndex(segments: Segment[], tMs: number): number {
 
 /**
  * Two-pane participant-session player: video on the left, a synchronized,
- * click-to-seek transcript on the right.
+ * click-to-seek, brushable transcript on the right, plus a coding rail and an
+ * analytic-memo panel.
  *
  * Sync (video → transcript): the video's `timeupdate` recomputes the active
  * segment; when it changes we highlight that row and scroll it into view — but
@@ -36,24 +48,45 @@ function findActiveIndex(segments: Segment[], tMs: number): number {
  * (tracked via a short cooldown after the last manual scroll), so reading ahead
  * isn't yanked back to the playhead.
  *
- * Seek (transcript → video): clicking a row sets `currentTime` to that segment's
- * start and plays. The <video> talks to the same-origin `/api/media/<pid>/video`
- * route, so the researcher cookie authorizes the byte-range stream automatically.
+ * Seek (transcript → video): clicking a row's TIMESTAMP sets `currentTime` to
+ * that segment's start and plays. Clicking the row BODY selects it for coding;
+ * shift-clicking a body (or "Extend to here") grows the selection to a
+ * contiguous range. Both affordances are reachable on every row.
+ *
+ * Coding: with a selection, pick a code + coder and "Apply code" → `addCoding`
+ * writes a `cb_codings` row anchored to `[startMs,endMs]` on the recording clock
+ * with the brushed segment idxs. Memos: free-text analytic notes, optionally
+ * pinned to the current selection. Every mutation calls `router.refresh()` so
+ * the page re-loads codings/memos server-side; no Server Action runs during
+ * client render.
  */
 export default function SessionPlayer({
   pid,
   firstName,
   segments,
   durationMs,
+  userId,
+  studyId,
+  codebookId,
+  codes,
+  codings,
+  memos,
 }: {
   pid: string;
   firstName: string | null;
   segments: Segment[];
   durationMs: number;
+  userId: string | null;
+  studyId: string | null;
+  codebookId: string;
+  codes: CodeOption[];
+  codings: CodingView[];
+  memos: MemoView[];
 }) {
+  const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
-  const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   // Timestamp (ms) of the researcher's last manual transcript scroll. While
   // within the cooldown we suppress auto-scroll-into-view so reading ahead is
@@ -62,6 +95,26 @@ export default function SessionPlayer({
   const AUTOSCROLL_COOLDOWN_MS = 1500;
 
   const [activeIdx, setActiveIdx] = useState(-1);
+
+  // Span selection over transcript segments. `anchorIdx` is the first clicked
+  // row; `headIdx` is the far end (set by shift-click / "extend to here"). The
+  // covered range is [min,max] inclusive — `null` means no selection.
+  const [anchorIdx, setAnchorIdx] = useState<number | null>(null);
+  const [headIdx, setHeadIdx] = useState<number | null>(null);
+
+  // Coding form state.
+  const [coder, setCoder] = useState('R1');
+  const [codeFilter, setCodeFilter] = useState('');
+  const [selectedCodeId, setSelectedCodeId] = useState('');
+  const [applying, setApplying] = useState(false);
+
+  // Memo form state.
+  const [memoBody, setMemoBody] = useState('');
+  const [memoPinned, setMemoPinned] = useState(true);
+  const [savingMemo, setSavingMemo] = useState(false);
+
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const handleTimeUpdate = useCallback(() => {
     const video = videoRef.current;
@@ -79,7 +132,7 @@ export default function SessionPlayer({
     rowRefs.current[activeIdx]?.scrollIntoView({ block: 'nearest' });
   }, [activeIdx]);
 
-  const handleSeek = useCallback((startMs: number) => {
+  const seekTo = useCallback((startMs: number) => {
     const video = videoRef.current;
     if (!video) return;
     video.currentTime = startMs / 1000;
@@ -89,6 +142,144 @@ export default function SessionPlayer({
   const onTranscriptScroll = useCallback(() => {
     lastManualScrollRef.current = Date.now();
   }, []);
+
+  // --- Selection ----------------------------------------------------------
+
+  const selectionRange = useMemo<[number, number] | null>(() => {
+    if (anchorIdx === null) return null;
+    const head = headIdx ?? anchorIdx;
+    return [Math.min(anchorIdx, head), Math.max(anchorIdx, head)];
+  }, [anchorIdx, headIdx]);
+
+  // Covered segment idxs (transcript `seg.idx`, not array positions) + the
+  // [minStart, maxEnd] span in ms. Recomputed from the inclusive row range.
+  const selection = useMemo(() => {
+    if (!selectionRange) return null;
+    const [lo, hi] = selectionRange;
+    let minStart = Infinity;
+    let maxEnd = -Infinity;
+    const segmentIdxs: number[] = [];
+    for (let i = lo; i <= hi; i++) {
+      const seg = segments[i];
+      if (!seg) continue;
+      minStart = Math.min(minStart, seg.startMs);
+      maxEnd = Math.max(maxEnd, seg.endMs);
+      segmentIdxs.push(seg.idx);
+    }
+    if (!Number.isFinite(minStart) || !Number.isFinite(maxEnd)) return null;
+    return { startMs: minStart, endMs: maxEnd, segmentIdxs, rowLo: lo, rowHi: hi };
+  }, [selectionRange, segments]);
+
+  const selectRow = useCallback((i: number, extend: boolean) => {
+    if (extend && anchorIdx !== null) {
+      setHeadIdx(i);
+    } else {
+      setAnchorIdx(i);
+      setHeadIdx(i);
+    }
+  }, [anchorIdx]);
+
+  const clearSelection = useCallback(() => {
+    setAnchorIdx(null);
+    setHeadIdx(null);
+  }, []);
+
+  // --- Mutations ----------------------------------------------------------
+
+  const handleApplyCode = useCallback(async () => {
+    if (!selection || !selectedCodeId) return;
+    setApplying(true);
+    setError(null);
+    try {
+      await addCoding({
+        codeId: selectedCodeId,
+        coder,
+        ref: {
+          kind: 'recording',
+          user_id: userId,
+          study_id: studyId,
+          pid,
+          span: [selection.startMs, selection.endMs],
+          segment_idxs: selection.segmentIdxs,
+        },
+      });
+      clearSelection();
+      setSelectedCodeId('');
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to apply code.');
+    } finally {
+      setApplying(false);
+    }
+  }, [selection, selectedCodeId, coder, userId, studyId, pid, clearSelection, router]);
+
+  const handleDeleteCoding = useCallback(async (id: string) => {
+    setBusyId(id);
+    setError(null);
+    try {
+      await deleteCoding(id);
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete coding.');
+    } finally {
+      setBusyId(null);
+    }
+  }, [router]);
+
+  const handleAddMemo = useCallback(async () => {
+    if (memoBody.trim() === '') return;
+    setSavingMemo(true);
+    setError(null);
+    try {
+      await addMemo({
+        codebookId,
+        pid,
+        body: memoBody,
+        author: coder,
+        span: memoPinned && selection ? [selection.startMs, selection.endMs] : null,
+      });
+      setMemoBody('');
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to add memo.');
+    } finally {
+      setSavingMemo(false);
+    }
+  }, [memoBody, codebookId, pid, coder, memoPinned, selection, router]);
+
+  const handleDeleteMemo = useCallback(async (id: string) => {
+    setBusyId(id);
+    setError(null);
+    try {
+      await deleteMemo(id);
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete memo.');
+    } finally {
+      setBusyId(null);
+    }
+  }, [router]);
+
+  // --- Derived view helpers ----------------------------------------------
+
+  const filteredCodes = useMemo(() => {
+    const q = codeFilter.trim().toLowerCase();
+    if (!q) return codes;
+    return codes.filter(
+      (c) =>
+        c.mnemonic.toLowerCase().includes(q) || c.name.toLowerCase().includes(q),
+    );
+  }, [codes, codeFilter]);
+
+  // Which transcript array-positions are covered by at least one coding (for a
+  // small edge marker on the row). Keyed by array position via seg.idx match.
+  const codedSegIdxs = useMemo(() => {
+    const set = new Set<number>();
+    for (const c of codings) for (const s of c.segment_idxs) set.add(s);
+    return set;
+  }, [codings]);
+
+  const canApply = !!selection && !!selectedCodeId && coder.trim() !== '' && !applying;
 
   return (
     <main className="px-6 py-6">
@@ -102,12 +293,20 @@ export default function SessionPlayer({
           <span className="font-mono">{formatTime(durationMs)}</span>
           {' · '}
           {segments.length} segment{segments.length === 1 ? '' : 's'}
+          {' · '}
+          {codings.length} coding{codings.length === 1 ? '' : 's'}
         </p>
       </header>
 
+      {error && (
+        <p className="mb-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">
+          {error}
+        </p>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-2">
-        {/* Left: video */}
-        <div>
+        {/* Left: video + coding toolbar + coding rail + memos */}
+        <div className="space-y-4">
           <video
             ref={videoRef}
             controls
@@ -116,42 +315,257 @@ export default function SessionPlayer({
             onTimeUpdate={handleTimeUpdate}
             className="w-full bg-black"
           />
+
+          {/* Coding toolbar */}
+          <section className="rounded border border-foreground/15 p-3">
+            <h2 className="mb-2 text-sm font-semibold">Apply code</h2>
+            {selection ? (
+              <p className="mb-2 text-sm">
+                Selection{' '}
+                <span className="font-mono">
+                  {formatSpan(selection.startMs, selection.endMs)}
+                </span>{' '}
+                <span className="text-foreground/50">
+                  ({selection.segmentIdxs.length} segment
+                  {selection.segmentIdxs.length === 1 ? '' : 's'})
+                </span>{' '}
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  className="ml-1 text-xs text-foreground/60 underline hover:text-foreground"
+                >
+                  Clear
+                </button>
+              </p>
+            ) : (
+              <p className="mb-2 text-sm text-foreground/50">
+                Click a transcript row to select; shift-click to extend.
+              </p>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={codeFilter}
+                onChange={(e) => setCodeFilter(e.target.value)}
+                placeholder="Filter codes…"
+                className="w-32 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
+                aria-label="Filter codes"
+              />
+              <select
+                value={selectedCodeId}
+                onChange={(e) => setSelectedCodeId(e.target.value)}
+                className="min-w-40 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
+                aria-label="Code"
+              >
+                <option value="">
+                  {filteredCodes.length ? 'Select a code…' : 'No codes'}
+                </option>
+                {filteredCodes.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.mnemonic} — {c.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                value={coder}
+                onChange={(e) => setCoder(e.target.value)}
+                placeholder="Coder"
+                className="w-16 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm font-mono"
+                aria-label="Coder"
+              />
+              <button
+                type="button"
+                onClick={handleApplyCode}
+                disabled={!canApply}
+                className="rounded bg-foreground px-3 py-1 text-sm text-background disabled:opacity-40"
+              >
+                {applying ? 'Applying…' : 'Apply code'}
+              </button>
+            </div>
+          </section>
+
+          {/* Coding rail */}
+          <section className="rounded border border-foreground/15 p-3">
+            <h2 className="mb-2 text-sm font-semibold">
+              Codings <span className="font-normal text-foreground/50">({codings.length})</span>
+            </h2>
+            {codings.length === 0 ? (
+              <p className="text-sm text-foreground/50">No codings yet.</p>
+            ) : (
+              <ul className="divide-y divide-foreground/10">
+                {codings.map((c) => (
+                  <li
+                    key={c.id}
+                    className="flex items-center gap-2 py-1.5 text-sm"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => seekTo(c.span[0])}
+                      className="flex-1 text-left hover:underline"
+                      title={c.name}
+                    >
+                      <span className="font-mono text-xs text-foreground/50">
+                        {formatSpan(c.span[0], c.span[1])}
+                      </span>{' '}
+                      <span className="font-semibold">{c.mnemonic}</span>
+                      {c.coder && (
+                        <span className="ml-1 text-foreground/50">· {c.coder}</span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteCoding(c.id)}
+                      disabled={busyId === c.id}
+                      aria-label="Delete coding"
+                      className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
+                    >
+                      {'✕'}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {/* Memos */}
+          <section className="rounded border border-foreground/15 p-3">
+            <h2 className="mb-2 text-sm font-semibold">
+              Memos <span className="font-normal text-foreground/50">({memos.length})</span>
+            </h2>
+            <textarea
+              value={memoBody}
+              onChange={(e) => setMemoBody(e.target.value)}
+              placeholder="Analytic memo…"
+              rows={3}
+              className="w-full rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
+              aria-label="Memo body"
+            />
+            <div className="mt-1 flex items-center justify-between">
+              <label className="flex items-center gap-1.5 text-xs text-foreground/60">
+                <input
+                  type="checkbox"
+                  checked={memoPinned}
+                  onChange={(e) => setMemoPinned(e.target.checked)}
+                />
+                Pin to selection
+                {selection && (
+                  <span className="font-mono">
+                    {' '}
+                    {formatSpan(selection.startMs, selection.endMs)}
+                  </span>
+                )}
+              </label>
+              <button
+                type="button"
+                onClick={handleAddMemo}
+                disabled={savingMemo || memoBody.trim() === ''}
+                className="rounded bg-foreground px-3 py-1 text-sm text-background disabled:opacity-40"
+              >
+                {savingMemo ? 'Saving…' : 'Add memo'}
+              </button>
+            </div>
+
+            {memos.length > 0 && (
+              <ul className="mt-3 divide-y divide-foreground/10">
+                {memos.map((m) => (
+                  <li key={m.id} className="flex items-start gap-2 py-2 text-sm">
+                    <div className="flex-1">
+                      {m.span && (
+                        <button
+                          type="button"
+                          onClick={() => seekTo(m.span![0])}
+                          className="mr-1 font-mono text-xs text-foreground/50 hover:underline"
+                        >
+                          {formatSpan(m.span[0], m.span[1])}
+                        </button>
+                      )}
+                      {m.author && (
+                        <span className="mr-1 text-xs font-semibold text-foreground/60">
+                          {m.author}:
+                        </span>
+                      )}
+                      <span className="text-foreground/80">{m.body}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteMemo(m.id)}
+                      disabled={busyId === m.id}
+                      aria-label="Delete memo"
+                      className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
+                    >
+                      {'✕'}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
         </div>
 
-        {/* Right: scrollable, click-to-seek transcript */}
+        {/* Right: scrollable, click-to-seek, brushable transcript */}
         <div
           ref={transcriptRef}
           onScroll={onTranscriptScroll}
-          className="h-[60vh] overflow-y-auto border border-foreground/15 divide-y divide-foreground/10"
+          className="h-[70vh] overflow-y-auto border border-foreground/15 divide-y divide-foreground/10"
         >
           {segments.length === 0 ? (
             <p className="p-4 text-sm text-foreground/60">No transcript</p>
           ) : (
             segments.map((seg, i) => {
               const active = i === activeIdx;
+              const inSelection =
+                !!selectionRange && i >= selectionRange[0] && i <= selectionRange[1];
+              const isCoded = codedSegIdxs.has(seg.idx);
               return (
-                <button
+                <div
                   key={`${seg.idx}-${i}`}
                   ref={(el) => {
                     rowRefs.current[i] = el;
                   }}
-                  type="button"
-                  onClick={() => handleSeek(seg.startMs)}
                   aria-current={active ? 'true' : undefined}
-                  className={`block w-full text-left px-3 py-2 text-sm transition ${
-                    active
-                      ? 'bg-foreground/10'
-                      : 'hover:bg-foreground/[0.04]'
-                  }`}
+                  className={`flex items-start gap-1 px-2 py-2 text-sm transition ${
+                    inSelection
+                      ? 'bg-blue-500/15'
+                      : active
+                        ? 'bg-foreground/10'
+                        : 'hover:bg-foreground/[0.04]'
+                  } ${isCoded ? 'border-l-2 border-l-emerald-500' : 'border-l-2 border-l-transparent'}`}
                 >
-                  <span className="mr-2 font-mono text-xs text-foreground/40">
+                  {/* Timestamp = seek affordance */}
+                  <button
+                    type="button"
+                    onClick={() => seekTo(seg.startMs)}
+                    title="Seek to here"
+                    className="mt-px shrink-0 font-mono text-xs text-foreground/40 hover:text-foreground hover:underline"
+                  >
                     [{formatTime(seg.startMs)}]
-                  </span>
-                  {seg.speaker && (
-                    <span className="mr-1.5 font-semibold">{seg.speaker}:</span>
+                  </button>
+                  {/* Row body = select affordance (shift = extend) */}
+                  <button
+                    type="button"
+                    onClick={(e) => selectRow(i, e.shiftKey)}
+                    title="Select for coding (shift to extend)"
+                    className="flex-1 text-left"
+                  >
+                    {seg.speaker && (
+                      <span className="mr-1.5 font-semibold">{seg.speaker}:</span>
+                    )}
+                    <span className="text-foreground/80">{seg.text}</span>
+                  </button>
+                  {/* Explicit extend control (reachable without shift-click) */}
+                  {anchorIdx !== null && (
+                    <button
+                      type="button"
+                      onClick={() => selectRow(i, true)}
+                      title="Extend selection to here"
+                      className="mt-px shrink-0 text-xs text-foreground/40 hover:text-foreground"
+                    >
+                      {'↓'}
+                    </button>
                   )}
-                  <span className="text-foreground/80">{seg.text}</span>
-                </button>
+                </div>
               );
             })
           )}

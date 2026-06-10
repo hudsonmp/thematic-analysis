@@ -495,6 +495,44 @@ export type Database = {
           },
         ]
       }
+      cb_memos: {
+        Row: {
+          author: string | null
+          body: string
+          codebook_id: string
+          created_at: string
+          id: string
+          pid: string
+          span: Json | null
+        }
+        Insert: {
+          author?: string | null
+          body: string
+          codebook_id: string
+          created_at?: string
+          id?: string
+          pid: string
+          span?: Json | null
+        }
+        Update: {
+          author?: string | null
+          body?: string
+          codebook_id?: string
+          created_at?: string
+          id?: string
+          pid?: string
+          span?: Json | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_memos_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_reliability_runs: {
         Row: {
           bias_index: number | null

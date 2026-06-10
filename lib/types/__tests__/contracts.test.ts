@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   EpisodeRef,
+  RecordingRef,
   Exemplar,
   BulletList,
   CodeVersionInput,
@@ -42,6 +43,50 @@ describe('EpisodeRef', () => {
       phase: 'read',
     });
     expect(r.success).toBe(false);
+  });
+});
+
+describe('RecordingRef', () => {
+  const valid = {
+    kind: 'recording' as const,
+    user_id: 'u1',
+    study_id: 's1',
+    pid: '651',
+    span: [7180, 17900] as [number, number],
+    segment_idxs: [2, 3],
+  };
+
+  it('accepts a fully populated recording ref', () => {
+    expect(RecordingRef.safeParse(valid).success).toBe(true);
+  });
+
+  it('accepts null user_id / study_id (unresolved participant)', () => {
+    const r = RecordingRef.safeParse({ ...valid, user_id: null, study_id: null });
+    expect(r.success).toBe(true);
+  });
+
+  it('accepts without optional segment_idxs', () => {
+    const { segment_idxs, ...rest } = valid;
+    void segment_idxs;
+    expect(RecordingRef.safeParse(rest).success).toBe(true);
+  });
+
+  it('rejects a wrong kind literal', () => {
+    expect(RecordingRef.safeParse({ ...valid, kind: 'episode' }).success).toBe(false);
+  });
+
+  it('rejects a span that is not a 2-tuple', () => {
+    expect(RecordingRef.safeParse({ ...valid, span: [1, 2, 3] }).success).toBe(false);
+  });
+
+  it('rejects non-integer segment_idxs', () => {
+    expect(RecordingRef.safeParse({ ...valid, segment_idxs: [1.5] }).success).toBe(false);
+  });
+
+  it('rejects a missing pid', () => {
+    const { pid, ...rest } = valid;
+    void pid;
+    expect(RecordingRef.safeParse(rest).success).toBe(false);
   });
 });
 
