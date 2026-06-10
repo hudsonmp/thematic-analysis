@@ -1,5 +1,12 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
+// DEFENSE-IN-DEPTH SPEEDBUMP ONLY — presence check, NOT validation.
+// This proxy only checks that the `specstudy_researcher` cookie EXISTS; it does
+// not (and cannot, cheaply) verify the encrypted iron-session is valid. A
+// forged/garbage cookie passes this layer. The REAL authentication gate is the
+// server-side `session.ok` check in `app/(protected)/layout.tsx`, which decrypts
+// the iron-session and redirects to /create/login when it is missing or invalid.
+//
 // Cookie-presence check only. Full validation lives in server actions/pages.
 //
 // This is a researcher-only internal tool, so EVERY route is gated except the
