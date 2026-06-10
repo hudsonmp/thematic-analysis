@@ -20,3 +20,9 @@ export function cbFrom<T extends CbTable>(table: T) {
   assertCbTable(table);
   return createServiceRoleClient().from(table);
 }
+
+// Guard scope: `cbFrom` covers `.from()` writes only (compile-time `CbTable`
+// bound + runtime `assertCbTable` prefix check). It does NOT intercept
+// `.rpc()` calls to study stored procedures or dynamic/computed table names —
+// those are caught only by code review + `scripts/check-no-study-writes.sh`
+// (in `npm run lint`) and the post-test DB verification. See guard-core.ts.
