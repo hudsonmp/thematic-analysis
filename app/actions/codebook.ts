@@ -79,14 +79,36 @@ export async function getOrCreateCodebook(): Promise<Codebook> {
   }
   if (existing.data) return existing.data;
 
-  const { data, error } = await cbFrom('cb_codebooks')
-    .insert({ study_id: study.id, name: `${study.name} codebook` })
+  // Conflict-safe bind. The read-first path above handles the common case; this
+  // upsert closes the check-then-insert race. The DB now enforces one codebook
+  // per non-null study_id (constraint cb_codebooks_study_id_unique, migration
+  // 06), so a concurrent caller that inserts between our read and write would
+  // otherwise violate the constraint. `onConflict: 'study_id'` turns that
+  // collision into a no-op update on the existing row, which we then re-select
+  // and return — both callers converge on the same bound row.
+  const upserted = await cbFrom('cb_codebooks')
+    .upsert(
+      { study_id: study.id, name: `${study.name} codebook` },
+      { onConflict: 'study_id' },
+    )
     .select('*')
     .single();
-  if (error || !data) {
-    throw new Error(`getOrCreateCodebook insert failed: ${error?.message ?? 'no row returned'}`);
-  }
-  return data;
+  if (!upserted.error && upserted.data) return upserted.data;
+
+  // Defense in depth: if the upsert itself raced (or the driver surfaced the
+  // unique violation rather than resolving it), the row now exists — re-read it.
+  const reread = await createServiceRoleClient()
+    .from('cb_codebooks')
+    .select('*')
+    .eq('study_id', study.id)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (reread.data) return reread.data;
+
+  throw new Error(
+    `getOrCreateCodebook insert failed: ${upserted.error?.message ?? 'no row returned'}`,
+  );
 }
 
 /**
@@ -98,71 +120,92 @@ export async function getOrCreateCodebook(): Promise<Codebook> {
  * Read-only — uses the service-role client directly. Joins are done in-memory
  * from a handful of flat selects (clearer + cheaper to reason about than deeply
  * nested PostgREST embeds across the version/junction tables).
+ *
+ * Two-phase to keep child reads CORRECT, not just cheap: PostgREST caps result
+ * sets (default 1000 rows) and the junction/value/version tables carry no
+ * `codebook_id` column, so an unfiltered `select('*')` on them ranges over
+ * EVERY codebook. On a populated DB the cap can silently truncate the page and
+ * drop rows belonging to THIS codebook before the in-memory filter ever sees
+ * them. Phase 1 reads this codebook's parents (facets, codes, citations) to
+ * collect their ids; phase 2 reads each child scoped with `.in(parentIds)`.
  */
 export async function listCodebookTree(codebookId: string): Promise<CodebookTree> {
   const supabase = createServiceRoleClient();
 
-  const [
-    codebookRes,
-    facetsRes,
-    valuesRes,
-    codesRes,
-    versionsRes,
-    codeFacetValuesRes,
-    codeCitationsRes,
-    citationsRes,
-  ] = await Promise.all([
+  // Phase 1: this codebook's parents. Each is scoped by codebook_id, so these
+  // are inherently in-scope and bounded by this codebook's size.
+  const [codebookRes, facetsRes, codesRes, citationsRes] = await Promise.all([
     supabase.from('cb_codebooks').select('*').eq('id', codebookId).single(),
     supabase
       .from('cb_facets')
       .select('*')
       .eq('codebook_id', codebookId)
       .order('position', { ascending: true }),
-    supabase.from('cb_facet_values').select('*').order('position', { ascending: true }),
     supabase
       .from('cb_codes')
       .select('*')
       .eq('codebook_id', codebookId)
       .order('mnemonic', { ascending: true }),
-    supabase.from('cb_code_versions').select('*'),
-    supabase.from('cb_code_facet_values').select('*'),
-    supabase.from('cb_code_citations').select('*'),
     supabase.from('cb_citations').select('*').eq('codebook_id', codebookId),
   ]);
 
-  const firstError =
-    codebookRes.error ||
-    facetsRes.error ||
-    valuesRes.error ||
-    codesRes.error ||
-    versionsRes.error ||
-    codeFacetValuesRes.error ||
-    codeCitationsRes.error ||
-    citationsRes.error;
-  if (firstError) {
-    throw new Error(`listCodebookTree read failed: ${firstError.message}`);
+  const phase1Error =
+    codebookRes.error || facetsRes.error || codesRes.error || citationsRes.error;
+  if (phase1Error) {
+    throw new Error(`listCodebookTree read failed: ${phase1Error.message}`);
   }
   if (!codebookRes.data) {
     throw new Error(`listCodebookTree: codebook ${codebookId} not found`);
   }
 
   const facetRows = facetsRes.data ?? [];
-  const valueRows = valuesRes.data ?? [];
   const codeRows = codesRes.data ?? [];
-  const versionRows = versionsRes.data ?? [];
-  const codeFacetValueRows = codeFacetValuesRes.data ?? [];
-  const codeCitationRows = codeCitationsRes.data ?? [];
   const citationRows = citationsRes.data ?? [];
 
-  // Restrict the cross-table sets to THIS codebook's scope. `cb_facet_values`,
-  // `cb_code_versions`, and `cb_code_facet_values` are queried unfiltered above
-  // (they key off facet/code ids, not codebook_id), so filter them in-memory.
-  const facetIds = new Set(facetRows.map((f) => f.id));
-  const codeIds = new Set(codeRows.map((c) => c.id));
+  const facetIdList = facetRows.map((f) => f.id);
+  const codeIdList = codeRows.map((c) => c.id);
+
+  // Phase 2: children scoped to in-scope parent ids. `.in('x', [])` is skipped
+  // entirely — with no parents there can be no children, and issuing the query
+  // would be wasteful (and an empty `.in` is a footgun). Each child read keys
+  // off a parent id, not codebook_id, so the `.in(...)` IS the scope: it caps
+  // the result at this codebook's rows and dodges the cross-codebook 1000-row
+  // truncation that an unfiltered select would hit.
+  const [valuesRes, versionsRes, codeFacetValuesRes, codeCitationsRes] = await Promise.all([
+    facetIdList.length
+      ? supabase
+          .from('cb_facet_values')
+          .select('*')
+          .in('facet_id', facetIdList)
+          .order('position', { ascending: true })
+      : null,
+    codeIdList.length
+      ? supabase.from('cb_code_versions').select('*').in('code_id', codeIdList)
+      : null,
+    codeIdList.length
+      ? supabase.from('cb_code_facet_values').select('*').in('code_id', codeIdList)
+      : null,
+    codeIdList.length
+      ? supabase.from('cb_code_citations').select('*').in('code_id', codeIdList)
+      : null,
+  ]);
+
+  const phase2Error =
+    valuesRes?.error ||
+    versionsRes?.error ||
+    codeFacetValuesRes?.error ||
+    codeCitationsRes?.error;
+  if (phase2Error) {
+    throw new Error(`listCodebookTree read failed: ${phase2Error.message}`);
+  }
+
+  const valueRows = valuesRes?.data ?? [];
+  const versionRows = versionsRes?.data ?? [];
+  const codeFacetValueRows = codeFacetValuesRes?.data ?? [];
+  const codeCitationRows = codeCitationsRes?.data ?? [];
 
   const valuesByFacet = new Map<string, FacetValue[]>();
   for (const v of valueRows) {
-    if (!facetIds.has(v.facet_id)) continue;
     const list = valuesByFacet.get(v.facet_id) ?? [];
     list.push(v);
     valuesByFacet.set(v.facet_id, list);
@@ -170,12 +213,11 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
 
   const versionById = new Map<string, CodeVersion>();
   for (const ver of versionRows) {
-    if (codeIds.has(ver.code_id)) versionById.set(ver.id, ver);
+    versionById.set(ver.id, ver);
   }
 
   const facetValueIdsByCode = new Map<string, string[]>();
   for (const link of codeFacetValueRows) {
-    if (!codeIds.has(link.code_id)) continue;
     const list = facetValueIdsByCode.get(link.code_id) ?? [];
     list.push(link.facet_value_id);
     facetValueIdsByCode.set(link.code_id, list);
@@ -183,7 +225,6 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
 
   const citationIdsByCode = new Map<string, string[]>();
   for (const link of codeCitationRows) {
-    if (!codeIds.has(link.code_id)) continue;
     const list = citationIdsByCode.get(link.code_id) ?? [];
     list.push(link.citation_id);
     citationIdsByCode.set(link.code_id, list);
