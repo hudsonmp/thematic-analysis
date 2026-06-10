@@ -137,6 +137,23 @@ export async function saveNewVersion(
   return versionRes.data;
 }
 
+/**
+ * All versions of a code, newest first (version desc). The code page uses this
+ * for the version-history list; the "current" version is whichever row the
+ * code's `current_version_id` points at (highest `version` after a normal
+ * save sequence, but we order by `version` explicitly rather than assume).
+ */
+export async function listCodeVersions(codeId: string): Promise<CodeVersion[]> {
+  const res = await cbFrom('cb_code_versions')
+    .select('*')
+    .eq('code_id', codeId)
+    .order('version', { ascending: false });
+  if (res.error) {
+    throw new Error(`listCodeVersions failed: ${res.error.message}`);
+  }
+  return res.data ?? [];
+}
+
 /** Set a code's lifecycle status. */
 export async function setCodeStatus(codeId: string, status: CodeStatus): Promise<void> {
   const { error } = await cbFrom('cb_codes').update({ status }).eq('id', codeId);
