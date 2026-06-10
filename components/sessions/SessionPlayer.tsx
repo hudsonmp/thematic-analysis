@@ -38,27 +38,28 @@ function findActiveIndex(segments: Segment[], tMs: number): number {
 }
 
 /**
- * Two-pane participant-session player: video on the left, a synchronized,
- * click-to-seek, brushable transcript on the right, plus a coding rail and an
- * analytic-memo panel.
+ * Two-pane participant-session player: a 2/3-width video on the left and a
+ * 1/3-width synchronized, click-to-seek, brushable transcript on the right,
+ * plus a coding rail and an analytic-comment panel.
  *
- * Sync (video → transcript): the video's `timeupdate` recomputes the active
- * segment; when it changes we highlight that row and scroll it into view — but
- * NOT while the researcher is actively scrolling the transcript themselves
- * (tracked via a short cooldown after the last manual scroll), so reading ahead
- * isn't yanked back to the playhead.
+ * Sync (video → transcript): when SYNC is on (default), the video's `timeupdate`
+ * — which fires on play AND on seek/scrub/fast-forward — recomputes the active
+ * segment; we highlight that row and scroll it into view, so scrubbing the video
+ * drags the transcript along. The explicit Sync/Unsync toggle turns this off so
+ * the coder can read and scroll freely without being yanked back to the playhead
+ * (the highlight still tracks, but no forced scroll).
  *
  * Seek (transcript → video): clicking a row's TIMESTAMP sets `currentTime` to
- * that segment's start and plays. Clicking the row BODY selects it for coding;
- * shift-clicking a body (or "Extend to here") grows the selection to a
- * contiguous range. Both affordances are reachable on every row.
+ * that segment's start and plays. Clicking the row BODY starts/replaces the
+ * selection at that segment; shift-clicking another row extends the selection to
+ * the contiguous range [min, max] of the two clicked rows.
  *
  * Coding: with a selection, pick a code + coder and "Apply code" → `addCoding`
  * writes a `cb_codings` row anchored to `[startMs,endMs]` on the recording clock
- * with the brushed segment idxs. Memos: free-text analytic notes, optionally
- * pinned to the current selection. Every mutation calls `router.refresh()` so
- * the page re-loads codings/memos server-side; no Server Action runs during
- * client render.
+ * with the brushed segment idxs. Comments: free-text analytic notes (stored via
+ * the `cb_memos` table / `addMemo` action), optionally pinned to the current
+ * selection. Every mutation calls `router.refresh()` so the page re-loads
+ * codings/comments server-side; no Server Action runs during client render.
  */
 export default function SessionPlayer({
   pid,
@@ -88,13 +89,18 @@ export default function SessionPlayer({
   const transcriptRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  // Timestamp (ms) of the researcher's last manual transcript scroll. While
-  // within the cooldown we suppress auto-scroll-into-view so reading ahead is
-  // not interrupted by the playhead. A ref (not state) — it must not re-render.
-  const lastManualScrollRef = useRef(0);
-  const AUTOSCROLL_COOLDOWN_MS = 1500;
-
   const [activeIdx, setActiveIdx] = useState(-1);
+
+  // When ON (default), the transcript follows the video: on every `timeupdate`
+  // (play AND seek/scrub) we highlight the active segment and scroll it into
+  // view. When OFF, the highlight still tracks but we never force-scroll, so the
+  // coder can read ahead freely. `synced` is mirrored into a ref so the
+  // scroll-into-view effect can read the latest value without re-keying on it.
+  const [synced, setSynced] = useState(true);
+  const syncedRef = useRef(true);
+  useEffect(() => {
+    syncedRef.current = synced;
+  }, [synced]);
 
   // Span selection over transcript segments. `anchorIdx` is the first clicked
   // row; `headIdx` is the far end (set by shift-click / "extend to here"). The
@@ -124,11 +130,13 @@ export default function SessionPlayer({
     setActiveIdx((prev) => (prev === idx ? prev : idx));
   }, [segments]);
 
-  // Scroll the active row into view when it changes, unless the researcher is
-  // mid-scroll. Runs as an effect (post-render) so the ref is populated.
+  // Scroll the active row into view when it changes — but only while SYNCED.
+  // Runs as an effect (post-render) so the row ref is populated. Reading
+  // `syncedRef` (not `synced`) keeps the effect keyed solely on `activeIdx`, so
+  // toggling sync mid-playback doesn't retroactively scroll.
   useEffect(() => {
     if (activeIdx < 0) return;
-    if (Date.now() - lastManualScrollRef.current < AUTOSCROLL_COOLDOWN_MS) return;
+    if (!syncedRef.current) return;
     rowRefs.current[activeIdx]?.scrollIntoView({ block: 'nearest' });
   }, [activeIdx]);
 
@@ -137,10 +145,6 @@ export default function SessionPlayer({
     if (!video) return;
     video.currentTime = startMs / 1000;
     void video.play();
-  }, []);
-
-  const onTranscriptScroll = useCallback(() => {
-    lastManualScrollRef.current = Date.now();
   }, []);
 
   // --- Selection ----------------------------------------------------------
@@ -304,9 +308,9 @@ export default function SessionPlayer({
         </p>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Left: video + coding toolbar + coding rail + memos */}
-        <div className="space-y-4">
+      <div className="grid gap-6 lg:grid-cols-3">
+        {/* Left (2/3): video + coding toolbar + coding rail + comments */}
+        <div className="space-y-4 lg:col-span-2">
           <video
             ref={videoRef}
             controls
@@ -429,18 +433,18 @@ export default function SessionPlayer({
             )}
           </section>
 
-          {/* Memos */}
+          {/* Comments */}
           <section className="rounded border border-foreground/15 p-3">
             <h2 className="mb-2 text-sm font-semibold">
-              Memos <span className="font-normal text-foreground/50">({memos.length})</span>
+              Comments <span className="font-normal text-foreground/50">({memos.length})</span>
             </h2>
             <textarea
               value={memoBody}
               onChange={(e) => setMemoBody(e.target.value)}
-              placeholder="Analytic memo…"
+              placeholder="Add a comment…"
               rows={3}
               className="w-full rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
-              aria-label="Memo body"
+              aria-label="Comment body"
             />
             <div className="mt-1 flex items-center justify-between">
               <label className="flex items-center gap-1.5 text-xs text-foreground/60">
@@ -463,7 +467,7 @@ export default function SessionPlayer({
                 disabled={savingMemo || memoBody.trim() === ''}
                 className="rounded bg-foreground px-3 py-1 text-sm text-background disabled:opacity-40"
               >
-                {savingMemo ? 'Saving…' : 'Add memo'}
+                {savingMemo ? 'Saving…' : 'Add comment'}
               </button>
             </div>
 
@@ -492,7 +496,7 @@ export default function SessionPlayer({
                       type="button"
                       onClick={() => handleDeleteMemo(m.id)}
                       disabled={busyId === m.id}
-                      aria-label="Delete memo"
+                      aria-label="Delete comment"
                       className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
                     >
                       {'✕'}
@@ -504,10 +508,31 @@ export default function SessionPlayer({
           </section>
         </div>
 
-        {/* Right: scrollable, click-to-seek, brushable transcript */}
+        {/* Right (1/3): scrollable, click-to-seek, brushable transcript */}
+        <div className="lg:col-span-1">
+          {/* Transcript header: Sync/Unsync toggle (follow video on play + seek) */}
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Transcript</h2>
+            <button
+              type="button"
+              onClick={() => setSynced((s) => !s)}
+              aria-pressed={synced}
+              title={
+                synced
+                  ? 'Transcript follows the video (click to stop following)'
+                  : 'Transcript is not following the video (click to follow)'
+              }
+              className={`rounded border px-2 py-1 text-xs ${
+                synced
+                  ? 'border-foreground bg-foreground text-background'
+                  : 'border-foreground/30 text-foreground/70 hover:text-foreground'
+              }`}
+            >
+              {synced ? 'Sync: on' : 'Sync: off'}
+            </button>
+          </div>
         <div
           ref={transcriptRef}
-          onScroll={onTranscriptScroll}
           className="h-[70vh] overflow-y-auto border border-foreground/15 divide-y divide-foreground/10"
         >
           {segments.length === 0 ? (
@@ -542,11 +567,13 @@ export default function SessionPlayer({
                   >
                     [{formatTime(seg.startMs)}]
                   </button>
-                  {/* Row body = select affordance (shift = extend) */}
+                  {/* Row body = select affordance: click starts/replaces the
+                      selection here; shift-click extends to the contiguous
+                      range between this row and the anchor. */}
                   <button
                     type="button"
                     onClick={(e) => selectRow(i, e.shiftKey)}
-                    title="Select for coding (shift to extend)"
+                    title="Click to select; shift-click to extend"
                     className="flex-1 text-left"
                   >
                     {seg.speaker && (
@@ -554,21 +581,11 @@ export default function SessionPlayer({
                     )}
                     <span className="text-foreground/80">{seg.text}</span>
                   </button>
-                  {/* Explicit extend control (reachable without shift-click) */}
-                  {anchorIdx !== null && (
-                    <button
-                      type="button"
-                      onClick={() => selectRow(i, true)}
-                      title="Extend selection to here"
-                      className="mt-px shrink-0 text-xs text-foreground/40 hover:text-foreground"
-                    >
-                      {'↓'}
-                    </button>
-                  )}
                 </div>
               );
             })
           )}
+        </div>
         </div>
       </div>
     </main>
