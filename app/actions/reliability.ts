@@ -76,6 +76,19 @@ export async function computeReliability({
   nCoders?: number;
   note?: string;
 }): Promise<ReliabilityResult> {
+  // Validate scope params FIRST — before parsing labels or building the insert.
+  // The migration-04 CHECK constraint enforces these at the DB layer, but a raw
+  // CHECK violation surfaces as an opaque Postgres error; converting it here gives
+  // the caller an actionable message and avoids a doomed round-trip. Scope params
+  // are independent of the label table, so this runs ahead of the parse guard:
+  // a malformed scope should report the scope problem, not an unrelated parse error.
+  if (scope === 'facet_value' && !scopeFacetValueId) {
+    throw new Error("computeReliability: scope 'facet_value' requires scopeFacetValueId");
+  }
+  if (scope === 'code' && !scopeCodeId) {
+    throw new Error("computeReliability: scope 'code' requires scopeCodeId");
+  }
+
   const { pairs } = parseLabelTable(labelTableText);
   if (pairs.length === 0) {
     throw new Error(
@@ -116,6 +129,7 @@ export async function computeReliability({
     prevalence_index: prevalence,
     bias_index: bias,
     raw_labels: pairs as unknown as Json,
+    degenerate,
     note: persistedNote,
   };
 

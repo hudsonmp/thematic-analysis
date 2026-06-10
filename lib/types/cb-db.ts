@@ -256,7 +256,7 @@ export type Database = {
           {
             foreignKeyName: "cb_codebooks_study_id_fkey"
             columns: ["study_id"]
-            isOneToOne: false
+            isOneToOne: true
             referencedRelation: "studies"
             referencedColumns: ["id"]
           },
@@ -291,13 +291,6 @@ export type Database = {
           resolved?: boolean
         }
         Relationships: [
-          {
-            foreignKeyName: "cb_coder_comments_code_id_code_version_fkey"
-            columns: ["code_id", "code_version"]
-            isOneToOne: false
-            referencedRelation: "cb_code_versions"
-            referencedColumns: ["code_id", "version"]
-          },
           {
             foreignKeyName: "cb_coder_comments_code_id_fkey"
             columns: ["code_id"]
@@ -509,6 +502,7 @@ export type Database = {
           codebook_version_id: string | null
           cohen_kappa: number | null
           computed_at: string
+          degenerate: boolean
           dismissed_note: string | null
           id: string
           krippendorff_alpha: number | null
@@ -529,6 +523,7 @@ export type Database = {
           codebook_version_id?: string | null
           cohen_kappa?: number | null
           computed_at?: string
+          degenerate?: boolean
           dismissed_note?: string | null
           id?: string
           krippendorff_alpha?: number | null
@@ -549,6 +544,7 @@ export type Database = {
           codebook_version_id?: string | null
           cohen_kappa?: number | null
           computed_at?: string
+          degenerate?: boolean
           dismissed_note?: string | null
           id?: string
           krippendorff_alpha?: number | null
