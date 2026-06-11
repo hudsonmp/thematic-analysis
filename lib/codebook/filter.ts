@@ -10,6 +10,7 @@ export type FilterableCode = {
   mnemonic: string;
   name: string;
   episodeIds: string[];
+  labelIds: string[];
 };
 
 /**
@@ -35,16 +36,33 @@ export function matchesEpisode(code: Pick<FilterableCode, 'episodeIds'>, episode
 }
 
 /**
+ * Whether a code is tagged with the given label. A null `labelId` means "no
+ * label filter applied" and matches every code (filter off). Otherwise the code
+ * passes iff `labelId` is among its `labelIds`. Mirrors `matchesEpisode`; the
+ * label axis (categorical / "what kind") is orthogonal to the episode axis.
+ */
+export function matchesLabel(code: Pick<FilterableCode, 'labelIds'>, labelId: string | null): boolean {
+  if (!labelId) return true;
+  return code.labelIds.includes(labelId);
+}
+
+/**
  * The composed matrix filter: a code is visible iff it matches the free-text
- * query AND the (optional) episode filter. This is the single source of truth
- * the matrix consults before pivoting codes onto the grid.
+ * query AND the (optional) episode filter AND the (optional) label filter. This
+ * is the single source of truth the matrix consults before pivoting codes onto
+ * the grid.
  */
 export function isCodeVisible<C extends FilterableCode>(
   code: C,
   query: string,
   episodeId: string | null,
+  labelId: string | null,
 ): boolean {
-  return matchesQuery(code, query) && matchesEpisode(code, episodeId);
+  return (
+    matchesQuery(code, query) &&
+    matchesEpisode(code, episodeId) &&
+    matchesLabel(code, labelId)
+  );
 }
 
 /** Apply {@link isCodeVisible} across a list, preserving order. */
@@ -52,6 +70,7 @@ export function filterCodes<C extends FilterableCode>(
   codes: readonly C[],
   query: string,
   episodeId: string | null,
+  labelId: string | null,
 ): C[] {
-  return codes.filter((c) => isCodeVisible(c, query, episodeId));
+  return codes.filter((c) => isCodeVisible(c, query, episodeId, labelId));
 }

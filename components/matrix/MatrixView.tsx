@@ -255,7 +255,7 @@ const ORIGINS = ['a_priori', 'pilot', 'emergent'] as const;
  * the row facet, the col facet, or both (deduped).
  */
 export default function MatrixView({ tree }: { tree: CodebookTree }) {
-  const { codebook, facets, codes, episodes, citations } = tree;
+  const { codebook, facets, codes, episodes, labels, citations } = tree;
 
   const [rowFacetId, setRowFacetId] = useState<string>(facets[0]?.id ?? NONE);
   const [colFacetId, setColFacetId] = useState<string>(facets[1]?.id ?? NONE);
@@ -271,15 +271,25 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
 
   // Code-set filters, composed by AND in `filterCodes` (lib/codebook/filter):
   //   - free-text query: case-insensitive substring over mnemonic or name;
-  //   - episode filter: when an episode is picked, only codes tagged with it.
-  // Empty query + NONE episode = all codes. The pivot/cell logic below operates
-  // over the filtered set, so non-matching codes simply don't render in any cell
-  // or the unassigned lane.
+  //   - episode filter: when an episode is picked, only codes tagged with it
+  //     (temporal axis);
+  //   - label filter: when a label is picked, only codes grouped under it
+  //     (categorical / "what kind" axis, orthogonal to episodes).
+  // Empty query + NONE episode + NONE label = all codes. The pivot/cell logic
+  // below operates over the filtered set, so non-matching codes simply don't
+  // render in any cell or the unassigned lane.
   const [query, setQuery] = useState('');
   const [episodeId, setEpisodeId] = useState<string>(NONE);
+  const [labelId, setLabelId] = useState<string>(NONE);
   const visibleCodes = useMemo(
-    () => filterCodes(codes, query, episodeId === NONE ? null : episodeId),
-    [codes, query, episodeId],
+    () =>
+      filterCodes(
+        codes,
+        query,
+        episodeId === NONE ? null : episodeId,
+        labelId === NONE ? null : labelId,
+      ),
+    [codes, query, episodeId, labelId],
   );
 
   // Per code, the value-ids it carries on a given facet (intersection of the
@@ -362,8 +372,8 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
         </div>
       ) : (
         <>
-          {/* Filters: free-text search + episode filter, composed by AND, on
-              which codes render in the grid. */}
+          {/* Filters: free-text search + episode filter + label filter,
+              composed by AND, on which codes render in the grid. */}
           <div className="flex items-center gap-3 flex-wrap">
             <input
               type="search"
@@ -391,7 +401,25 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
                 </select>
               </label>
             )}
-            {(query.trim() || episodeId !== NONE) && (
+            {labels.length > 0 && (
+              <label className="flex items-center gap-2 text-sm">
+                <span className="text-foreground/60">Label</span>
+                <select
+                  value={labelId}
+                  onChange={(e) => setLabelId(e.target.value)}
+                  aria-label="Filter codes by label"
+                  className="border border-foreground/15 px-2 py-1 bg-background"
+                >
+                  <option value={NONE}>all</option>
+                  {labels.map((lbl) => (
+                    <option key={lbl.id} value={lbl.id}>
+                      {lbl.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {(query.trim() || episodeId !== NONE || labelId !== NONE) && (
               <span className="text-foreground/40 text-xs">
                 {visibleCodes.length} of {codes.length} match
               </span>

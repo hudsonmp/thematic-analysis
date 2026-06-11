@@ -15,6 +15,7 @@ type Code = Tables<'cb_codes'>;
 type CodeVersion = Tables<'cb_code_versions'>;
 type Citation = Tables<'cb_citations'>;
 type Episode = Tables<'cb_episodes'>;
+type Label = Tables<'cb_labels'>;
 
 export type ShownStudy = { id: string; name: string; authored_data: Json };
 
@@ -25,6 +26,7 @@ export type CodeWithRefs = Code & {
   facetValueIds: string[];
   citationIds: string[];
   episodeIds: string[];
+  labelIds: string[];
 };
 
 export type CodebookTree = {
@@ -33,6 +35,7 @@ export type CodebookTree = {
   codes: CodeWithRefs[];
   citations: Citation[];
   episodes: Episode[];
+  labels: Label[];
 };
 
 /**
@@ -117,10 +120,10 @@ export async function getOrCreateCodebook(): Promise<Codebook> {
 /**
  * Aggregate read for the UI: the codebook plus its facets (each with its
  * ordered values), its codes (each with the current version row, the set of
- * facet-value ids tagged on it, the set of citation ids linked to it, and the
- * set of preset-episode ids tagged on it), its citations, and its preset
- * episodes. Facets/values are ordered by `position`; codes by `mnemonic`;
- * episodes by `position`.
+ * facet-value ids tagged on it, the set of citation ids linked to it, the set
+ * of preset-episode ids tagged on it, and the set of label ids tagged on it),
+ * its citations, its preset episodes, and its labels. Facets/values are ordered
+ * by `position`; codes by `mnemonic`; episodes and labels by `position`.
  *
  * Read-only — uses the service-role client directly. Joins are done in-memory
  * from a handful of flat selects (clearer + cheaper to reason about than deeply
@@ -139,33 +142,41 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
 
   // Phase 1: this codebook's parents. Each is scoped by codebook_id, so these
   // are inherently in-scope and bounded by this codebook's size.
-  const [codebookRes, facetsRes, codesRes, citationsRes, episodesRes] = await Promise.all([
-    supabase.from('cb_codebooks').select('*').eq('id', codebookId).single(),
-    supabase
-      .from('cb_facets')
-      .select('*')
-      .eq('codebook_id', codebookId)
-      .order('position', { ascending: true }),
-    supabase
-      .from('cb_codes')
-      .select('*')
-      .eq('codebook_id', codebookId)
-      .order('mnemonic', { ascending: true }),
-    supabase.from('cb_citations').select('*').eq('codebook_id', codebookId),
-    supabase
-      .from('cb_episodes')
-      .select('*')
-      .eq('codebook_id', codebookId)
-      .order('position', { ascending: true })
-      .order('created_at', { ascending: true }),
-  ]);
+  const [codebookRes, facetsRes, codesRes, citationsRes, episodesRes, labelsRes] =
+    await Promise.all([
+      supabase.from('cb_codebooks').select('*').eq('id', codebookId).single(),
+      supabase
+        .from('cb_facets')
+        .select('*')
+        .eq('codebook_id', codebookId)
+        .order('position', { ascending: true }),
+      supabase
+        .from('cb_codes')
+        .select('*')
+        .eq('codebook_id', codebookId)
+        .order('mnemonic', { ascending: true }),
+      supabase.from('cb_citations').select('*').eq('codebook_id', codebookId),
+      supabase
+        .from('cb_episodes')
+        .select('*')
+        .eq('codebook_id', codebookId)
+        .order('position', { ascending: true })
+        .order('created_at', { ascending: true }),
+      supabase
+        .from('cb_labels')
+        .select('*')
+        .eq('codebook_id', codebookId)
+        .order('position', { ascending: true })
+        .order('created_at', { ascending: true }),
+    ]);
 
   const phase1Error =
     codebookRes.error ||
     facetsRes.error ||
     codesRes.error ||
     citationsRes.error ||
-    episodesRes.error;
+    episodesRes.error ||
+    labelsRes.error;
   if (phase1Error) {
     throw new Error(`listCodebookTree read failed: ${phase1Error.message}`);
   }
@@ -177,6 +188,7 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
   const codeRows = codesRes.data ?? [];
   const citationRows = citationsRes.data ?? [];
   const episodeRows = episodesRes.data ?? [];
+  const labelRows = labelsRes.data ?? [];
 
   const facetIdList = facetRows.map((f) => f.id);
   const codeIdList = codeRows.map((c) => c.id);
@@ -187,35 +199,45 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
   // off a parent id, not codebook_id, so the `.in(...)` IS the scope: it caps
   // the result at this codebook's rows and dodges the cross-codebook 1000-row
   // truncation that an unfiltered select would hit.
-  const [valuesRes, versionsRes, codeFacetValuesRes, codeCitationsRes, codeEpisodesRes] =
-    await Promise.all([
-      facetIdList.length
-        ? supabase
-            .from('cb_facet_values')
-            .select('*')
-            .in('facet_id', facetIdList)
-            .order('position', { ascending: true })
-        : null,
-      codeIdList.length
-        ? supabase.from('cb_code_versions').select('*').in('code_id', codeIdList)
-        : null,
-      codeIdList.length
-        ? supabase.from('cb_code_facet_values').select('*').in('code_id', codeIdList)
-        : null,
-      codeIdList.length
-        ? supabase.from('cb_code_citations').select('*').in('code_id', codeIdList)
-        : null,
-      codeIdList.length
-        ? supabase.from('cb_code_episodes').select('*').in('code_id', codeIdList)
-        : null,
-    ]);
+  const [
+    valuesRes,
+    versionsRes,
+    codeFacetValuesRes,
+    codeCitationsRes,
+    codeEpisodesRes,
+    codeLabelsRes,
+  ] = await Promise.all([
+    facetIdList.length
+      ? supabase
+          .from('cb_facet_values')
+          .select('*')
+          .in('facet_id', facetIdList)
+          .order('position', { ascending: true })
+      : null,
+    codeIdList.length
+      ? supabase.from('cb_code_versions').select('*').in('code_id', codeIdList)
+      : null,
+    codeIdList.length
+      ? supabase.from('cb_code_facet_values').select('*').in('code_id', codeIdList)
+      : null,
+    codeIdList.length
+      ? supabase.from('cb_code_citations').select('*').in('code_id', codeIdList)
+      : null,
+    codeIdList.length
+      ? supabase.from('cb_code_episodes').select('*').in('code_id', codeIdList)
+      : null,
+    codeIdList.length
+      ? supabase.from('cb_code_labels').select('*').in('code_id', codeIdList)
+      : null,
+  ]);
 
   const phase2Error =
     valuesRes?.error ||
     versionsRes?.error ||
     codeFacetValuesRes?.error ||
     codeCitationsRes?.error ||
-    codeEpisodesRes?.error;
+    codeEpisodesRes?.error ||
+    codeLabelsRes?.error;
   if (phase2Error) {
     throw new Error(`listCodebookTree read failed: ${phase2Error.message}`);
   }
@@ -225,6 +247,7 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
   const codeFacetValueRows = codeFacetValuesRes?.data ?? [];
   const codeCitationRows = codeCitationsRes?.data ?? [];
   const codeEpisodeRows = codeEpisodesRes?.data ?? [];
+  const codeLabelRows = codeLabelsRes?.data ?? [];
 
   const valuesByFacet = new Map<string, FacetValue[]>();
   for (const v of valueRows) {
@@ -259,6 +282,13 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
     episodeIdsByCode.set(link.code_id, list);
   }
 
+  const labelIdsByCode = new Map<string, string[]>();
+  for (const link of codeLabelRows) {
+    const list = labelIdsByCode.get(link.code_id) ?? [];
+    list.push(link.label_id);
+    labelIdsByCode.set(link.code_id, list);
+  }
+
   const facets: FacetWithValues[] = facetRows.map((f) => ({
     ...f,
     values: valuesByFacet.get(f.id) ?? [],
@@ -270,6 +300,7 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
     facetValueIds: facetValueIdsByCode.get(c.id) ?? [],
     citationIds: citationIdsByCode.get(c.id) ?? [],
     episodeIds: episodeIdsByCode.get(c.id) ?? [],
+    labelIds: labelIdsByCode.get(c.id) ?? [],
   }));
 
   return {
@@ -278,5 +309,6 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
     codes,
     citations: citationRows,
     episodes: episodeRows,
+    labels: labelRows,
   };
 }

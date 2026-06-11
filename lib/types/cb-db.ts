@@ -301,6 +301,36 @@ export type Database = {
           },
         ]
       }
+      cb_code_labels: {
+        Row: {
+          code_id: string
+          label_id: string
+        }
+        Insert: {
+          code_id: string
+          label_id: string
+        }
+        Update: {
+          code_id?: string
+          label_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_code_labels_code_id_fkey"
+            columns: ["code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_code_labels_label_id_fkey"
+            columns: ["label_id"]
+            isOneToOne: false
+            referencedRelation: "cb_labels"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_code_versions: {
         Row: {
           change_note: string | null
@@ -680,6 +710,41 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "cb_flag_types_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_labels: {
+        Row: {
+          codebook_id: string
+          color: string | null
+          created_at: string
+          id: string
+          name: string
+          position: number
+        }
+        Insert: {
+          codebook_id: string
+          color?: string | null
+          created_at?: string
+          id?: string
+          name: string
+          position?: number
+        }
+        Update: {
+          codebook_id?: string
+          color?: string | null
+          created_at?: string
+          id?: string
+          name?: string
+          position?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_labels_codebook_id_fkey"
             columns: ["codebook_id"]
             isOneToOne: false
             referencedRelation: "cb_codebooks"

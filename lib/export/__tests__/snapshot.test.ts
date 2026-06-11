@@ -110,6 +110,7 @@ function fixture(): CodebookTree {
         facetValueIds: ['fv-A1', 'fv-B1'],
         citationIds: ['cit-1'],
         episodeIds: [],
+        labelIds: [],
       },
       {
         id: 'code-2',
@@ -126,6 +127,7 @@ function fixture(): CodebookTree {
         facetValueIds: [],
         citationIds: [],
         episodeIds: [],
+        labelIds: [],
       },
     ],
     citations: [
@@ -144,6 +146,7 @@ function fixture(): CodebookTree {
       },
     ],
     episodes: [],
+    labels: [],
   };
 }
 

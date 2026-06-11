@@ -2,15 +2,16 @@ import { describe, it, expect } from 'vitest';
 import {
   matchesQuery,
   matchesEpisode,
+  matchesLabel,
   isCodeVisible,
   filterCodes,
   type FilterableCode,
 } from '@/lib/codebook/filter';
 
 const codes: FilterableCode[] = [
-  { mnemonic: 'SPEC-GAP', name: 'Specification gap', episodeIds: ['e1', 'e2'] },
-  { mnemonic: 'EDGE', name: 'Edge case', episodeIds: ['e2'] },
-  { mnemonic: 'NULL', name: 'Null handling', episodeIds: [] },
+  { mnemonic: 'SPEC-GAP', name: 'Specification gap', episodeIds: ['e1', 'e2'], labelIds: ['l1'] },
+  { mnemonic: 'EDGE', name: 'Edge case', episodeIds: ['e2'], labelIds: ['l1', 'l2'] },
+  { mnemonic: 'NULL', name: 'Null handling', episodeIds: [], labelIds: [] },
 ];
 
 describe('matchesQuery', () => {
@@ -43,25 +44,52 @@ describe('matchesEpisode', () => {
   });
 });
 
+describe('matchesLabel', () => {
+  it('matches everything when no label filter (null)', () => {
+    expect(matchesLabel(codes[0], null)).toBe(true);
+    expect(matchesLabel(codes[2], null)).toBe(true); // even an untagged code
+  });
+
+  it('passes only codes tagged with the label', () => {
+    expect(matchesLabel(codes[0], 'l1')).toBe(true);
+    expect(matchesLabel(codes[1], 'l1')).toBe(true);
+    expect(matchesLabel(codes[0], 'l2')).toBe(false); // not tagged l2
+    expect(matchesLabel(codes[1], 'l2')).toBe(true);
+    expect(matchesLabel(codes[2], 'l1')).toBe(false); // untagged
+  });
+});
+
 describe('isCodeVisible + filterCodes (composition)', () => {
-  it('composes query AND episode by logical AND', () => {
-    // SPEC-GAP matches text "spec" and is tagged e1 -> visible
-    expect(isCodeVisible(codes[0], 'spec', 'e1')).toBe(true);
+  it('composes query AND episode AND label by logical AND', () => {
+    // SPEC-GAP matches text "spec", is tagged e1, and is tagged l1 -> visible
+    expect(isCodeVisible(codes[0], 'spec', 'e1', 'l1')).toBe(true);
     // EDGE matches text "edge" but is NOT tagged e1 -> hidden
-    expect(isCodeVisible(codes[1], 'edge', 'e1')).toBe(false);
+    expect(isCodeVisible(codes[1], 'edge', 'e1', null)).toBe(false);
+    // SPEC-GAP matches text + episode but is NOT tagged l2 -> hidden by label
+    expect(isCodeVisible(codes[0], 'spec', 'e1', 'l2')).toBe(false);
   });
 
   it('episode filter alone returns only matching codes', () => {
-    expect(filterCodes(codes, '', 'e2').map((c) => c.mnemonic)).toEqual(['SPEC-GAP', 'EDGE']);
-    expect(filterCodes(codes, '', 'e1').map((c) => c.mnemonic)).toEqual(['SPEC-GAP']);
+    expect(filterCodes(codes, '', 'e2', null).map((c) => c.mnemonic)).toEqual(['SPEC-GAP', 'EDGE']);
+    expect(filterCodes(codes, '', 'e1', null).map((c) => c.mnemonic)).toEqual(['SPEC-GAP']);
+  });
+
+  it('label filter alone returns only matching codes', () => {
+    expect(filterCodes(codes, '', null, 'l1').map((c) => c.mnemonic)).toEqual(['SPEC-GAP', 'EDGE']);
+    expect(filterCodes(codes, '', null, 'l2').map((c) => c.mnemonic)).toEqual(['EDGE']);
   });
 
   it('no filters returns the full set in order', () => {
-    expect(filterCodes(codes, '', null)).toHaveLength(3);
+    expect(filterCodes(codes, '', null, null)).toHaveLength(3);
   });
 
   it('text + episode together narrow further', () => {
     // tagged e2 = {SPEC-GAP, EDGE}; of those, name/mnemonic contains "edge" = {EDGE}
-    expect(filterCodes(codes, 'edge', 'e2').map((c) => c.mnemonic)).toEqual(['EDGE']);
+    expect(filterCodes(codes, 'edge', 'e2', null).map((c) => c.mnemonic)).toEqual(['EDGE']);
+  });
+
+  it('episode + label together narrow further', () => {
+    // tagged e2 = {SPEC-GAP, EDGE}; of those, tagged l2 = {EDGE}
+    expect(filterCodes(codes, '', 'e2', 'l2').map((c) => c.mnemonic)).toEqual(['EDGE']);
   });
 });
