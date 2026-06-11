@@ -5,6 +5,7 @@ import {
   listAnnotationComments,
 } from '@/app/actions/annotations';
 import { listEpisodes, listSessionEpisodes } from '@/app/actions/episodes';
+import { listObservationsForSession } from '@/app/actions/observations';
 import { getAuthUser } from '@/lib/auth/supabase-auth';
 import SessionPlayer from '@/components/sessions/SessionPlayer';
 
@@ -29,6 +30,12 @@ import SessionPlayer from '@/components/sessions/SessionPlayer';
  * this page's rail updates live (a debounced `router.refresh()` re-runs this
  * server component and re-passes `myAnnotations` with joined codes).
  *
+ * Review markers (Task 5, live co-observation): we also load this session's
+ * PID's live observations + the recording anchor (`listObservationsForSession`)
+ * and pass them to the player, which renders each as a clickable marker on the
+ * time rail at `createdAt − recordingStartedAt` and lists them in a Flags rail.
+ * Read-only here — observations are created on the live screen (`/sessions/live`).
+ *
  * Transcript layers (feature #20): a session has an ORIGINAL (verbatim ASR)
  * version and, once the researcher creates it, a CLEANED copy. The page opens on
  * the ORIGINAL (the default `getSessionCloud(id)` loads) and passes the full
@@ -44,13 +51,20 @@ export default async function SessionPage({
 }) {
   const { id } = await params;
 
-  const [session, versions, codebook, sessionEpisodes, user] = await Promise.all([
-    getSessionCloud(id),
-    getSessionVersions(id),
-    getOrCreateCodebook(),
-    listSessionEpisodes(id),
-    getAuthUser(),
-  ]);
+  const [session, versions, codebook, sessionEpisodes, observations, user] =
+    await Promise.all([
+      getSessionCloud(id),
+      getSessionVersions(id),
+      getOrCreateCodebook(),
+      listSessionEpisodes(id),
+      // Live co-observation review markers (Task 5): this session's PID's
+      // observations + the `recording_started_at` anchor for offset math. The
+      // action resolves the PID via `cb_sessions.pid_label` and joins flag
+      // types (label + color); `recordingStartedAt` is null when the recording
+      // was never anchored (the player then renders an "anchor not set" hint).
+      listObservationsForSession(id),
+      getAuthUser(),
+    ]);
 
   // Initial (server-rendered) annotations are the ORIGINAL version's own
   // annotations — version-scoped so highlights anchor to the loaded text. A
@@ -99,6 +113,8 @@ export default async function SessionPage({
       myUid={user?.id ?? null}
       episodes={episodes.map((e) => ({ id: e.id, name: e.name }))}
       sessionEpisodes={sessionEpisodes}
+      observations={observations.observations}
+      recordingStartedAt={observations.recordingStartedAt}
       compareHref={`/sessions/${session.id}/compare`}
     />
   );

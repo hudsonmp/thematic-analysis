@@ -26,6 +26,7 @@ import {
   deleteSessionEpisode,
   type SessionEpisodeView,
 } from '@/app/actions/episodes';
+import type { ObservationView } from '@/app/actions/observations';
 import {
   buildTextAnchor,
   splitIntoPieces,
@@ -51,6 +52,25 @@ function formatTime(ms: number): string {
 /** Render a span as `mm:ss–mm:ss`. */
 function formatSpan(startMs: number, endMs: number): string {
   return `${formatTime(startMs)}–${formatTime(endMs)}`;
+}
+
+/**
+ * The display label for an observation marker/row. A flag tap uses its flag's
+ * label; a flag whose type was deleted shows the action's '(deleted flag)'
+ * sentinel; a bare note (no flag) reads "Note". Kept separate from the body
+ * (the free-text comment), which renders alongside it.
+ */
+function observationLabel(o: { flagLabel: string | null }): string {
+  return o.flagLabel ?? 'Note';
+}
+
+/**
+ * The marker/chip color for an observation. Uses the flag's swatch color when
+ * present; falls back to a neutral foreground tint for bare notes or
+ * colorless/deleted flags, so a marker is always visible on the rail.
+ */
+function observationColor(o: { color: string | null }): string {
+  return o.color ?? 'var(--foreground)';
 }
 
 /**
@@ -183,6 +203,17 @@ function charOffsetWithin(segEl: HTMLElement, container: Node, offset: number): 
  * Realtime (Task 10): `useRealtimeAnnotations` subscribes to this session's
  * `cb_annotations` changes and, on the signed-in coder's OWN rows changing in
  * ANOTHER tab/device, calls `router.refresh()` (debounced).
+ *
+ * Live-flag review markers (live co-observation, Task 5): the participant's live
+ * `cb_observations` are placed on a time rail under the video at
+ * `createdAt − recordingStartedAt` (the recording anchor) and listed, in time
+ * order, in a "Flags on timeline" rail — flag swatch/label + note + `[mm:ss]`,
+ * each a `seekTo(offset)` button (reusing the same seek mechanism as transcript
+ * clicks and episode marks). Pre-record offsets clamp to 0 (mirroring the
+ * auto-episode clamp); when the recording was never anchored
+ * (`recordingStartedAt` null) the markers can't be placed, so an "anchor not
+ * set" hint renders instead. Read-only here — flags are logged live on
+ * `/sessions/live`.
  */
 export default function SessionPlayer({
   id,
@@ -198,6 +229,8 @@ export default function SessionPlayer({
   myUid = null,
   episodes = [],
   sessionEpisodes = [],
+  observations = [],
+  recordingStartedAt = null,
   compareHref = null,
 }: {
   id: string;
@@ -227,6 +260,20 @@ export default function SessionPlayer({
   episodes?: EpisodeOption[];
   /** This session's episode marks (boundaries to navigate / resume by). */
   sessionEpisodes?: SessionEpisodeView[];
+  /**
+   * The live co-observation flags logged for this session's participant (Task 5).
+   * Each renders as a clickable marker on the time rail at
+   * `createdAt − recordingStartedAt`, and in the Flags rail. Read-only here —
+   * observations are created live on `/sessions/live`.
+   */
+  observations?: ObservationView[];
+  /**
+   * `cb_sessions.recording_started_at` (ISO) — the t=0 anchor that turns an
+   * observation's absolute `createdAt` into a video offset. `null` when the
+   * recording was never anchored: with no anchor the player can't place any
+   * marker, so it renders an "anchor not set" hint instead.
+   */
+  recordingStartedAt?: string | null;
   /** Link to the post-hoc, read-only Compare tab (own-coding stays here). */
   compareHref?: string | null;
 }) {
@@ -937,6 +984,50 @@ export default function SessionPlayer({
     return s;
   }, [myAnnotations, comments]);
 
+  // --- Live co-observation review markers (Task 5) ------------------------
+  //
+  // Each observation's video offset is `createdAt − recordingStartedAt`. The
+  // anchor is the SAME one Task 4 wrote (the task `module_start + 2000ms`), so a
+  // flag tapped live lands on the moment in the recording. Computed once here so
+  // the time-rail markers and the Flags rail share one ordered list.
+  //
+  // recordingStartedAt null → no anchor yet: we can't place any marker, so this
+  // is empty and the UI shows an "anchor not set" hint instead (handled below).
+  // Offsets < 0 (a flag logged before record start, e.g. during onboarding) are
+  // CLAMPED to 0 — consistent with Task 4's `t_start_ms: Math.max(0, …)` clamp
+  // for auto-episodes — so an early flag pins to the recording's start rather
+  // than being dropped or producing a negative seek.
+  const anchorMs = useMemo(() => {
+    if (!recordingStartedAt) return null;
+    const ms = Date.parse(recordingStartedAt);
+    return Number.isNaN(ms) ? null : ms;
+  }, [recordingStartedAt]);
+
+  const flagMarkers = useMemo(() => {
+    if (anchorMs === null) return [];
+    return observations
+      .map((o) => {
+        const createdMs = Date.parse(o.createdAt);
+        if (Number.isNaN(createdMs)) return null;
+        // Clamp pre-record flags to t=0 (mirror the auto-episode clamp).
+        const offsetMs = Math.max(0, createdMs - anchorMs);
+        return { obs: o, offsetMs };
+      })
+      .filter((m): m is { obs: ObservationView; offsetMs: number } => m !== null)
+      .sort((a, b) => a.offsetMs - b.offsetMs);
+  }, [observations, anchorMs]);
+
+  // The denominator for placing a marker along the rail: the video duration, or
+  // the latest marker offset if that runs past the known duration (defensive — a
+  // flag could be logged after the recording's metadata duration in odd data).
+  // Guarded to ≥1 so a zero-duration session never divides by zero.
+  const railSpanMs = useMemo(() => {
+    const lastOffset = flagMarkers.length
+      ? flagMarkers[flagMarkers.length - 1].offsetMs
+      : 0;
+    return Math.max(1, durationMs, lastOffset);
+  }, [flagMarkers, durationMs]);
+
   // The annotation whose comment thread is open + its loaded comments, for the
   // popover. `null` when nothing is open or the annotation is no longer present
   // (e.g. deleted / version switched out from under the open thread).
@@ -999,6 +1090,112 @@ export default function SessionPlayer({
             onTimeUpdate={handleTimeUpdate}
             className="w-full bg-black"
           />
+
+          {/* Live-flag marker rail (Task 5): the participant's live observations
+              placed along an absolute time rail at `createdAt − recording start`.
+              Each marker is a button → seekTo(offset); its color is the flag's
+              swatch; its title shows the label + note. Read-only (flags are
+              created live on /sessions/live). When the recording was never
+              anchored we can't place anything, so we show a hint instead. */}
+          {observations.length > 0 && (
+            <section
+              aria-label="Live flags on the timeline"
+              className="rounded border border-foreground/15 p-3"
+            >
+              <h2 className="mb-2 text-sm font-semibold">
+                Flags on timeline
+                <span className="ml-1 font-normal text-foreground/40">
+                  · {observations.length} live
+                  {observations.length === 1 ? '' : ''} observation
+                  {observations.length === 1 ? '' : 's'}
+                </span>
+              </h2>
+              {anchorMs === null ? (
+                <p className="text-sm text-foreground/50">
+                  Recording anchor not set — once this recording is anchored to
+                  the participant&apos;s event clock, the{' '}
+                  {observations.length} logged flag
+                  {observations.length === 1 ? '' : 's'} will appear here at their
+                  video offsets.
+                </p>
+              ) : (
+                <div
+                  className="relative h-7 w-full rounded bg-foreground/[0.06]"
+                  role="group"
+                  aria-label="Flag markers"
+                >
+                  {flagMarkers.map(({ obs, offsetMs }) => {
+                    const leftPct = Math.min(
+                      100,
+                      (offsetMs / railSpanMs) * 100,
+                    );
+                    const label = observationLabel(obs);
+                    return (
+                      <button
+                        key={obs.id}
+                        type="button"
+                        onClick={() => seekTo(offsetMs)}
+                        title={`[${formatTime(offsetMs)}] ${label}${
+                          obs.body ? ` — ${obs.body}` : ''
+                        }`}
+                        aria-label={`Seek to flag ${label} at ${formatTime(
+                          offsetMs,
+                        )}`}
+                        style={{
+                          left: `${leftPct}%`,
+                          backgroundColor: observationColor(obs),
+                        }}
+                        className="absolute top-1/2 h-4 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-sm border border-background/40 hover:h-5 hover:w-2"
+                      />
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Flags rail list: the same observations in time order — flag chip
+                  (swatch + label) + note + [mm:ss], each a seek button. Mirrors
+                  the episode list / Quotes rail affordances. Only meaningful with
+                  an anchor (otherwise there are no offsets to jump to). */}
+              {anchorMs !== null && flagMarkers.length > 0 && (
+                <ul className="mt-3 divide-y divide-foreground/10">
+                  {flagMarkers.map(({ obs, offsetMs }) => {
+                    const label = observationLabel(obs);
+                    return (
+                      <li
+                        key={obs.id}
+                        className="flex items-start gap-2 py-1.5 text-sm"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => seekTo(offsetMs)}
+                          className="flex flex-1 items-start gap-2 text-left hover:underline"
+                          title="Seek to this flag"
+                        >
+                          <span
+                            aria-hidden
+                            style={{ backgroundColor: observationColor(obs) }}
+                            className="mt-1 inline-block h-3 w-3 shrink-0 rounded-sm border border-foreground/20"
+                          />
+                          <span className="flex-1">
+                            <span className="font-semibold">{label}</span>
+                            {obs.body && (
+                              <span className="text-foreground/70">
+                                {' — '}
+                                {obs.body}
+                              </span>
+                            )}
+                          </span>
+                          <span className="shrink-0 font-mono text-xs text-foreground/50">
+                            [{formatTime(offsetMs)}]
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          )}
 
           {codingEnabled && (
             <>
