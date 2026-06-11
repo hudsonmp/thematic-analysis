@@ -3,6 +3,7 @@
 import { cbFrom } from '@/lib/supabase/guard';
 import { linkCitation } from '@/app/actions/citations';
 import { resolveRows, type CodebookRow } from '@/lib/codebook/mnemonic';
+import type { RowFacetWrites } from '@/lib/codebook/grid';
 import { CodeVersionInput, type CodeVersionInputT } from '@/lib/types/contracts';
 import type { Json, Tables, TablesInsert } from '@/lib/types/cb-db';
 
@@ -339,6 +340,88 @@ export async function createCodesBulk(
       if (citationId) {
         await linkCitation(newId, citationId, 'derived_from');
       }
+      created += 1;
+    } catch (err) {
+      errors.push({
+        index: row.index,
+        message: err instanceof Error ? err.message : 'Failed to create code.',
+      });
+    }
+  }
+
+  return { created, errors };
+}
+
+/**
+ * Bulk-create codes WITH their facet classifications, from the scheme-derived
+ * Codebook spreadsheet grid.
+ *
+ * Same core path as `createCodesBulk` (origin applies to the batch; optional
+ * `citationId` links every code `derived_from`; blank mnemonics synthesized;
+ * blank definition falls back to the name). The ADDITION is per-row facet writes:
+ * `facetWritesByIndex` is keyed by the row's ORIGINAL 0-based input index (the
+ * same index `resolveRows` preserves through dropped empties) and carries, per
+ * row:
+ *   - `enumValueIds` → cb_code_facet_values for the new code (via
+ *     `setCodeFacetValues`, the replace-the-set enum value setter); empty = no
+ *     enum tags;
+ *   - `fields`       → cb_code_facet_fields, one `setCodeFacetField` call per
+ *     boolean / open_text facet the row sets (unset cells are absent).
+ *
+ * Per-row transactional-ish: the code + version + citation link + every facet
+ * write for ONE row run in sequence; if ANY step for that row throws, the row is
+ * reported as an error (kept in the grid for retry) and the loop moves on. There
+ * is no PostgREST multi-statement transaction, so a row that fails AFTER the code
+ * insert can leave a code with partial facets — acceptable here because the code
+ * stays fully editable on its anatomy page, and the row is surfaced (not lost).
+ * The pure `rowToFacetWrites` (lib/codebook/grid.ts, unit-tested) produces these
+ * `RowFacetWrites` on the client; this action just applies them.
+ */
+export async function createCodesBulkWithFacets(
+  codebookId: string,
+  rows: CodebookRow[],
+  facetWritesByIndex: Record<number, RowFacetWrites>,
+  origin: CodeOrigin,
+  citationId?: string,
+): Promise<BulkCreateResult> {
+  if (!codebookId) throw new Error('createCodesBulkWithFacets: missing codebook id.');
+
+  const existing = await listCodebookMnemonics(codebookId);
+  const { resolved, errors } = resolveRows(rows, existing);
+
+  let created = 0;
+  for (const row of resolved) {
+    try {
+      const newId = await createCode({
+        codebookId,
+        mnemonic: row.mnemonic,
+        name: row.name,
+        origin,
+        version: {
+          definition: row.definition || row.name,
+          include_if: [],
+          exclude_if: [],
+          exemplars: [],
+        },
+      });
+      if (citationId) {
+        await linkCitation(newId, citationId, 'derived_from');
+      }
+
+      // Facet writes for THIS row, keyed by its original input index.
+      const writes = facetWritesByIndex[row.index];
+      if (writes) {
+        if (writes.enumValueIds.length > 0) {
+          await setCodeFacetValues(newId, writes.enumValueIds);
+        }
+        for (const field of writes.fields) {
+          await setCodeFacetField(newId, field.facetId, {
+            bool_value: field.bool_value,
+            text_value: field.text_value,
+          });
+        }
+      }
+
       created += 1;
     } catch (err) {
       errors.push({

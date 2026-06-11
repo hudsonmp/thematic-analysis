@@ -1,14 +1,29 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState, useTransition } from 'react';
+import { memo, useCallback, useMemo, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { createCodesBulk } from '@/app/actions/codes';
+import { createCodesBulkWithFacets } from '@/app/actions/codes';
+import { createFacetValue } from '@/app/actions/facets';
 import type { CodeOrigin } from '@/app/actions/codes';
-import { isRowEmpty, type CodebookRow } from '@/lib/codebook/mnemonic';
+import type { FacetWithValues } from '@/app/actions/codebook';
+import { facetRenderMode, coerceFacetType } from '@/lib/codebook/facet-types';
+import type { CodebookRow } from '@/lib/codebook/mnemonic';
+import {
+  emptyRow,
+  bufferedRowCount,
+  lastFilledIndex,
+  rowToFacetWrites,
+  isGridRowEmpty,
+  INITIAL_ROWS,
+  type FacetColumn,
+  type RowData,
+  type FacetCell,
+} from '@/lib/codebook/grid';
 import type { Tables } from '@/lib/types/cb-db';
 
 type Citation = Tables<'cb_citations'>;
+type FacetValue = Tables<'cb_facet_values'>;
 
 /** Session-mode options. The chosen origin applies to EVERY code in the batch. */
 const ORIGINS: { value: CodeOrigin; label: string }[] = [
@@ -17,77 +32,112 @@ const ORIGINS: { value: CodeOrigin; label: string }[] = [
   { value: 'emergent', label: 'emergent' },
 ];
 
-type Col = 'name' | 'mnemonic' | 'definition';
-
-/** A grid row with a stable client id (for keys + focus) and its three cells. */
-type GridRow = { id: string; name: string; mnemonic: string; definition: string };
+const OTHER = '__other__';
 
 function citationLabel(c: Citation): string {
   if (c.bibtex_key && c.title) return `${c.bibtex_key} — ${c.title}`;
   return c.bibtex_key ?? c.title ?? c.id;
 }
 
-function newRow(): GridRow {
-  return {
-    id: `r-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    name: '',
-    mnemonic: '',
-    definition: '',
-  };
-}
-
-function toCodebookRow(r: GridRow): CodebookRow {
-  return { name: r.name, mnemonic: r.mnemonic, definition: r.definition };
-}
-
 /**
- * Codebook bulk-entry surface (client). A spreadsheet-like grid for adding many
- * codes fast:
+ * Codebook bulk-entry surface (client). A scheme-derived, spreadsheet-fast grid
+ * for adding many codes at once.
  *
+ *  - COLUMNS ARE THE SCHEME. Three core columns (Name* / Mnemonic / Definition)
+ *    then one column per facet, rendered by the facet's TYPE (`facetRenderMode`):
+ *    enum-single → <select> of values + "Other…" (inline-add via createFacetValue);
+ *    enum-multi → a checkbox menu; boolean → tri-state yes/no/unset; open_text →
+ *    a text input. The grid scrolls horizontally when the scheme is wide.
  *  - A session HEADER sets the mode (origin) applied to every code, and an
- *    optional citation that links every created code `derived_from` that paper
- *    (same as the deductive flow, applied to a batch). Picking a citation
- *    defaults the mode to "a priori" (overridable).
- *  - The GRID has a Name* (required), Mnemonic, Definition column per row, with
- *    an always-present blank trailing row. Enter (or Tab past the last cell)
- *    commits the row and focuses a fresh one — keyboard-first entry.
- *  - "Create N codes" bulk-creates every non-empty row via `createCodesBulk`.
- *    On success the committed rows clear but the mode + citation persist for the
- *    next batch; on partial failure the failed rows stay in the grid with an
- *    inline message.
+ *    optional citation that links every created code `derived_from` that paper.
+ *  - ~500 READY ROWS that AUTO-EXTEND: a comfortable empty tail is always kept
+ *    below the last filled row, so the researcher never clicks "add row."
+ *  - KEYBOARD: Enter in any cell → focus the Name cell of the NEXT row (commit);
+ *    Shift+Enter in a text cell → insert a newline (multi-line definitions).
+ *  - "Create N codes" bulk-creates every named row via `createCodesBulkWithFacets`
+ *    (code + version + citation + facet writes). On success committed rows clear
+ *    (mode + citation + the empty buffer persist); on partial failure the failed
+ *    rows stay with an inline error.
  *
- * Mutations run in a transition from handlers and `router.refresh()` after a
- * successful batch (so the Scheme/matrix re-reads) — no Server Action during
- * render. Mnemonic blanks are synthesized server-side (see `createCodesBulk`).
+ * PERFORMANCE. A naïve 500×N controlled grid re-renders every cell on each
+ * keystroke and janks. Here the source of truth is a `useRef<RowData[]>`; cell
+ * edits mutate that ref through stable callbacks and keep their value in LOCAL,
+ * per-row state, so a keystroke re-renders only its own `GridRowView` (memoized).
+ * Parent state changes (and thus full-grid re-renders) happen ONLY on structural
+ * events: auto-extend (append buffer rows) and submit (reset the grid). Focus is
+ * managed via a ref map of Name inputs.
  */
 export default function CodebookEntry({
   codebookId,
+  facets,
   citations,
 }: {
   codebookId: string;
+  facets: FacetWithValues[];
   citations: Citation[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
+  // Facet COLUMNS derived from the scheme (the heart of "columns = the scheme").
+  // We keep both the pure `FacetColumn` (for row→write mapping + render mode) and
+  // the live values list per facet (so enum cells can render labels and the
+  // inline "Other…" add path can splice in a new value without a full reload).
+  const [facetValues, setFacetValues] = useState<Map<string, FacetValue[]>>(
+    () => new Map(facets.map((f) => [f.id, f.values])),
+  );
+  const columns: FacetColumn[] = useMemo(
+    () =>
+      facets.map((f) => ({
+        facetId: f.id,
+        label: f.label,
+        mode: facetRenderMode(
+          coerceFacetType(f.type),
+          f.cardinality === 'multi' ? 'multi' : 'single',
+        ),
+        valueIds: (facetValues.get(f.id) ?? f.values).map((v) => v.id),
+      })),
+    [facets, facetValues],
+  );
+
+  // A single shared empty seed (per column shape) for the render-time `initial` of
+  // every buffer row — a stable identity, so unfilled rows don't re-seed/allocate.
+  const emptySeed = useMemo(() => emptyRow(columns), [columns]);
+
   const [origin, setOrigin] = useState<CodeOrigin>('emergent');
   const [citationId, setCitationId] = useState<string>('');
-  const [rows, setRows] = useState<GridRow[]>([newRow()]);
   const [result, setResult] = useState<string | null>(null);
-  // Per-original-index error messages from the last batch, keyed to the grid row
-  // by its position among the non-empty rows submitted.
-  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  // Per-row error messages from the last batch, keyed by the row's CURRENT index.
+  const [rowErrors, setRowErrors] = useState<Record<number, string>>({});
 
-  // cellRefs[rowId][col] -> input element, for keyboard focus management.
-  const cellRefs = useRef<Map<string, Partial<Record<Col, HTMLInputElement>>>>(new Map());
+  // Source of truth for row data: a ref, so cell edits don't re-render the grid.
+  const rowsRef = useRef<RowData[]>(makeRows(INITIAL_ROWS, columns));
+  // `rowCount` drives the render map; it only changes on auto-extend / reset.
+  const [rowCount, setRowCount] = useState(INITIAL_ROWS);
 
-  const setCellRef = useCallback(
-    (rowId: string, col: Col) => (el: HTMLInputElement | null) => {
-      const map = cellRefs.current;
-      const entry = map.get(rowId) ?? {};
-      if (el) entry[col] = el;
-      else delete entry[col];
-      map.set(rowId, entry);
+  // Render-safe SEED source for each row's initial cell data. The ref is the live
+  // per-keystroke store, but the React 19 lint forbids reading `ref.current`
+  // during render (it can desync the UI), so `GridRowView` cannot read the ref to
+  // get its `initial`. Almost every row is an empty buffer row, so we keep ONLY
+  // the non-empty seeds in state (a sparse Map keyed by row index); a missing key
+  // means "seed from an empty row". This state changes ONLY on structural events
+  // (initial = empty, auto-extend appends empties, submit reset / partial keep) —
+  // never on a keystroke — so it does not re-render the grid as the user types.
+  const [seedRows, setSeedRows] = useState<Map<number, RowData>>(() => new Map());
+
+  // Live count of non-empty rows, for the button label. Maintained by the
+  // mutation callbacks so we never scan the ref during render (lint) and never
+  // re-render the grid per keystroke: it bumps ONLY when a row flips empty↔filled.
+  // `filledFlags` shadows, per index, whether that row currently counts as filled.
+  const [filledCount, setFilledCount] = useState(0);
+  const filledFlags = useRef<boolean[]>(new Array(INITIAL_ROWS).fill(false));
+
+  // Name-cell refs by index, for Enter-to-next-row focus.
+  const nameRefs = useRef<Map<number, HTMLTextAreaElement>>(new Map());
+  const setNameRef = useCallback(
+    (index: number) => (el: HTMLTextAreaElement | null) => {
+      if (el) nameRefs.current.set(index, el);
+      else nameRefs.current.delete(index);
     },
     [],
   );
@@ -97,109 +147,186 @@ export default function CodebookEntry({
     [citations, citationId],
   );
 
-  const nonEmptyCount = useMemo(() => rows.filter((r) => !isRowEmpty(r)).length, [rows]);
+  /** Recompute the auto-extend target and grow the grid if the buffer shrank.
+   *  Called after a cell mutation that could have filled a near-tail row. Cheap:
+   *  one backward scan + a compare; only bumps state (full re-render) on growth. */
+  const ensureBuffer = useCallback(() => {
+    const target = bufferedRowCount(lastFilledIndex(rowsRef.current));
+    if (target > rowsRef.current.length) {
+      for (let i = rowsRef.current.length; i < target; i += 1) {
+        rowsRef.current.push(emptyRow(columns));
+      }
+      setRowCount(target);
+    }
+  }, [columns]);
 
-  function updateCell(rowId: string, col: Col, value: string) {
-    setRows((prev) => {
-      const next = prev.map((r) => (r.id === rowId ? { ...r, [col]: value } : r));
-      // Keep exactly one trailing blank row: if the last row is now non-empty,
-      // append a fresh blank.
-      const last = next[next.length - 1];
-      if (last && !isRowEmpty(last)) next.push(newRow());
-      return next;
-    });
-    setResult(null);
-  }
+  /** After a cell mutation, reconcile the live `filledCount` for `index`: if the
+   *  row's empty/filled status FLIPPED, bump the count (a rare event — once when a
+   *  row first gets content, once if fully cleared). No-op on every other
+   *  keystroke, so the parent does not re-render as the researcher types. */
+  const reconcileFilled = useCallback((index: number) => {
+    const row = rowsRef.current[index];
+    const nowFilled = row ? !isGridRowEmpty(row) : false;
+    const wasFilled = filledFlags.current[index] ?? false;
+    if (nowFilled === wasFilled) return;
+    filledFlags.current[index] = nowFilled;
+    setFilledCount((c) => c + (nowFilled ? 1 : -1));
+  }, []);
+
+  /** Stable per-cell write-through: mutate the ref in place (no parent re-render),
+   *  then keep the buffer comfortable + the filled count live. The row owns its
+   *  own visible UI state, so this triggers a parent render ONLY on a structural
+   *  change (auto-extend) or an empty↔filled flip. */
+  const writeCore = useCallback(
+    (index: number, patch: Partial<CodebookRow>) => {
+      const row = rowsRef.current[index];
+      if (!row) return;
+      row.core = { ...row.core, ...patch };
+      reconcileFilled(index);
+      ensureBuffer();
+    },
+    [ensureBuffer, reconcileFilled],
+  );
+
+  const writeFacet = useCallback(
+    (index: number, facetId: string, cell: FacetCell) => {
+      const row = rowsRef.current[index];
+      if (!row) return;
+      row.facets = { ...row.facets, [facetId]: cell };
+      reconcileFilled(index);
+      ensureBuffer();
+    },
+    [ensureBuffer, reconcileFilled],
+  );
+
+  /** Focus the Name cell of `index`, extending the grid first if needed. */
+  const focusName = useCallback(
+    (index: number) => {
+      if (index >= rowsRef.current.length) {
+        const target = Math.max(index + 1, bufferedRowCount(index));
+        for (let i = rowsRef.current.length; i < target; i += 1) {
+          rowsRef.current.push(emptyRow(columns));
+        }
+        setRowCount(target);
+      }
+      // Focus after the (possible) render commit.
+      queueMicrotask(() => nameRefs.current.get(index)?.focus());
+    },
+    [columns],
+  );
 
   function chooseCitation(id: string) {
     setCitationId(id);
-    // Picking a paper defaults the mode to a_priori (overridable), matching the
-    // deductive flow. Clearing the paper leaves the mode as-is.
     if (id) setOrigin('a_priori');
   }
 
-  /** Focus the Name cell of the row after `rowId` (creating it if needed). */
-  function focusNextRow(rowId: string) {
-    setRows((prev) => {
-      const idx = prev.findIndex((r) => r.id === rowId);
-      let next = prev;
-      let targetId: string;
-      if (idx === prev.length - 1) {
-        const fresh = newRow();
-        next = [...prev, fresh];
-        targetId = fresh.id;
-      } else {
-        targetId = prev[idx + 1].id;
-      }
-      // Focus after the row list commits.
-      queueMicrotask(() => cellRefs.current.get(targetId)?.name?.focus());
-      return next;
-    });
-  }
+  /** Inline "Other…": create a value on a facet, splice it into the live values
+   *  list so every row's dropdown sees it, and return the new id for assignment. */
+  const addFacetValue = useCallback(
+    async (facetId: string, label: string): Promise<FacetValue | null> => {
+      const trimmed = label.trim();
+      if (!trimmed) return null;
+      const { slugifyValueKey } = await import('@/lib/codebook/facet-types');
+      const value = await createFacetValue(facetId, {
+        key: slugifyValueKey(trimmed),
+        label: trimmed,
+      });
+      setFacetValues((prev) => {
+        const next = new Map(prev);
+        next.set(facetId, [...(next.get(facetId) ?? []), value]);
+        return next;
+      });
+      return value;
+    },
+    [],
+  );
 
-  function onCellKeyDown(
-    e: React.KeyboardEvent<HTMLInputElement>,
-    rowId: string,
-    col: Col,
-  ) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      focusNextRow(rowId);
-      return;
-    }
-    // Tab past the last cell of the last row commits a new row (so the trailing
-    // blank is always reachable by keyboard). Shift+Tab is left to the browser.
-    if (e.key === 'Tab' && !e.shiftKey && col === 'definition') {
-      const isLast = rows[rows.length - 1]?.id === rowId;
-      if (isLast) {
-        e.preventDefault();
-        focusNextRow(rowId);
-      }
-    }
-  }
+  // The named/used row count for the button label is the live `filledCount`
+  // state, maintained by `reconcileFilled` on empty↔filled flips. (We do NOT scan
+  // `rowsRef` here: reading a ref during render is forbidden by the React 19 lint
+  // and would also re-run the scan on every render.)
+  const nonEmptyCount = filledCount;
 
   function submit() {
-    const toSubmit = rows.filter((r) => !isRowEmpty(r));
-    if (toSubmit.length === 0) {
+    // Snapshot the non-empty rows with their CURRENT indices.
+    const submitted: { index: number; row: RowData }[] = [];
+    rowsRef.current.forEach((row, index) => {
+      if (!isGridRowEmpty(row)) submitted.push({ index, row });
+    });
+    if (submitted.length === 0) {
       setResult('Nothing to create — add at least one name.');
       return;
     }
     setResult(null);
     setRowErrors({});
 
+    // Build the parallel core-rows array + facet-writes map keyed by the SUBMIT
+    // index (0-based position in `coreRows`), matching how `resolveRows` reports
+    // errors (by index into the array it was handed).
+    const coreRows: CodebookRow[] = submitted.map((s) => s.row.core);
+    const facetWritesByIndex: Record<number, ReturnType<typeof rowToFacetWrites>> = {};
+    submitted.forEach((s, submitIdx) => {
+      facetWritesByIndex[submitIdx] = rowToFacetWrites(s.row, columns);
+    });
+
     startTransition(async () => {
       try {
-        const res = await createCodesBulk(
+        const res = await createCodesBulkWithFacets(
           codebookId,
-          toSubmit.map(toCodebookRow),
+          coreRows,
+          facetWritesByIndex,
           origin,
           citationId || undefined,
         );
 
         if (res.errors.length === 0) {
-          // Full success: clear the grid (mode + citation persist for the next
-          // batch) and re-read so the matrix reflects the new codes.
-          setRows([newRow()]);
+          // Full success: reset the grid (mode + citation persist) and re-read so
+          // the Scheme/matrix reflects the new codes.
+          rowsRef.current = makeRows(INITIAL_ROWS, columns);
+          nameRefs.current.clear();
+          filledFlags.current = new Array(INITIAL_ROWS).fill(false);
+          setSeedRows(new Map());
+          setFilledCount(0);
+          setRowCount(INITIAL_ROWS);
+          setRowErrors({});
           setResult(`Created ${res.created} code${res.created === 1 ? '' : 's'}.`);
           router.refresh();
           return;
         }
 
-        // Partial failure: keep ONLY the rows that failed (by their submitted
-        // index) so the researcher can fix + retry; map errors onto them.
-        const failedIdx = new Set(res.errors.map((e) => e.index));
-        const kept: GridRow[] = [];
-        const errsByRowId: Record<string, string> = {};
-        toSubmit.forEach((r, i) => {
-          if (failedIdx.has(i)) {
-            kept.push(r);
-            const msg = res.errors.find((e) => e.index === i)?.message;
-            if (msg) errsByRowId[r.id] = msg;
+        // Partial failure: rebuild the grid keeping ONLY the failed rows (mapped
+        // by their submit index back to the original RowData), then the buffer.
+        const failedSubmitIdx = new Set(res.errors.map((e) => e.index));
+        const kept: RowData[] = [];
+        const errsByIndex: Record<number, string> = {};
+        submitted.forEach((s, submitIdx) => {
+          if (failedSubmitIdx.has(submitIdx)) {
+            const keptIndex = kept.length;
+            kept.push(s.row);
+            const msg = res.errors.find((e) => e.index === submitIdx)?.message;
+            if (msg) errsByIndex[keptIndex] = msg;
           }
         });
-        kept.push(newRow());
-        setRows(kept);
-        setRowErrors(errsByRowId);
+        const keptFilled = kept.length; // every kept row is non-empty by construction
+        const target = bufferedRowCount(kept.length - 1);
+        for (let i = kept.length; i < target; i += 1) kept.push(emptyRow(columns));
+        rowsRef.current = kept;
+        nameRefs.current.clear();
+        // Render-safe seeds for the kept (failed) rows, so their cells repopulate
+        // after the remount without reading the ref during render. Buffer rows
+        // (>= keptFilled) seed empty (absent from the map). Rebuild the filled
+        // flags + count to match (the kept rows are the only filled ones now).
+        const seeds = new Map<number, RowData>();
+        const flags = new Array(target).fill(false);
+        for (let i = 0; i < keptFilled; i += 1) {
+          seeds.set(i, kept[i]);
+          flags[i] = true;
+        }
+        filledFlags.current = flags;
+        setSeedRows(seeds);
+        setFilledCount(keptFilled);
+        setRowCount(target);
+        setRowErrors(errsByIndex);
         setResult(
           `Created ${res.created} code${res.created === 1 ? '' : 's'}; ${res.errors.length} row${
             res.errors.length === 1 ? '' : 's'
@@ -212,20 +339,36 @@ export default function CodebookEntry({
     });
   }
 
+  // A version key forces row remounts after a structural reset (success/partial)
+  // so each row re-seeds its local state from the (new) ref. It changes only on
+  // those resets, never on cell edits.
+  const [gridVersion, setGridVersion] = useState(0);
+  const resetVersion = useCallback(() => setGridVersion((v) => v + 1), []);
+  // Bump the version whenever the row identity array is replaced wholesale.
+  const submitWithReset = useCallback(() => {
+    const before = rowsRef.current;
+    submit();
+    // If submit replaced the array (success or partial), force a remount.
+    queueMicrotask(() => {
+      if (rowsRef.current !== before) resetVersion();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [origin, citationId, columns, codebookId]);
+
   return (
     <main className="px-6 py-6 space-y-6">
       <header>
         <h1 className="text-xl font-medium tracking-tight">Codebook</h1>
         <p className="mt-1 max-w-3xl text-sm leading-relaxed text-foreground/60">
           Add many codes at once. Pick a <span className="font-medium text-foreground/80">mode</span>{' '}
-          (and optionally bind a paper) for the whole session, then type rows —{' '}
-          <kbd className="font-mono text-xs">Enter</kbd> commits a row and starts a
-          new one. Only <span className="font-medium text-foreground/80">Name</span> is
-          required. The full anatomy of each code stays editable on its{' '}
+          (and optionally bind a paper) for the whole session, then type rows. The
+          columns after Definition are this codebook&apos;s{' '}
           <Link href="/" className="underline underline-offset-2">
-            Scheme
-          </Link>{' '}
-          page.
+            facets
+          </Link>
+          . <kbd className="font-mono text-xs">Enter</kbd> jumps to the next row;{' '}
+          <kbd className="font-mono text-xs">Shift+Enter</kbd> adds a line. Only{' '}
+          <span className="font-medium text-foreground/80">Name</span> is required.
         </p>
       </header>
 
@@ -288,68 +431,49 @@ export default function CodebookEntry({
         )}
       </section>
 
-      {/* Spreadsheet grid. */}
+      {/* Scheme-derived spreadsheet grid. Horizontal scroll when wide. */}
       <section>
         <div className="overflow-x-auto border border-foreground/15">
-          <table className="w-full border-collapse text-sm">
+          <table className="w-full border-collapse text-sm" style={{ minWidth: tableMinWidth(columns) }}>
             <thead>
               <tr className="border-b border-foreground/15 text-left">
-                <th className="w-1/4 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-foreground/50">
+                <th className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-foreground/50" style={{ width: 220 }}>
                   Name<span className="text-red-600">*</span>
                 </th>
-                <th className="w-1/5 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-foreground/50">
+                <th className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-foreground/50" style={{ width: 150 }}>
                   Mnemonic
                 </th>
-                <th className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-foreground/50">
+                <th className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-foreground/50" style={{ width: 260 }}>
                   Definition
                 </th>
+                {columns.map((col) => (
+                  <th
+                    key={col.facetId}
+                    className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-foreground/50"
+                    style={{ width: facetColWidth(col.mode) }}
+                  >
+                    {col.label}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
-                const err = rowErrors[r.id];
-                return (
-                  <tr
-                    key={r.id}
-                    className={`border-b border-foreground/10 ${err ? 'bg-red-500/5' : ''}`}
-                  >
-                    <td className="align-top">
-                      <input
-                        ref={setCellRef(r.id, 'name')}
-                        value={r.name}
-                        onChange={(e) => updateCell(r.id, 'name', e.target.value)}
-                        onKeyDown={(e) => onCellKeyDown(e, r.id, 'name')}
-                        placeholder="code name"
-                        aria-label="Code name"
-                        className="w-full bg-transparent px-3 py-1.5 outline-none focus:bg-foreground/5"
-                      />
-                      {err && <div className="px-3 pb-1 text-xs text-red-600">{err}</div>}
-                    </td>
-                    <td className="align-top">
-                      <input
-                        ref={setCellRef(r.id, 'mnemonic')}
-                        value={r.mnemonic}
-                        onChange={(e) => updateCell(r.id, 'mnemonic', e.target.value)}
-                        onKeyDown={(e) => onCellKeyDown(e, r.id, 'mnemonic')}
-                        placeholder="(auto)"
-                        aria-label="Code mnemonic (optional)"
-                        className="w-full bg-transparent px-3 py-1.5 font-mono text-xs outline-none focus:bg-foreground/5"
-                      />
-                    </td>
-                    <td className="align-top">
-                      <input
-                        ref={setCellRef(r.id, 'definition')}
-                        value={r.definition}
-                        onChange={(e) => updateCell(r.id, 'definition', e.target.value)}
-                        onKeyDown={(e) => onCellKeyDown(e, r.id, 'definition')}
-                        placeholder="one-line definition (optional)"
-                        aria-label="Code definition (optional)"
-                        className="w-full bg-transparent px-3 py-1.5 outline-none focus:bg-foreground/5"
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
+              {Array.from({ length: rowCount }, (_, index) => (
+                <GridRowView
+                  key={`${gridVersion}-${index}`}
+                  index={index}
+                  initial={seedRows.get(index) ?? emptySeed}
+                  columns={columns}
+                  facetValues={facetValues}
+                  error={rowErrors[index]}
+                  disabled={isPending}
+                  setNameRef={setNameRef}
+                  writeCore={writeCore}
+                  writeFacet={writeFacet}
+                  focusName={focusName}
+                  addFacetValue={addFacetValue}
+                />
+              ))}
             </tbody>
           </table>
         </div>
@@ -357,7 +481,7 @@ export default function CodebookEntry({
         <div className="mt-3 flex items-center gap-3">
           <button
             type="button"
-            onClick={submit}
+            onClick={submitWithReset}
             disabled={isPending || nonEmptyCount === 0}
             className="border border-foreground px-3 py-1.5 text-sm transition hover:bg-foreground hover:text-background disabled:opacity-40"
           >
@@ -369,5 +493,483 @@ export default function CodebookEntry({
         </div>
       </section>
     </main>
+  );
+}
+
+/** Build `n` empty rows for the given columns (fresh cell bags per row). */
+function makeRows(n: number, columns: FacetColumn[]): RowData[] {
+  const rows: RowData[] = [];
+  for (let i = 0; i < n; i += 1) rows.push(emptyRow(columns));
+  return rows;
+}
+
+/** Per-mode column width (px) for layout stability + a sensible min table width. */
+function facetColWidth(mode: FacetColumn['mode']): number {
+  switch (mode) {
+    case 'enum-multi':
+      return 220;
+    case 'open-text':
+      return 220;
+    case 'boolean':
+      return 150;
+    case 'enum-single':
+    default:
+      return 180;
+  }
+}
+
+function tableMinWidth(columns: FacetColumn[]): number {
+  return 220 + 150 + 260 + columns.reduce((sum, c) => sum + facetColWidth(c.mode), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Per-row view — memoized + locally-stateful so a keystroke re-renders ONE row.
+// ---------------------------------------------------------------------------
+
+type GridRowProps = {
+  index: number;
+  initial: RowData;
+  columns: FacetColumn[];
+  facetValues: Map<string, FacetValue[]>;
+  error?: string;
+  disabled: boolean;
+  setNameRef: (index: number) => (el: HTMLTextAreaElement | null) => void;
+  writeCore: (index: number, patch: Partial<CodebookRow>) => void;
+  writeFacet: (index: number, facetId: string, cell: FacetCell) => void;
+  focusName: (index: number) => void;
+  addFacetValue: (facetId: string, label: string) => Promise<FacetValue | null>;
+};
+
+const GridRowView = memo(function GridRowView({
+  index,
+  initial,
+  columns,
+  facetValues,
+  error,
+  disabled,
+  setNameRef,
+  writeCore,
+  writeFacet,
+  focusName,
+  addFacetValue,
+}: GridRowProps) {
+  // Local mirror of this row's data; the parent ref is the durable source.
+  const [name, setName] = useState(initial.core.name);
+  const [mnemonic, setMnemonic] = useState(initial.core.mnemonic);
+  const [definition, setDefinition] = useState(initial.core.definition);
+  const [facetState, setFacetState] = useState<Record<string, FacetCell>>(initial.facets);
+
+  function commitName(v: string) {
+    setName(v);
+    writeCore(index, { name: v });
+  }
+  function commitMnemonic(v: string) {
+    setMnemonic(v);
+    writeCore(index, { mnemonic: v });
+  }
+  function commitDefinition(v: string) {
+    setDefinition(v);
+    writeCore(index, { definition: v });
+  }
+  function commitFacet(facetId: string, cell: FacetCell) {
+    setFacetState((prev) => ({ ...prev, [facetId]: cell }));
+    writeFacet(index, facetId, cell);
+  }
+
+  /** Enter → next row's Name (commit). Shift+Enter → newline (text cells only),
+   *  handled by NOT preventing default on the textarea. */
+  function onTextKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      focusName(index + 1);
+    }
+    // Shift+Enter: let the textarea insert a newline (default behavior).
+  }
+
+  return (
+    <tr className={`border-b border-foreground/10 ${error ? 'bg-red-500/5' : ''}`}>
+      <td className="align-top">
+        <textarea
+          ref={setNameRef(index)}
+          value={name}
+          rows={1}
+          disabled={disabled}
+          onChange={(e) => commitName(e.target.value)}
+          onKeyDown={onTextKeyDown}
+          placeholder="code name"
+          aria-label="Code name"
+          className="w-full resize-none bg-transparent px-3 py-1.5 outline-none focus:bg-foreground/5 disabled:opacity-50"
+        />
+        {error && <div className="px-3 pb-1 text-xs text-red-600">{error}</div>}
+      </td>
+      <td className="align-top">
+        <textarea
+          value={mnemonic}
+          rows={1}
+          disabled={disabled}
+          onChange={(e) => commitMnemonic(e.target.value)}
+          onKeyDown={onTextKeyDown}
+          placeholder="(auto)"
+          aria-label="Code mnemonic (optional)"
+          className="w-full resize-none bg-transparent px-3 py-1.5 font-mono text-xs outline-none focus:bg-foreground/5 disabled:opacity-50"
+        />
+      </td>
+      <td className="align-top">
+        <textarea
+          value={definition}
+          rows={1}
+          disabled={disabled}
+          onChange={(e) => commitDefinition(e.target.value)}
+          onKeyDown={onTextKeyDown}
+          placeholder="one-line definition (optional)"
+          aria-label="Code definition (optional)"
+          className="w-full resize-none bg-transparent px-3 py-1.5 outline-none focus:bg-foreground/5 disabled:opacity-50"
+        />
+      </td>
+      {columns.map((col) => (
+        <td key={col.facetId} className="align-top px-2 py-1">
+          <FacetCellInput
+            col={col}
+            values={facetValues.get(col.facetId) ?? []}
+            cell={facetState[col.facetId] ?? { kind: 'enum', valueIds: [] }}
+            disabled={disabled}
+            onChange={(cell) => commitFacet(col.facetId, cell)}
+            onAddValue={(label) => addFacetValue(col.facetId, label)}
+            onEnter={() => focusName(index + 1)}
+          />
+        </td>
+      ))}
+    </tr>
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Facet cell inputs, one per render mode.
+// ---------------------------------------------------------------------------
+
+function FacetCellInput({
+  col,
+  values,
+  cell,
+  disabled,
+  onChange,
+  onAddValue,
+  onEnter,
+}: {
+  col: FacetColumn;
+  values: FacetValue[];
+  cell: FacetCell;
+  disabled: boolean;
+  onChange: (cell: FacetCell) => void;
+  onAddValue: (label: string) => Promise<FacetValue | null>;
+  onEnter: () => void;
+}) {
+  switch (col.mode) {
+    case 'enum-single':
+      return (
+        <EnumSingleCell
+          values={values}
+          selected={cell.kind === 'enum' ? cell.valueIds[0] ?? '' : ''}
+          disabled={disabled}
+          onPick={(valueId) => onChange({ kind: 'enum', valueIds: valueId ? [valueId] : [] })}
+          onAddValue={onAddValue}
+        />
+      );
+    case 'enum-multi':
+      return (
+        <EnumMultiCell
+          values={values}
+          selected={cell.kind === 'enum' ? cell.valueIds : []}
+          disabled={disabled}
+          onToggle={(valueId) => {
+            const cur = cell.kind === 'enum' ? cell.valueIds : [];
+            const next = cur.includes(valueId)
+              ? cur.filter((v) => v !== valueId)
+              : [...cur, valueId];
+            onChange({ kind: 'enum', valueIds: next });
+          }}
+          onAddValue={onAddValue}
+        />
+      );
+    case 'boolean':
+      return (
+        <BooleanCell
+          value={cell.kind === 'boolean' ? cell.bool : null}
+          disabled={disabled}
+          onChange={(b) => onChange({ kind: 'boolean', bool: b })}
+        />
+      );
+    case 'open-text':
+    default:
+      return (
+        <OpenTextCell
+          value={cell.kind === 'open_text' ? cell.text : ''}
+          disabled={disabled}
+          onChange={(t) => onChange({ kind: 'open_text', text: t })}
+          onEnter={onEnter}
+        />
+      );
+  }
+}
+
+/** enum-single: a <select> of values + an "Other…" option that reveals an inline
+ *  text field to add a value (createFacetValue) and assign it. */
+function EnumSingleCell({
+  values,
+  selected,
+  disabled,
+  onPick,
+  onAddValue,
+}: {
+  values: FacetValue[];
+  selected: string;
+  disabled: boolean;
+  onPick: (valueId: string) => void;
+  onAddValue: (label: string) => Promise<FacetValue | null>;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <div className="flex flex-col gap-1">
+      <select
+        value={adding ? OTHER : selected}
+        disabled={disabled || busy}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === OTHER) setAdding(true);
+          else {
+            setAdding(false);
+            onPick(v);
+          }
+        }}
+        aria-label={`${values.length} options`}
+        className="w-full border border-foreground/15 bg-background px-2 py-1 text-sm disabled:opacity-50"
+      >
+        <option value="">—</option>
+        {values.map((v) => (
+          <option key={v.id} value={v.id}>
+            {v.label}
+          </option>
+        ))}
+        <option value={OTHER}>Other…</option>
+      </select>
+      {adding && (
+        <InlineAdd
+          disabled={disabled || busy}
+          onSubmit={async (label) => {
+            setBusy(true);
+            try {
+              const value = await onAddValue(label);
+              if (value) onPick(value.id);
+            } finally {
+              setBusy(false);
+              setAdding(false);
+            }
+          }}
+          onCancel={() => setAdding(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** enum-multi: a compact checkbox menu (chips) + "Other…" inline add. */
+function EnumMultiCell({
+  values,
+  selected,
+  disabled,
+  onToggle,
+  onAddValue,
+}: {
+  values: FacetValue[];
+  selected: string[];
+  disabled: boolean;
+  onToggle: (valueId: string) => void;
+  onAddValue: (label: string) => Promise<FacetValue | null>;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const sel = new Set(selected);
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap gap-1">
+        {values.length === 0 && <span className="text-xs text-foreground/30">no values</span>}
+        {values.map((v) => {
+          const on = sel.has(v.id);
+          return (
+            <button
+              key={v.id}
+              type="button"
+              disabled={disabled || busy}
+              aria-pressed={on}
+              onClick={() => onToggle(v.id)}
+              className={`inline-flex items-center gap-1 border px-1.5 py-0.5 text-xs transition disabled:opacity-50 ${
+                on
+                  ? 'border-foreground bg-foreground text-background'
+                  : 'border-foreground/20 hover:border-foreground'
+              }`}
+            >
+              {v.color && (
+                <span
+                  className="inline-block h-2 w-2 rounded-sm shrink-0"
+                  style={{ backgroundColor: v.color }}
+                  aria-hidden
+                />
+              )}
+              {v.label}
+            </button>
+          );
+        })}
+        {!adding && (
+          <button
+            type="button"
+            disabled={disabled || busy}
+            onClick={() => setAdding(true)}
+            className="inline-flex items-center border border-dashed border-foreground/30 px-1.5 py-0.5 text-xs hover:border-foreground transition disabled:opacity-50"
+          >
+            + Other…
+          </button>
+        )}
+      </div>
+      {adding && (
+        <InlineAdd
+          disabled={disabled || busy}
+          onSubmit={async (label) => {
+            setBusy(true);
+            try {
+              const value = await onAddValue(label);
+              if (value) onToggle(value.id);
+            } finally {
+              setBusy(false);
+              setAdding(false);
+            }
+          }}
+          onCancel={() => setAdding(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** boolean: tri-state yes / no / unset. */
+function BooleanCell({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: boolean | null;
+  disabled: boolean;
+  onChange: (b: boolean | null) => void;
+}) {
+  const opts: { label: string; v: boolean | null }[] = [
+    { label: 'unset', v: null },
+    { label: 'no', v: false },
+    { label: 'yes', v: true },
+  ];
+  return (
+    <div className="inline-flex border border-foreground/20" role="radiogroup" aria-label="yes/no">
+      {opts.map((o, i) => {
+        const on = value === o.v;
+        return (
+          <button
+            key={o.label}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            disabled={disabled}
+            onClick={() => onChange(o.v)}
+            className={`px-1.5 py-0.5 text-xs transition disabled:opacity-50 ${
+              i > 0 ? 'border-l border-foreground/20' : ''
+            } ${on ? 'bg-foreground text-background' : 'hover:bg-foreground/10'}`}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** open_text: a text input; Enter (no shift) advances to the next row's Name,
+ *  Shift+Enter is left to the textarea to insert a newline. */
+function OpenTextCell({
+  value,
+  disabled,
+  onChange,
+  onEnter,
+}: {
+  value: string;
+  disabled: boolean;
+  onChange: (t: string) => void;
+  onEnter: () => void;
+}) {
+  return (
+    <textarea
+      value={value}
+      rows={1}
+      disabled={disabled}
+      placeholder="note…"
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          onEnter();
+        }
+      }}
+      aria-label="Open response"
+      className="w-full resize-none border border-foreground/15 bg-background px-2 py-1 text-sm outline-none disabled:opacity-50"
+    />
+  );
+}
+
+/** Shared inline "type a new value" entry: Enter submits, Escape cancels. */
+function InlineAdd({
+  disabled,
+  onSubmit,
+  onCancel,
+}: {
+  disabled: boolean;
+  onSubmit: (label: string) => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState('');
+  return (
+    <span className="inline-flex items-center gap-1">
+      <input
+        autoFocus
+        value={text}
+        disabled={disabled}
+        placeholder="new value…"
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (text.trim()) onSubmit(text);
+          } else if (e.key === 'Escape') {
+            onCancel();
+          }
+        }}
+        aria-label="New value name"
+        className="w-full border border-foreground/15 bg-background px-2 py-0.5 text-xs"
+      />
+      <button
+        type="button"
+        disabled={disabled || !text.trim()}
+        onClick={() => onSubmit(text)}
+        className="border border-foreground/30 px-1.5 py-0.5 text-xs hover:bg-foreground hover:text-background transition disabled:opacity-50"
+      >
+        add
+      </button>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onCancel}
+        className="text-xs text-foreground/40 hover:text-foreground disabled:opacity-50"
+      >
+        ×
+      </button>
+    </span>
   );
 }
