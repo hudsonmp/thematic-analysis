@@ -247,7 +247,7 @@ export default function LiveFollow({
             <option value="">— pick a PID —</option>
             {participants.map((p) => (
               <option key={p.userId} value={p.pid}>
-                {p.pid}
+                {p.pid} · {p.firstName}
               </option>
             ))}
           </select>

@@ -28,19 +28,19 @@ import type { Json } from '@/lib/types/cb-db';
 // ---------------------------------------------------------------------------
 
 /** A participant for the live PID picker. `pid` is the participant label the
- *  whole live workflow keys on. We deliberately do NOT carry the subject's name:
- *  the live page identifies participants by PID + session date only (no PII on
- *  the in-the-moment surface). */
+ *  whole live workflow keys on; `firstName` rides beside it for the researcher's
+ *  recognition — PID alone is too easy to confuse mid-session. */
 export type LiveParticipant = {
   userId: string;
   pid: string;
+  firstName: string;
 };
 
 /**
  * List study participants for the PID picker, ordered by `pid`. READ-ONLY:
  * a `.select()` on the `users` table (no write). `pid` is text, so the order is
- * a lexical sort on the label (matches how PIDs read in the dropdown). Only
- * `id` + `pid` are selected — the subject's name is never read into the live UI.
+ * a lexical sort on the label (matches how PIDs read in the dropdown). Selects
+ * `id` + `pid` + `first_name` so the picker can show PID + name.
  */
 export async function listParticipants(): Promise<LiveParticipant[]> {
   await requireAuthUser();
@@ -48,13 +48,14 @@ export async function listParticipants(): Promise<LiveParticipant[]> {
 
   const { data, error } = await sb
     .from('users')
-    .select('id, pid')
+    .select('id, pid, first_name')
     .order('pid', { ascending: true });
   if (error) throw new Error(`listParticipants failed: ${error.message}`);
 
   return (data ?? []).map((u) => ({
     userId: u.id,
     pid: u.pid,
+    firstName: u.first_name,
   }));
 }
 
