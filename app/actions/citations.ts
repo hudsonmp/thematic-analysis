@@ -6,7 +6,7 @@ import type { Json, Tables, TablesInsert, TablesUpdate } from '@/lib/types/cb-db
 
 type Citation = Tables<'cb_citations'>;
 
-export type CitationRole = 'derived_from' | 'near_miss';
+export type CitationRole = 'derived_from' | 'near_miss' | 'related';
 
 /**
  * Paste a BibTeX blob and upsert each parsed entry into `cb_citations`.

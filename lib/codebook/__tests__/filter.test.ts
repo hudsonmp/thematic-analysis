@@ -3,15 +3,16 @@ import {
   matchesQuery,
   matchesEpisode,
   matchesLabel,
+  matchesCitation,
   isCodeVisible,
   filterCodes,
   type FilterableCode,
 } from '@/lib/codebook/filter';
 
 const codes: FilterableCode[] = [
-  { mnemonic: 'SPEC-GAP', name: 'Specification gap', episodeIds: ['e1', 'e2'], labelIds: ['l1'] },
-  { mnemonic: 'EDGE', name: 'Edge case', episodeIds: ['e2'], labelIds: ['l1', 'l2'] },
-  { mnemonic: 'NULL', name: 'Null handling', episodeIds: [], labelIds: [] },
+  { mnemonic: 'SPEC-GAP', name: 'Specification gap', episodeIds: ['e1', 'e2'], labelIds: ['l1'], citationIds: ['c1', 'c2'] },
+  { mnemonic: 'EDGE', name: 'Edge case', episodeIds: ['e2'], labelIds: ['l1', 'l2'], citationIds: ['c2'] },
+  { mnemonic: 'NULL', name: 'Null handling', episodeIds: [], labelIds: [], citationIds: [] },
 ];
 
 describe('matchesQuery', () => {
@@ -59,6 +60,21 @@ describe('matchesLabel', () => {
   });
 });
 
+describe('matchesCitation', () => {
+  it('matches everything when no citation filter (null)', () => {
+    expect(matchesCitation(codes[0], null)).toBe(true);
+    expect(matchesCitation(codes[2], null)).toBe(true); // even an untagged code
+  });
+
+  it('passes only codes linked to the citation (any role)', () => {
+    expect(matchesCitation(codes[0], 'c1')).toBe(true);
+    expect(matchesCitation(codes[1], 'c1')).toBe(false); // not linked to c1
+    expect(matchesCitation(codes[0], 'c2')).toBe(true);
+    expect(matchesCitation(codes[1], 'c2')).toBe(true);
+    expect(matchesCitation(codes[2], 'c2')).toBe(false); // unlinked
+  });
+});
+
 describe('isCodeVisible + filterCodes (composition)', () => {
   it('composes query AND episode AND label by logical AND', () => {
     // SPEC-GAP matches text "spec", is tagged e1, and is tagged l1 -> visible
@@ -67,6 +83,22 @@ describe('isCodeVisible + filterCodes (composition)', () => {
     expect(isCodeVisible(codes[1], 'edge', 'e1', null)).toBe(false);
     // SPEC-GAP matches text + episode but is NOT tagged l2 -> hidden by label
     expect(isCodeVisible(codes[0], 'spec', 'e1', 'l2')).toBe(false);
+  });
+
+  it('composes the citation filter by logical AND too', () => {
+    // SPEC-GAP linked to c1 -> visible; EDGE not linked to c1 -> hidden.
+    expect(isCodeVisible(codes[0], '', null, null, 'c1')).toBe(true);
+    expect(isCodeVisible(codes[1], '', null, null, 'c1')).toBe(false);
+    // SPEC-GAP matches text + episode + label but NOT citation c-nope -> hidden.
+    expect(isCodeVisible(codes[0], 'spec', 'e1', 'l1', 'c-nope')).toBe(false);
+  });
+
+  it('citation filter alone returns only linked codes', () => {
+    expect(filterCodes(codes, '', null, null, 'c1').map((c) => c.mnemonic)).toEqual(['SPEC-GAP']);
+    expect(filterCodes(codes, '', null, null, 'c2').map((c) => c.mnemonic)).toEqual([
+      'SPEC-GAP',
+      'EDGE',
+    ]);
   });
 
   it('episode filter alone returns only matching codes', () => {

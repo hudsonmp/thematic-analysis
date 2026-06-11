@@ -318,9 +318,13 @@ export default function MatrixView({
   // Empty query + NONE episode + NONE label = all codes. The pivot/cell logic
   // below operates over the filtered set, so non-matching codes simply don't
   // render in any cell or the unassigned lane.
+  //   - citation filter: when a citation is picked, only codes linked to it via
+  //     the built-in virtual "Citations" facet (reuses each code's `citationIds`
+  //     from the tree — no refetch; reflects links of any role).
   const [query, setQuery] = useState('');
   const [episodeId, setEpisodeId] = useState<string>(NONE);
   const [labelId, setLabelId] = useState<string>(NONE);
+  const [citationId, setCitationId] = useState<string>(NONE);
   const visibleCodes = useMemo(
     () =>
       filterCodes(
@@ -328,8 +332,9 @@ export default function MatrixView({
         query,
         episodeId === NONE ? null : episodeId,
         labelId === NONE ? null : labelId,
+        citationId === NONE ? null : citationId,
       ),
-    [codes, query, episodeId, labelId],
+    [codes, query, episodeId, labelId, citationId],
   );
 
   // Per code, the value-ids it carries on a given facet (intersection of the
@@ -487,7 +492,31 @@ export default function MatrixView({
                 </select>
               </label>
             )}
-            {(query.trim() || episodeId !== NONE || labelId !== NONE) && (
+            {/* Built-in virtual "Citations" facet, as a filter dimension. Backed
+                by each code's `citationIds` (already on the tree — no refetch);
+                picking a paper shows only codes linked to it (any link role). */}
+            {citations.length > 0 && (
+              <label className="flex items-center gap-2 text-sm">
+                <span className="text-foreground/60">Citation</span>
+                <select
+                  value={citationId}
+                  onChange={(e) => setCitationId(e.target.value)}
+                  aria-label="Filter codes by citation"
+                  className="border border-foreground/15 px-2 py-1 bg-background"
+                >
+                  <option value={NONE}>all</option>
+                  {citations.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.bibtex_key || c.title || c.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {(query.trim() ||
+              episodeId !== NONE ||
+              labelId !== NONE ||
+              citationId !== NONE) && (
               <span className="text-foreground/40 text-xs">
                 {visibleCodes.length} of {codes.length} match
               </span>

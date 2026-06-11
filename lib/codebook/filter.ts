@@ -11,6 +11,7 @@ export type FilterableCode = {
   name: string;
   episodeIds: string[];
   labelIds: string[];
+  citationIds: string[];
 };
 
 /**
@@ -47,21 +48,39 @@ export function matchesLabel(code: Pick<FilterableCode, 'labelIds'>, labelId: st
 }
 
 /**
+ * Whether a code is linked to the given citation (the built-in, virtual
+ * "Citations" facet — backed by cb_code_citations regardless of link role). A
+ * null `citationId` means "no citation filter applied" and matches every code
+ * (filter off). Otherwise the code passes iff `citationId` is among its
+ * `citationIds`. Mirrors `matchesEpisode`/`matchesLabel`; the citation axis
+ * (which papers a code is grounded in) is orthogonal to both.
+ */
+export function matchesCitation(
+  code: Pick<FilterableCode, 'citationIds'>,
+  citationId: string | null,
+): boolean {
+  if (!citationId) return true;
+  return code.citationIds.includes(citationId);
+}
+
+/**
  * The composed matrix filter: a code is visible iff it matches the free-text
- * query AND the (optional) episode filter AND the (optional) label filter. This
- * is the single source of truth the matrix consults before pivoting codes onto
- * the grid.
+ * query AND the (optional) episode filter AND the (optional) label filter AND
+ * the (optional) citation filter. This is the single source of truth the matrix
+ * consults before pivoting codes onto the grid.
  */
 export function isCodeVisible<C extends FilterableCode>(
   code: C,
   query: string,
   episodeId: string | null,
   labelId: string | null,
+  citationId: string | null = null,
 ): boolean {
   return (
     matchesQuery(code, query) &&
     matchesEpisode(code, episodeId) &&
-    matchesLabel(code, labelId)
+    matchesLabel(code, labelId) &&
+    matchesCitation(code, citationId)
   );
 }
 
@@ -71,6 +90,7 @@ export function filterCodes<C extends FilterableCode>(
   query: string,
   episodeId: string | null,
   labelId: string | null,
+  citationId: string | null = null,
 ): C[] {
-  return codes.filter((c) => isCodeVisible(c, query, episodeId, labelId));
+  return codes.filter((c) => isCodeVisible(c, query, episodeId, labelId, citationId));
 }

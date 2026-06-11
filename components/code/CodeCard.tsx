@@ -180,6 +180,8 @@ export default function CodeCard({
             codeId={code.id}
             facets={facets}
             selectedValueIds={code.facetValueIds}
+            citations={citations}
+            linkedCitationIds={code.citationIds}
           />
         )}
         {tab === 'citations' && (
