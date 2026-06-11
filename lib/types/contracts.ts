@@ -7,30 +7,6 @@ export const EpisodeRef = z.object({
   span: z.tuple([z.number(), z.number()]).optional(),
 });
 
-/**
- * A coding reference anchored to a session RECORDING's clock — distinct from
- * `EpisodeRef` (which keys into authored study episodes by module/scenario/phase).
- * It carries: `span` as `[startMs, endMs]` on the recording clock, and
- * `segment_idxs` recording which transcript segments the researcher brushed (so
- * the highlight is reconstructible even if the SRT is re-parsed). `user_id`/
- * `study_id` may be null (a recording can exist before its participant is
- * resolved in `users`).
- *
- * NOTE: the original `cb_codings` store that consumed this shape was retired in
- * favor of the annotation model (`cb_annotations` + `cb_annotation_codes`). The
- * schema is retained for its contract test and potential reuse; it has no live
- * consumer today.
- */
-export const RecordingRef = z.object({
-  kind: z.literal('recording'),
-  user_id: z.string().nullable(),
-  study_id: z.string().nullable(),
-  pid: z.string(),
-  span: z.tuple([z.number(), z.number()]),     // [startMs, endMs] on the recording clock
-  segment_idxs: z.array(z.number().int()).optional(),
-});
-export type RecordingRefT = z.infer<typeof RecordingRef>;
-
 export const Exemplar = z.object({
   text: z.string().min(1),
   source_pid: z.string().optional(),
