@@ -4,7 +4,10 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { createBrowser } from '@/lib/supabase/browser';
 import { resumableUpload, FileTooLargeError } from '@/lib/storage/resumable-upload';
-import { createSessionFromUpload } from '@/app/actions/sessions';
+import {
+  createSessionFromUpload,
+  startDriveVideoUpload,
+} from '@/app/actions/sessions';
 
 // ---------------------------------------------------------------------------
 // Zoom-folder upload UI.
@@ -14,11 +17,54 @@ import { createSessionFromUpload } from '@/app/actions/sessions';
 // group files by the PID folder (the second path segment), and for each PID
 // find its `<pid>_transcript.srt`, `video*.mp4`, and `audio*.m4a`.
 //
-// On submit, PER PID: mint a `crypto.randomUUID()` sessionId, upload media via
-// the TUS resumable path (large files; progress) and the SRT via standard upload
-// (small), read the SRT text client-side, then call `createSessionFromUpload`
-// (a server action) to insert the cb_ rows. Media land at `recordings/<id>/…`.
+// On submit, PER PID: mint a `crypto.randomUUID()` sessionId, then upload media:
+//   - VIDEO → Google Drive (Supabase's free plan caps a single upload at 50MB).
+//     We ask the server for a Drive resumable-session URL and PUT the file body
+//     directly to Drive from the browser (XHR → progress), keeping the large
+//     video off our server. Drive returns the created file's `id`.
+//   - AUDIO → Supabase Storage via the TUS resumable path (progress).
+//   - SRT   → Supabase Storage via the standard upload (small).
+// Then read the SRT text client-side and call `createSessionFromUpload` (a
+// server action) to insert the cb_ rows, passing the Drive file id for video.
+// Audio/SRT land at `recordings/<id>/…`.
 // ---------------------------------------------------------------------------
+
+/**
+ * PUT a file body directly to a Google Drive resumable-session URL and resolve
+ * the created file's id. A single PUT of the whole body completes a resumable
+ * session; Drive replies `200`/`201` with the file JSON (`{ id, … }`). Progress
+ * is reported via the XHR upload progress event.
+ */
+function putToDriveResumable(
+  uploadUrl: string,
+  file: File,
+  onProgress: (uploaded: number, total: number) => void,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', uploadUrl, true);
+    xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const json = JSON.parse(xhr.responseText) as { id?: string };
+          if (json.id) resolve(json.id);
+          else reject(new Error('Drive upload returned no file id'));
+        } catch {
+          reject(new Error('Drive upload returned an unparseable response'));
+        }
+      } else {
+        reject(new Error(`Drive upload failed (${xhr.status})`));
+      }
+    };
+    xhr.onerror = () =>
+      reject(new Error('Drive upload network error (possible CORS block)'));
+    xhr.send(file);
+  });
+}
 
 const SRT_RE = /_transcript\.srt$/i;
 const VIDEO_RE = /^video.*\.mp4$/i;
@@ -108,18 +154,24 @@ export default function UploadSession() {
 
     const sessionId = crypto.randomUUID();
     const base = sessionId;
-    let videoPath: string | null = null;
+    const videoPath: string | null = null;
     let audioPath: string | null = null;
+    let driveFileId: string | null = null;
+    let videoSource: 'supabase' | 'drive' = 'supabase';
     const srtPath = `${base}/transcript.srt`;
 
     try {
-      // Media → TUS resumable (large; progress). SRT → standard (small).
+      // VIDEO → Google Drive (off-server, bypasses Supabase's 50MB cap). Open a
+      // resumable session server-side, then PUT the bytes browser-direct.
       if (video) {
-        videoPath = `${base}/video.mp4`;
-        await resumableUpload(supabase, 'recordings', videoPath, video, (u, t) =>
+        const { uploadUrl } = await startDriveVideoUpload({ filename: video.name });
+        driveFileId = await putToDriveResumable(uploadUrl, video, (u, t) =>
           setPct(pid, 'video', Math.round((u / t) * 100)),
         );
+        videoSource = 'drive';
       }
+
+      // AUDIO → Supabase Storage via TUS resumable (large; progress).
       if (audio) {
         audioPath = `${base}/audio.m4a`;
         await resumableUpload(supabase, 'recordings', audioPath, audio, (u, t) =>
@@ -147,6 +199,8 @@ export default function UploadSession() {
         videoPath,
         audioPath,
         srtPath,
+        driveFileId,
+        videoSource,
       });
 
       return { pid, ok: true, sessionId: id, segmentCount };

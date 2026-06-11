@@ -824,6 +824,7 @@ export type Database = {
           collection: string
           created_at: string
           created_by: string | null
+          drive_file_id: string | null
           duration_ms: number | null
           id: string
           pid_label: string
@@ -831,12 +832,14 @@ export type Database = {
           srt_path: string | null
           track_mode: string
           video_path: string | null
+          video_source: string
         }
         Insert: {
           audio_path?: string | null
           collection?: string
           created_at?: string
           created_by?: string | null
+          drive_file_id?: string | null
           duration_ms?: number | null
           id?: string
           pid_label: string
@@ -844,12 +847,14 @@ export type Database = {
           srt_path?: string | null
           track_mode?: string
           video_path?: string | null
+          video_source?: string
         }
         Update: {
           audio_path?: string | null
           collection?: string
           created_at?: string
           created_by?: string | null
+          drive_file_id?: string | null
           duration_ms?: number | null
           id?: string
           pid_label?: string
@@ -857,6 +862,7 @@ export type Database = {
           srt_path?: string | null
           track_mode?: string
           video_path?: string | null
+          video_source?: string
         }
         Relationships: []
       }

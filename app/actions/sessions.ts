@@ -4,6 +4,36 @@ import { notFound } from 'next/navigation';
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { parseSrt, type Segment } from '@/lib/transcript/srt';
+import {
+  ensureRecordingsFolder,
+  createDriveResumableUpload,
+} from '@/lib/google/drive';
+
+/**
+ * Begin a browser-direct video upload to Google Drive.
+ *
+ * Video lives in Drive (Supabase's free plan caps a single upload at 50MB).
+ * We find-or-create the `thematic-analysis-recordings` folder and open a Drive
+ * RESUMABLE upload session, returning its one-time `uploadUrl`. The BROWSER then
+ * PUTs the whole video file body to that URL, so the bytes never transit our
+ * server. Drive replies with the created file JSON; the browser extracts `id`
+ * and passes it to `createSessionFromUpload` as `driveFileId`.
+ *
+ * Researcher-gated. The Drive OAuth credentials are server-only — the browser
+ * only ever sees the opaque session URL.
+ */
+export async function startDriveVideoUpload({
+  filename,
+}: {
+  filename: string;
+}): Promise<{ uploadUrl: string }> {
+  await requireAuthUser();
+
+  const name = (filename ?? '').trim() || 'video.mp4';
+  const folderId = await ensureRecordingsFolder();
+  const uploadUrl = await createDriveResumableUpload(name, 'video/mp4', folderId);
+  return { uploadUrl };
+}
 
 /**
  * Ingest a single uploaded Zoom-folder session into Postgres.
@@ -37,6 +67,8 @@ export async function createSessionFromUpload({
   videoPath,
   audioPath,
   srtPath,
+  driveFileId,
+  videoSource,
   recordingStartedAt,
 }: {
   sessionId: string;
@@ -46,6 +78,8 @@ export async function createSessionFromUpload({
   videoPath: string | null;
   audioPath: string | null;
   srtPath: string | null;
+  driveFileId?: string | null;
+  videoSource?: 'supabase' | 'drive';
   recordingStartedAt?: string | null;
 }): Promise<{ sessionId: string; segmentCount: number }> {
   // --- Validate inputs. The SRT is mandatory: it is the transcript the whole
@@ -59,6 +93,13 @@ export async function createSessionFromUpload({
   if (!pid) throw new Error('createSessionFromUpload: pidLabel is required.');
 
   const coll = (collection ?? '').trim() || 'uncategorized';
+
+  // Video backend: 'drive' iff explicitly requested AND a Drive file id is
+  // present; otherwise 'supabase'. Guards against a half-specified Drive upload
+  // persisting a 'drive' row with no file id (which the media route can't serve).
+  const driveId = (driveFileId ?? '').trim() || null;
+  const resolvedVideoSource: 'supabase' | 'drive' =
+    videoSource === 'drive' && driveId ? 'drive' : 'supabase';
 
   if (typeof srtText !== 'string' || srtText.trim() === '') {
     throw new Error('createSessionFromUpload: srtText is required (missing SRT).');
@@ -91,9 +132,12 @@ export async function createSessionFromUpload({
       pid_label: pid,
       collection: coll,
       track_mode: trackMode,
-      video_path: videoPath ?? null,
+      // Drive video carries no Storage path; persist the Drive file id + source.
+      video_path: resolvedVideoSource === 'drive' ? null : (videoPath ?? null),
       audio_path: audioPath ?? null,
       srt_path: srtPath ?? null,
+      drive_file_id: driveId,
+      video_source: resolvedVideoSource,
       duration_ms: durationMs,
       recording_started_at: recordingStartedAt ?? null,
       created_by: user.id,
