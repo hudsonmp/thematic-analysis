@@ -8,6 +8,7 @@ type NavLink = { href: string; label: string };
 
 const LINKS: NavLink[] = [
   { href: '/', label: 'Scheme' },
+  { href: '/sessions/live', label: 'Live' },
   { href: '/sessions', label: 'Sessions' },
   { href: '/episodes', label: 'Episodes' },
   { href: '/flag-types', label: 'Flags' },
@@ -33,8 +34,16 @@ export default function CodebookNav({
 }) {
   const pathname = usePathname();
 
-  const isActive = (href: string) =>
-    href === '/' ? pathname === '/' : pathname.startsWith(href);
+  const isActive = (href: string) => {
+    if (href === '/') return pathname === '/';
+    if (!pathname.startsWith(href)) return false;
+    // Don't let a shorter prefix steal the highlight from a more specific
+    // sibling link (e.g. `/sessions` must NOT light up on `/sessions/live`,
+    // which has its own nav entry). Active iff no longer nav href also matches.
+    return !LINKS.some(
+      (l) => l.href !== href && l.href.startsWith(href) && pathname.startsWith(l.href),
+    );
+  };
 
   return (
     <header className="border-b border-foreground/15">
