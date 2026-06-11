@@ -2,6 +2,7 @@
 
 import { cbFrom } from '@/lib/supabase/guard';
 import { type FacetType, DEFAULT_FACET_TYPE } from '@/lib/codebook/facet-types';
+import { autoColor } from '@/lib/codebook/color';
 import type { Tables } from '@/lib/types/cb-db';
 
 type Facet = Tables<'cb_facets'>;
@@ -83,6 +84,13 @@ export async function deleteFacet(facetId: string): Promise<void> {
 // Facet values
 // ---------------------------------------------------------------------------
 
+/**
+ * Create a value under a facet. `position` is appended after the facet's current
+ * max value position. `color` is an optional hex override; when omitted/empty it
+ * is AUTO-ASSIGNED from the within-facet `position` via `autoColor`, so the
+ * researcher never picks one and no two values on the SAME facet share (or sit
+ * perceptually close to) a color. Returns the inserted row.
+ */
 export async function createFacetValue(
   facetId: string,
   { key, label, description, color }: { key: string; label: string; description?: string; color?: string },
@@ -94,7 +102,8 @@ export async function createFacetValue(
       key,
       label,
       description: description ?? null,
-      color: color ?? null,
+      // Explicit caller color wins; otherwise auto-assign by group position.
+      color: color?.trim() || autoColor(position),
       position,
     })
     .select('*')

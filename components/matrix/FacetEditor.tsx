@@ -39,9 +39,11 @@ export default function FacetEditor({
   const [fCard, setFCard] = useState<Cardinality>('single');
   const [fType, setFType] = useState<FacetType>('enum');
 
-  // per-facet new-value drafts, keyed by facet id
+  // per-facet new-value drafts, keyed by facet id. No color in the draft: a new
+  // value's color is auto-assigned server-side (golden-angle by its position),
+  // so the researcher never picks one when adding a value.
   const [valueDrafts, setValueDrafts] = useState<
-    Record<string, { key: string; label: string; color: string }>
+    Record<string, { key: string; label: string }>
   >({});
 
   function run(fn: () => Promise<unknown>) {
@@ -57,9 +59,9 @@ export default function FacetEditor({
   }
 
   function draftFor(facetId: string) {
-    return valueDrafts[facetId] ?? { key: '', label: '', color: '' };
+    return valueDrafts[facetId] ?? { key: '', label: '' };
   }
-  function setDraft(facetId: string, patch: Partial<{ key: string; label: string; color: string }>) {
+  function setDraft(facetId: string, patch: Partial<{ key: string; label: string }>) {
     setValueDrafts((prev) => ({
       ...prev,
       [facetId]: { ...draftFor(facetId), ...patch },
@@ -195,14 +197,6 @@ export default function FacetEditor({
                   className="border border-foreground/15 px-2 py-1 text-xs bg-background"
                   aria-label={`New value label for ${facet.label}`}
                 />
-                <input
-                  type="color"
-                  value={draftFor(facet.id).color || '#cccccc'}
-                  onChange={(e) => setDraft(facet.id, { color: e.target.value })}
-                  disabled={isPending}
-                  className="h-6 w-6 border border-foreground/15 bg-background p-0"
-                  aria-label={`New value color for ${facet.label}`}
-                />
                 <button
                   type="button"
                   disabled={isPending}
@@ -215,18 +209,18 @@ export default function FacetEditor({
                       return;
                     }
                     run(async () => {
-                      await createFacetValue(facet.id, {
-                        key,
-                        label,
-                        color: d.color || undefined,
-                      });
-                      setValueDrafts((prev) => ({ ...prev, [facet.id]: { key: '', label: '', color: '' } }));
+                      // No color passed → auto-assigned by position server-side.
+                      await createFacetValue(facet.id, { key, label });
+                      setValueDrafts((prev) => ({ ...prev, [facet.id]: { key: '', label: '' } }));
                     });
                   }}
                   className="border border-foreground/30 px-2 py-1 text-xs hover:bg-foreground hover:text-background transition disabled:opacity-50"
                 >
                   Add value
                 </button>
+                <span className="self-center text-[11px] text-foreground/40">
+                  color auto-assigned
+                </span>
               </div>
               </>)}
             </div>

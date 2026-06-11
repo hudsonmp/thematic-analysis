@@ -2,6 +2,7 @@
 
 import { cbFrom } from '@/lib/supabase/guard';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
+import { autoColor } from '@/lib/codebook/color';
 import type { Tables } from '@/lib/types/cb-db';
 
 type FlagType = Tables<'cb_flag_types'>;
@@ -37,7 +38,10 @@ export async function listFlagTypes(codebookId: string): Promise<FlagType[]> {
 /**
  * Create a flag type under a codebook. `position` is appended after the current
  * max so a new flag lands at the end of the ordered list. `color` is an optional
- * hex string for the swatch. Returns the inserted row.
+ * hex override; when omitted/empty it is AUTO-ASSIGNED from the within-codebook
+ * `position` via `autoColor`, so the researcher never picks one and no two flag
+ * types in the codebook share (or sit perceptually close to) a color. Returns
+ * the inserted row.
  */
 export async function createFlagType(
   codebookId: string,
@@ -52,7 +56,8 @@ export async function createFlagType(
     .insert({
       codebook_id: codebookId,
       label: trimmed,
-      color: color?.trim() || null,
+      // Explicit caller color wins; otherwise auto-assign by group position.
+      color: color?.trim() || autoColor(position),
       position,
     })
     .select('*')

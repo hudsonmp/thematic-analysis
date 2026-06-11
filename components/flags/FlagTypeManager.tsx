@@ -39,9 +39,9 @@ export default function FlagTypeManager({
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
-  // new-flag form
+  // new-flag form. No color input: a new flag's color is auto-assigned
+  // server-side (golden-angle by its position), so the researcher never picks.
   const [label, setLabel] = useState('');
-  const [color, setColor] = useState('#c0392b');
 
   function run(fn: () => Promise<unknown>) {
     setError(null);
@@ -180,17 +180,6 @@ export default function FlagTypeManager({
               aria-label="New flag label"
             />
           </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[11px] text-foreground/50">color</span>
-            <input
-              type="color"
-              value={color}
-              onChange={(e) => setColor(e.target.value)}
-              disabled={isPending}
-              className="h-8 w-12 cursor-pointer border border-foreground/15 bg-background p-0.5"
-              aria-label="New flag color"
-            />
-          </label>
           <button
             type="button"
             disabled={isPending}
@@ -201,15 +190,18 @@ export default function FlagTypeManager({
                 return;
               }
               run(async () => {
-                await createFlagType(codebookId, { label: l, color });
+                // No color passed → auto-assigned by position server-side.
+                await createFlagType(codebookId, { label: l });
                 setLabel('');
-                setColor('#c0392b');
               });
             }}
             className="border border-foreground px-3 py-1 text-sm transition hover:bg-foreground hover:text-background disabled:opacity-50"
           >
             Add flag
           </button>
+          <span className="self-center text-[11px] text-foreground/40">
+            color auto-assigned
+          </span>
         </div>
       </div>
     </main>
