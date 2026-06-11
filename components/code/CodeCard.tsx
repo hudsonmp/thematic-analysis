@@ -10,11 +10,13 @@ import type { Tables } from '@/lib/types/cb-db';
 import AnatomyEditor from './AnatomyEditor';
 import FacetTagger from './FacetTagger';
 import CitationLinker from './CitationLinker';
+import EpisodeTagger from './EpisodeTagger';
 import VersionHistory from './VersionHistory';
 import CommentThread from './CommentThread';
 
 type CodeVersion = Tables<'cb_code_versions'>;
 type Citation = Tables<'cb_citations'>;
+type CbEpisode = Tables<'cb_episodes'>;
 type CoderComment = Tables<'cb_coder_comments'>;
 
 const STATUSES: readonly CodeStatus[] = ['proposed', 'active', 'merged', 'retired'];
@@ -26,12 +28,13 @@ const STATUS_COLOR: Record<string, string> = {
   retired: '#dc2626',
 };
 
-type TabKey = 'anatomy' | 'classification' | 'citations' | 'versions' | 'comments';
+type TabKey = 'anatomy' | 'classification' | 'citations' | 'episodes' | 'versions' | 'comments';
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'anatomy', label: 'Anatomy' },
   { key: 'classification', label: 'Classification' },
   { key: 'citations', label: 'Citations' },
+  { key: 'episodes', label: 'Episodes' },
   { key: 'versions', label: 'Versions' },
   { key: 'comments', label: 'Comments' },
 ];
@@ -46,6 +49,7 @@ export default function CodeCard({
   code,
   facets,
   citations,
+  cbEpisodes,
   versions,
   comments,
   episodes,
@@ -53,6 +57,7 @@ export default function CodeCard({
   code: CodeWithRefs;
   facets: FacetWithValues[];
   citations: Citation[];
+  cbEpisodes: CbEpisode[];
   versions: CodeVersion[];
   comments: CoderComment[];
   episodes: ProtocolEpisode[];
@@ -170,6 +175,13 @@ export default function CodeCard({
             codeId={code.id}
             citations={citations}
             linkedCitationIds={code.citationIds}
+          />
+        )}
+        {tab === 'episodes' && (
+          <EpisodeTagger
+            codeId={code.id}
+            episodes={cbEpisodes}
+            selectedEpisodeIds={code.episodeIds}
           />
         )}
         {tab === 'versions' && (

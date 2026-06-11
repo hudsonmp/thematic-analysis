@@ -4,7 +4,11 @@ import { useMemo, useState, useActionState } from 'react';
 import Link from 'next/link';
 import type { CodebookTree, CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { createCodeAction, type NewCodeState } from '@/app/(protected)/actions';
+import { filterCodes } from '@/lib/codebook/filter';
+import type { Tables } from '@/lib/types/cb-db';
 import FacetEditor from './FacetEditor';
+
+type Citation = Tables<'cb_citations'>;
 
 const NONE = '__none__';
 
@@ -40,7 +44,118 @@ function CodeChip({ code }: { code: CodeWithRefs }) {
 
 const initialNewCode: NewCodeState = {};
 
-function NewCodeForm({ codebookId, origins }: { codebookId: string; origins: readonly string[] }) {
+function citationLabel(c: Citation): string {
+  const head = c.bibtex_key || c.title || c.id;
+  const meta = [c.title && c.title !== head ? c.title : null, c.authors, c.year]
+    .filter(Boolean)
+    .join(' · ');
+  return meta ? `${head} — ${meta}` : head;
+}
+
+/**
+ * Searchable, multi-select citation picker for the new-code form (Feature #9).
+ * Picked citation ids are emitted as repeated hidden `citationIds` inputs so the
+ * server action reads them via `formData.getAll('citationIds')`. The text box
+ * filters the codebook's citation library by bibtex_key / title / authors. With
+ * an empty library it shows a pointer to the Citations page; create still works.
+ */
+function CitationPicker({ citations }: { citations: Citation[] }) {
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [q, setQ] = useState('');
+
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return citations;
+    return citations.filter((c) =>
+      [c.bibtex_key, c.title, c.authors]
+        .filter(Boolean)
+        .some((field) => field!.toLowerCase().includes(needle)),
+    );
+  }, [citations, q]);
+
+  function toggle(id: string) {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  if (citations.length === 0) {
+    return (
+      <p className="text-xs text-foreground/50">
+        No citations yet —{' '}
+        <Link href="/citations" className="underline hover:text-foreground">
+          add them in Citations
+        </Link>
+        .
+      </p>
+    );
+  }
+
+  return (
+    <fieldset className="space-y-1.5">
+      <legend className="text-xs uppercase tracking-wider text-foreground/50">
+        Citations <span className="text-foreground/30 normal-case">(optional · derived from)</span>
+      </legend>
+      {/* Hidden inputs carry the picked ids into the form submission. */}
+      {[...picked].map((id) => (
+        <input key={id} type="hidden" name="citationIds" value={id} />
+      ))}
+      <input
+        type="search"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search citations by key, title, or author…"
+        aria-label="Search citations"
+        className="w-full border border-foreground/15 px-2 py-1 text-xs bg-background"
+      />
+      <div className="max-h-40 overflow-y-auto border border-foreground/10 divide-y divide-foreground/10">
+        {filtered.length === 0 && (
+          <p className="px-2 py-1.5 text-xs text-foreground/30">No citations match.</p>
+        )}
+        {filtered.map((c) => {
+          const isOn = picked.has(c.id);
+          return (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => toggle(c.id)}
+              aria-pressed={isOn}
+              className={`flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs transition ${
+                isOn ? 'bg-foreground text-background' : 'hover:bg-foreground/5'
+              }`}
+            >
+              <span
+                className={`inline-block h-3 w-3 shrink-0 border ${
+                  isOn ? 'border-background bg-background' : 'border-foreground/40'
+                }`}
+                aria-hidden
+              />
+              <span className="truncate">{citationLabel(c)}</span>
+            </button>
+          );
+        })}
+      </div>
+      {picked.size > 0 && (
+        <p className="text-xs text-foreground/40">
+          {picked.size} citation{picked.size === 1 ? '' : 's'} will link on create.
+        </p>
+      )}
+    </fieldset>
+  );
+}
+
+function NewCodeForm({
+  codebookId,
+  origins,
+  citations,
+}: {
+  codebookId: string;
+  origins: readonly string[];
+  citations: Citation[];
+}) {
   const [open, setOpen] = useState(false);
   const [state, formAction, isPending] = useActionState(createCodeAction, initialNewCode);
 
@@ -95,6 +210,7 @@ function NewCodeForm({ codebookId, origins }: { codebookId: string; origins: rea
         placeholder="one-line definition (full anatomy editable on the code page)"
         className="w-full border border-foreground/15 px-2 py-1 text-sm bg-background"
       />
+      <CitationPicker citations={citations} />
       {state.error && <p className="text-sm text-red-600">{state.error}</p>}
       <div className="flex gap-2">
         <button
@@ -139,7 +255,7 @@ const ORIGINS = ['a_priori', 'pilot', 'emergent'] as const;
  * the row facet, the col facet, or both (deduped).
  */
 export default function MatrixView({ tree }: { tree: CodebookTree }) {
-  const { codebook, facets, codes } = tree;
+  const { codebook, facets, codes, episodes, citations } = tree;
 
   const [rowFacetId, setRowFacetId] = useState<string>(facets[0]?.id ?? NONE);
   const [colFacetId, setColFacetId] = useState<string>(facets[1]?.id ?? NONE);
@@ -153,20 +269,18 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
   const rowFacet = rowFacetId === NONE ? null : facetById.get(rowFacetId) ?? null;
   const colFacet = colFacetId === NONE ? null : facetById.get(colFacetId) ?? null;
 
-  // Free-text filter on the code set: case-insensitive substring over mnemonic
-  // or name. Empty query = all codes. This is the ONLY code filter (it replaces
-  // any facet-based filtering); the pivot/cell logic below operates over the
-  // filtered set, so non-matching codes simply don't render in any cell or the
-  // unassigned lane.
+  // Code-set filters, composed by AND in `filterCodes` (lib/codebook/filter):
+  //   - free-text query: case-insensitive substring over mnemonic or name;
+  //   - episode filter: when an episode is picked, only codes tagged with it.
+  // Empty query + NONE episode = all codes. The pivot/cell logic below operates
+  // over the filtered set, so non-matching codes simply don't render in any cell
+  // or the unassigned lane.
   const [query, setQuery] = useState('');
-  const visibleCodes = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return codes;
-    return codes.filter(
-      (c) =>
-        c.mnemonic.toLowerCase().includes(q) || c.name.toLowerCase().includes(q),
-    );
-  }, [codes, query]);
+  const [episodeId, setEpisodeId] = useState<string>(NONE);
+  const visibleCodes = useMemo(
+    () => filterCodes(codes, query, episodeId === NONE ? null : episodeId),
+    [codes, query, episodeId],
+  );
 
   // Per code, the value-ids it carries on a given facet (intersection of the
   // code's tagged value-ids with that facet's value-ids).
@@ -224,7 +338,7 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
     <main className="flex-1 px-6 py-6 space-y-6">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <h1 className="text-xl font-medium tracking-tight">Scheme</h1>
-        <NewCodeForm codebookId={codebook.id} origins={ORIGINS} />
+        <NewCodeForm codebookId={codebook.id} origins={ORIGINS} citations={citations} />
       </div>
 
       <p className="max-w-3xl text-sm leading-relaxed text-foreground/60 border-l-2 border-foreground/15 pl-3">
@@ -248,7 +362,8 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
         </div>
       ) : (
         <>
-          {/* Search: free-text filter on which codes render in the grid. */}
+          {/* Filters: free-text search + episode filter, composed by AND, on
+              which codes render in the grid. */}
           <div className="flex items-center gap-3 flex-wrap">
             <input
               type="search"
@@ -258,7 +373,25 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
               aria-label="Search codes"
               className="border border-foreground/15 px-2 py-1 text-sm bg-background w-72 max-w-full"
             />
-            {query.trim() && (
+            {episodes.length > 0 && (
+              <label className="flex items-center gap-2 text-sm">
+                <span className="text-foreground/60">Episode</span>
+                <select
+                  value={episodeId}
+                  onChange={(e) => setEpisodeId(e.target.value)}
+                  aria-label="Filter codes by episode"
+                  className="border border-foreground/15 px-2 py-1 bg-background"
+                >
+                  <option value={NONE}>all</option>
+                  {episodes.map((ep) => (
+                    <option key={ep.id} value={ep.id}>
+                      {ep.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {(query.trim() || episodeId !== NONE) && (
               <span className="text-foreground/40 text-xs">
                 {visibleCodes.length} of {codes.length} match
               </span>

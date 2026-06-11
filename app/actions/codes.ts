@@ -196,3 +196,26 @@ export async function setCodeParent(codeId: string, parentCodeId: string | null)
     .eq('id', codeId);
   if (error) throw new Error(`setCodeParent failed: ${error.message}`);
 }
+
+/**
+ * Replace the full set of episode tags on a code (Feature #10): delete every
+ * existing cb_code_episodes row for the code, then insert the new set. A no-op
+ * set (empty array) just clears the tags. Mirrors `setCodeFacetValues` exactly —
+ * the junction is a (code_id, episode_id) PK, so we de-dupe to avoid a
+ * self-colliding insert. `episodeIds` are the codebook's PRESET episodes
+ * (cb_episodes) the code pertains to; they are codebook-scoped, not per-session.
+ */
+export async function setCodeEpisodes(codeId: string, episodeIds: string[]): Promise<void> {
+  const del = await cbFrom('cb_code_episodes').delete().eq('code_id', codeId);
+  if (del.error) {
+    throw new Error(`setCodeEpisodes (delete) failed: ${del.error.message}`);
+  }
+  const uniqueIds = [...new Set(episodeIds)];
+  if (uniqueIds.length === 0) return;
+  const ins = await cbFrom('cb_code_episodes').insert(
+    uniqueIds.map((episode_id) => ({ code_id: codeId, episode_id })),
+  );
+  if (ins.error) {
+    throw new Error(`setCodeEpisodes (insert) failed: ${ins.error.message}`);
+  }
+}

@@ -109,6 +109,7 @@ function fixture(): CodebookTree {
         },
         facetValueIds: ['fv-A1', 'fv-B1'],
         citationIds: ['cit-1'],
+        episodeIds: [],
       },
       {
         id: 'code-2',
@@ -124,6 +125,7 @@ function fixture(): CodebookTree {
         current: null,
         facetValueIds: [],
         citationIds: [],
+        episodeIds: [],
       },
     ],
     citations: [
@@ -141,6 +143,7 @@ function fixture(): CodebookTree {
         created_at: '2026-01-01T00:00:00Z',
       },
     ],
+    episodes: [],
   };
 }
 

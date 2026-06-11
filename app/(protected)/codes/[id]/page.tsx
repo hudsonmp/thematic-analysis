@@ -32,6 +32,7 @@ export default async function CodePage({ params }: { params: Promise<{ id: strin
       code={code}
       facets={tree.facets}
       citations={tree.citations}
+      cbEpisodes={tree.episodes}
       versions={versions}
       comments={comments}
       episodes={episodes}

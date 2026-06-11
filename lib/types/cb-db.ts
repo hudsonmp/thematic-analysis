@@ -206,6 +206,36 @@ export type Database = {
           },
         ]
       }
+      cb_code_episodes: {
+        Row: {
+          code_id: string
+          episode_id: string
+        }
+        Insert: {
+          code_id: string
+          episode_id: string
+        }
+        Update: {
+          code_id?: string
+          episode_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_code_episodes_code_id_fkey"
+            columns: ["code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_code_episodes_episode_id_fkey"
+            columns: ["episode_id"]
+            isOneToOne: false
+            referencedRelation: "cb_episodes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_code_facet_values: {
         Row: {
           code_id: string

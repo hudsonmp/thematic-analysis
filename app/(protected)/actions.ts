@@ -3,6 +3,7 @@
 import { redirect } from 'next/navigation';
 import { createCode } from '@/app/actions/codes';
 import type { CodeOrigin } from '@/app/actions/codes';
+import { linkCitation } from '@/app/actions/citations';
 import { exportCodebookJson } from '@/lib/export/json';
 
 /**
@@ -28,8 +29,15 @@ function isOrigin(value: string): value is CodeOrigin {
 /**
  * `useActionState` wrapper for the matrix's inline "New code" form. Creates a
  * code (version 1 carries only the one-line definition; the full anatomy editor
- * lands in a later task) and redirects to the new code's anatomy page. On
+ * lands in a later task), optionally links one or more citations picked in the
+ * form (Feature #9), then redirects to the new code's anatomy page. On
  * validation failure it returns `{ error }` so the client form can surface it.
+ *
+ * Citation ids arrive as repeated `citationIds` form fields (the picker emits a
+ * hidden input per picked citation). After `createCode` returns the new id we
+ * `linkCitation(newId, id, 'derived_from')` for each — sequentially so one bad
+ * id surfaces a clean error rather than an unhandled rejection. A code created
+ * with NO citations picked links nothing (the create still succeeds).
  *
  * `redirect` throws a framework control-flow signal, so nothing after it runs;
  * the trailing `return {}` exists only to satisfy the `useActionState` return
@@ -44,6 +52,15 @@ export async function createCodeAction(
   const name = (formData.get('name') ?? '').toString().trim();
   const originRaw = (formData.get('origin') ?? '').toString().trim();
   const definition = (formData.get('definition') ?? '').toString().trim();
+  // Repeated `citationIds` fields → de-duped list of citation ids to link.
+  const citationIds = [
+    ...new Set(
+      formData
+        .getAll('citationIds')
+        .map((v) => v.toString().trim())
+        .filter(Boolean),
+    ),
+  ];
 
   if (!codebookId) return { error: 'Missing codebook.' };
   if (!mnemonic) return { error: 'Mnemonic is required.' };
@@ -60,6 +77,9 @@ export async function createCodeAction(
       origin: originRaw,
       version: { definition, include_if: [], exclude_if: [], exemplars: [] },
     });
+    for (const citationId of citationIds) {
+      await linkCitation(newId, citationId, 'derived_from');
+    }
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Failed to create code.' };
   }

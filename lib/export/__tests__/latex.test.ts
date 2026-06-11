@@ -91,6 +91,7 @@ function singleCode(): CodebookTree {
         },
         facetValueIds: ['fv-A1'],
         citationIds: ['cit-1'],
+        episodeIds: [],
       },
     ],
     citations: [
@@ -108,6 +109,7 @@ function singleCode(): CodebookTree {
         created_at: NOW,
       },
     ],
+    episodes: [],
   };
 }
 
