@@ -38,12 +38,20 @@ export default async function SessionsPage() {
 
   return (
     <main className="px-6 py-6">
-      <header className="mb-4">
-        <h1 className="text-lg font-medium tracking-tight">Sessions</h1>
-        <p className="text-sm text-foreground/60">
-          Participant recordings discovered on disk. Open one to watch the video
-          with its synchronized transcript.
-        </p>
+      <header className="mb-4 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-lg font-medium tracking-tight">Sessions</h1>
+          <p className="text-sm text-foreground/60">
+            Participant recordings discovered on disk. Open one to watch the
+            video with its synchronized transcript.
+          </p>
+        </div>
+        <Link
+          href="/sessions/upload"
+          className="shrink-0 rounded border border-foreground/25 px-3 py-1.5 text-sm transition hover:bg-foreground/5"
+        >
+          Upload sessions →
+        </Link>
       </header>
 
       {rows.length === 0 ? (
