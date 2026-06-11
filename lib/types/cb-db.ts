@@ -14,6 +14,115 @@ export type Database = {
   }
   public: {
     Tables: {
+      cb_annotation_codes: {
+        Row: {
+          annotation_id: string
+          code_id: string
+        }
+        Insert: {
+          annotation_id: string
+          code_id: string
+        }
+        Update: {
+          annotation_id?: string
+          code_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_annotation_codes_annotation_id_fkey"
+            columns: ["annotation_id"]
+            isOneToOne: false
+            referencedRelation: "cb_annotations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_annotation_codes_code_id_fkey"
+            columns: ["code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_annotations: {
+        Row: {
+          anchor_status: string
+          char_end: number
+          char_start: number
+          coder_id: string
+          created_at: string
+          id: string
+          is_canonical: boolean
+          kind: string
+          prefix: string | null
+          quote_text: string | null
+          segment_id: string
+          session_id: string
+          suffix: string | null
+          t_end_ms: number
+          t_start_ms: number
+          version_id: string
+        }
+        Insert: {
+          anchor_status?: string
+          char_end?: number
+          char_start?: number
+          coder_id: string
+          created_at?: string
+          id?: string
+          is_canonical?: boolean
+          kind: string
+          prefix?: string | null
+          quote_text?: string | null
+          segment_id: string
+          session_id: string
+          suffix?: string | null
+          t_end_ms: number
+          t_start_ms: number
+          version_id: string
+        }
+        Update: {
+          anchor_status?: string
+          char_end?: number
+          char_start?: number
+          coder_id?: string
+          created_at?: string
+          id?: string
+          is_canonical?: boolean
+          kind?: string
+          prefix?: string | null
+          quote_text?: string | null
+          segment_id?: string
+          session_id?: string
+          suffix?: string | null
+          t_end_ms?: number
+          t_start_ms?: number
+          version_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_annotations_segment_id_fkey"
+            columns: ["segment_id"]
+            isOneToOne: false
+            referencedRelation: "cb_segments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_annotations_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_annotations_version_id_fkey"
+            columns: ["version_id"]
+            isOneToOne: false
+            referencedRelation: "cb_transcript_versions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_citations: {
         Row: {
           authors: string | null
