@@ -46,7 +46,7 @@ export default async function LiveFollowPage({
   // status (current step + clock anchors). Skipped when no PID is selected.
   const [observations, initialStatus] = pid
     ? await Promise.all([listObservationsForPid(pid), liveStatusForPid(pid)])
-    : [[], { stepLabel: null, latestAt: null, taskStartedAt: null }];
+    : [[], { stepLabel: null, latestAt: null, taskStartedAt: null, taskEndedAt: null }];
 
   return (
     // key={pid} remounts LiveFollow on a participant switch so its local state

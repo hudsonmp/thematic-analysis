@@ -28,18 +28,19 @@ import type { Json } from '@/lib/types/cb-db';
 // ---------------------------------------------------------------------------
 
 /** A participant for the live PID picker. `pid` is the participant label the
- *  whole live workflow keys on; `firstName` is shown beside it for the
- *  researcher's recognition only (never persisted to any cb_ row). */
+ *  whole live workflow keys on. We deliberately do NOT carry the subject's name:
+ *  the live page identifies participants by PID + session date only (no PII on
+ *  the in-the-moment surface). */
 export type LiveParticipant = {
   userId: string;
   pid: string;
-  firstName: string;
 };
 
 /**
  * List study participants for the PID picker, ordered by `pid`. READ-ONLY:
  * a `.select()` on the `users` table (no write). `pid` is text, so the order is
- * a lexical sort on the label (matches how PIDs read in the dropdown).
+ * a lexical sort on the label (matches how PIDs read in the dropdown). Only
+ * `id` + `pid` are selected — the subject's name is never read into the live UI.
  */
 export async function listParticipants(): Promise<LiveParticipant[]> {
   await requireAuthUser();
@@ -47,14 +48,13 @@ export async function listParticipants(): Promise<LiveParticipant[]> {
 
   const { data, error } = await sb
     .from('users')
-    .select('id, pid, first_name')
+    .select('id, pid')
     .order('pid', { ascending: true });
   if (error) throw new Error(`listParticipants failed: ${error.message}`);
 
   return (data ?? []).map((u) => ({
     userId: u.id,
     pid: u.pid,
-    firstName: u.first_name,
   }));
 }
 
@@ -144,6 +144,40 @@ export async function taskStartForPid(pid: string): Promise<string | null> {
   return data?.created_at ?? null;
 }
 
+/**
+ * The participant's TASK end time — the moment the live clock FREEZES.
+ *
+ * READ-ONLY. Resolves `user_id` from `users.pid`, then returns the `created_at`
+ * of the participant's LATEST `study_complete` event (the finished screen), or
+ * null when the PID is unknown or has not finished. The live clock stops ticking
+ * once this is set and the elapsed FREEZES at `study_complete − taskStart`.
+ *
+ * Mirrors `taskStartForPid`'s resolve-then-select shape, but does NOT scope to
+ * the task module: `study_complete` is a whole-study terminal event, so we take
+ * the latest one for the user regardless of `module_id`. `created_at desc,
+ * limit 1` yields the most recent without an aggregate (PostgREST has no max()).
+ */
+export async function taskEndedForPid(pid: string): Promise<string | null> {
+  await requireAuthUser();
+  const trimmed = (pid ?? '').trim();
+  if (!trimmed) return null;
+
+  const sb = createServiceRoleClient();
+  const userId = await resolveUserId(sb, trimmed);
+  if (!userId) return null;
+
+  const { data, error } = await sb
+    .from('study_events')
+    .select('created_at')
+    .eq('user_id', userId)
+    .eq('event_type', 'study_complete')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`taskEndedForPid failed: ${error.message}`);
+  return data?.created_at ?? null;
+}
+
 /** A task-module boundary event as the auto-episode derivation consumes it: the
  *  raw fields `deriveEpisodeMarks` reads (`eventType`, `payload`, `createdAt`).
  *  Only `module_start`/`step_advance` rows on the task module are returned. */
@@ -219,6 +253,10 @@ export type LiveStatus = {
   latestAt: string | null;
   /** The task `module_start` time (ISO), or null if the task hasn't started. */
   taskStartedAt: string | null;
+  /** The `study_complete` time (ISO) when the participant reached the finished
+   *  screen, or null if they haven't. When set, the live clock FREEZES at
+   *  `taskEndedAt − taskStartedAt` (no ticking past finish). */
+  taskEndedAt: string | null;
 };
 
 /**
@@ -231,11 +269,13 @@ export type LiveStatus = {
 export async function liveStatusForPid(pid: string): Promise<LiveStatus> {
   await requireAuthUser();
   const trimmed = (pid ?? '').trim();
-  if (!trimmed) return { stepLabel: null, latestAt: null, taskStartedAt: null };
+  if (!trimmed)
+    return { stepLabel: null, latestAt: null, taskStartedAt: null, taskEndedAt: null };
 
-  const [latest, taskStartedAt, modules] = await Promise.all([
+  const [latest, taskStartedAt, taskEndedAt, modules] = await Promise.all([
     latestEventForPid(trimmed),
     taskStartForPid(trimmed),
+    taskEndedForPid(trimmed),
     listStudyModules(),
   ]);
 
@@ -254,6 +294,7 @@ export async function liveStatusForPid(pid: string): Promise<LiveStatus> {
     stepLabel,
     latestAt: latest?.createdAt ?? null,
     taskStartedAt,
+    taskEndedAt,
   };
 }
 

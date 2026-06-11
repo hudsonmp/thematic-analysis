@@ -8,6 +8,7 @@ import {
   type ObservationView,
 } from '@/app/actions/observations';
 import { liveStatusForPid, type LiveStatus, type LiveParticipant } from '@/app/actions/live';
+import { formatElapsed, formatDate, observationTime } from '@/lib/live/clock';
 import type { Tables } from '@/lib/types/cb-db';
 
 type FlagType = Tables<'cb_flag_types'>;
@@ -85,12 +86,15 @@ export default function LiveFollow({
     };
   }, [pid]);
 
-  // 1 s local clock tick (only while the task is running).
+  // 1 s local clock tick — only while the task is RUNNING: it needs a start
+  // anchor and must stop once the participant has finished (`taskEndedAt` set),
+  // at which point the elapsed is frozen at `study_complete − taskStart` and no
+  // further ticking is wanted.
   useEffect(() => {
-    if (!status.taskStartedAt) return;
+    if (!status.taskStartedAt || status.taskEndedAt) return;
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
-  }, [status.taskStartedAt]);
+  }, [status.taskStartedAt, status.taskEndedAt]);
 
   // Add a flag-only observation (a tap). Optimistic: prepend a temp row, then
   // reconcile with the server row (or roll back on failure).
@@ -211,7 +215,11 @@ export default function LiveFollow({
     router.push(`/sessions/live${qs}`);
   }
 
-  const elapsedLabel = formatElapsed(status.taskStartedAt);
+  const elapsedLabel = formatElapsed(status.taskStartedAt, status.taskEndedAt);
+  const finished = status.taskEndedAt !== null;
+  // The participant's session date: prefer the task-start anchor, fall back to
+  // the latest event. Null when neither exists (then we omit the date).
+  const sessionDate = formatDate(status.taskStartedAt ?? status.latestAt);
 
   return (
     <main className="px-6 py-6">
@@ -239,7 +247,7 @@ export default function LiveFollow({
             <option value="">— pick a PID —</option>
             {participants.map((p) => (
               <option key={p.userId} value={p.pid}>
-                {p.pid} · {p.firstName}
+                {p.pid}
               </option>
             ))}
           </select>
@@ -270,13 +278,32 @@ export default function LiveFollow({
                 )}
               </div>
             </div>
+            {/* Session date — identifies the participant by PID + date, never a
+                name (no PII on the live surface). Omitted when we have no
+                timestamp to derive it from. */}
+            {sessionDate && (
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-foreground/50">
+                  session
+                </div>
+                <div className="font-mono text-sm">{sessionDate}</div>
+              </div>
+            )}
             <div>
               <div className="text-[11px] uppercase tracking-wider text-foreground/50">
                 task clock
               </div>
-              <div className="font-mono text-sm">
+              <div className="flex items-center gap-2 font-mono text-sm">
                 {elapsedLabel ?? (
                   <span className="text-foreground/40">task not started</span>
+                )}
+                {finished && (
+                  <span
+                    className="text-xs text-green-700 dark:text-green-400"
+                    title="Participant reached the finished screen"
+                  >
+                    ✓ finished
+                  </span>
                 )}
               </div>
             </div>
@@ -421,42 +448,4 @@ export default function LiveFollow({
       )}
     </main>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Formatting
-// ---------------------------------------------------------------------------
-
-/** Format `now − taskStart` as `mm:ss` (minutes uncapped). Null when there is
- *  no task-start anchor (clock not running). Negative (clock skew) clamps to 0. */
-function formatElapsed(taskStartedAt: string | null): string | null {
-  if (!taskStartedAt) return null;
-  const startMs = Date.parse(taskStartedAt);
-  if (Number.isNaN(startMs)) return null;
-  return mmss(Math.max(0, Date.now() - startMs));
-}
-
-/** An observation's clock-relative time: `created_at − taskStart` as `mm:ss`
- *  when the anchor exists, else the wall-clock time of day (no anchor yet). */
-function observationTime(createdAt: string, taskStartedAt: string | null): string {
-  const createdMs = Date.parse(createdAt);
-  if (Number.isNaN(createdMs)) return '—';
-  if (taskStartedAt) {
-    const startMs = Date.parse(taskStartedAt);
-    if (!Number.isNaN(startMs)) return mmss(Math.max(0, createdMs - startMs));
-  }
-  // No anchor: show the wall time so the row is still locatable.
-  return new Date(createdMs).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-}
-
-/** Milliseconds → `mm:ss` (minutes uncapped past 60). */
-function mmss(ms: number): string {
-  const total = Math.floor(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
