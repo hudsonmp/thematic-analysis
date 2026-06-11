@@ -153,6 +153,21 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
   const rowFacet = rowFacetId === NONE ? null : facetById.get(rowFacetId) ?? null;
   const colFacet = colFacetId === NONE ? null : facetById.get(colFacetId) ?? null;
 
+  // Free-text filter on the code set: case-insensitive substring over mnemonic
+  // or name. Empty query = all codes. This is the ONLY code filter (it replaces
+  // any facet-based filtering); the pivot/cell logic below operates over the
+  // filtered set, so non-matching codes simply don't render in any cell or the
+  // unassigned lane.
+  const [query, setQuery] = useState('');
+  const visibleCodes = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return codes;
+    return codes.filter(
+      (c) =>
+        c.mnemonic.toLowerCase().includes(q) || c.name.toLowerCase().includes(q),
+    );
+  }, [codes, query]);
+
   // Per code, the value-ids it carries on a given facet (intersection of the
   // code's tagged value-ids with that facet's value-ids).
   const valueIdsOnFacet = useMemo(() => {
@@ -160,7 +175,7 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
     for (const f of facets) facetValueSet.set(f.id, new Set(f.values.map((v) => v.id)));
 
     const map = new Map<string, Map<string, string[]>>(); // codeId -> facetId -> valueIds
-    for (const code of codes) {
+    for (const code of visibleCodes) {
       const perFacet = new Map<string, string[]>();
       const tagged = new Set(code.facetValueIds);
       for (const f of facets) {
@@ -171,7 +186,7 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
       map.set(code.id, perFacet);
     }
     return map;
-  }, [codes, facets]);
+  }, [visibleCodes, facets]);
 
   function valuesFor(codeId: string, facetId: string): string[] {
     return valueIdsOnFacet.get(codeId)?.get(facetId) ?? [];
@@ -184,7 +199,7 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
 
   // codes that land in cell (rowValueId, colValueId).
   function codesInCell(rowValueId: string, colValueId: string): CodeWithRefs[] {
-    return codes.filter((code) => {
+    return visibleCodes.filter((code) => {
       const rowOk = !rowFacet || valuesFor(code.id, rowFacet.id).includes(rowValueId);
       const colOk = !colFacet || valuesFor(code.id, colFacet.id).includes(colValueId);
       return rowOk && colOk;
@@ -193,14 +208,14 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
 
   // Unassigned: missing a value on a selected axis facet.
   const unassigned = useMemo(() => {
-    return codes.filter((code) => {
+    return visibleCodes.filter((code) => {
       const rowMissing = rowFacet ? valuesFor(code.id, rowFacet.id).length === 0 : false;
       const colMissing = colFacet ? valuesFor(code.id, colFacet.id).length === 0 : false;
       return rowMissing || colMissing;
     });
     // valuesFor is derived from valueIdsOnFacet; deps captured via that + facets.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [codes, rowFacet, colFacet, valueIdsOnFacet]);
+  }, [visibleCodes, rowFacet, colFacet, valueIdsOnFacet]);
 
   const noFacets = facets.length === 0;
   const noCodes = codes.length === 0;
@@ -211,6 +226,16 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
         <h1 className="text-xl font-medium tracking-tight">Scheme</h1>
         <NewCodeForm codebookId={codebook.id} origins={ORIGINS} />
       </div>
+
+      <p className="max-w-3xl text-sm leading-relaxed text-foreground/60 border-l-2 border-foreground/15 pl-3">
+        A <span className="font-medium text-foreground/80">facet</span> is a
+        dimension you organize codes by (e.g.{' '}
+        <span className="font-mono text-foreground/70">Stage</span>,{' '}
+        <span className="font-mono text-foreground/70">Locus</span>). Each facet
+        has <span className="font-medium text-foreground/80">values</span> (e.g.{' '}
+        Monitor, Diagnose). Tag codes with values, then pivot the matrix by any
+        two facets.
+      </p>
 
       <FacetEditor codebookId={codebook.id} facets={facets} />
 
@@ -223,6 +248,23 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
         </div>
       ) : (
         <>
+          {/* Search: free-text filter on which codes render in the grid. */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search codes by mnemonic or name…"
+              aria-label="Search codes"
+              className="border border-foreground/15 px-2 py-1 text-sm bg-background w-72 max-w-full"
+            />
+            {query.trim() && (
+              <span className="text-foreground/40 text-xs">
+                {visibleCodes.length} of {codes.length} match
+              </span>
+            )}
+          </div>
+
           {/* Axis selectors */}
           <div className="flex items-center gap-6 text-sm flex-wrap">
             <label className="flex items-center gap-2">

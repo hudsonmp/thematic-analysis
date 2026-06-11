@@ -215,33 +215,59 @@ export default function FacetEditor({
           {/* Add facet */}
           <div className="border-t border-foreground/10 pt-4">
             <p className="text-xs uppercase tracking-wider text-foreground/50 mb-2">New facet</p>
-            <div className="flex items-center gap-2 flex-wrap">
-              <input
-                value={fKey}
-                onChange={(e) => setFKey(e.target.value)}
-                placeholder="key (e.g. phase)"
-                disabled={isPending}
-                className="border border-foreground/15 px-2 py-1 text-sm bg-background w-40"
-                aria-label="New facet key"
-              />
-              <input
-                value={fLabel}
-                onChange={(e) => setFLabel(e.target.value)}
-                placeholder="label"
-                disabled={isPending}
-                className="border border-foreground/15 px-2 py-1 text-sm bg-background"
-                aria-label="New facet label"
-              />
-              <select
-                value={fCard}
-                onChange={(e) => setFCard(e.target.value as Cardinality)}
-                disabled={isPending}
-                className="border border-foreground/15 px-2 py-1 text-sm bg-background"
-                aria-label="New facet cardinality"
-              >
-                <option value="single">single</option>
-                <option value="multi">multi</option>
-              </select>
+            <div className="flex items-end gap-2 flex-wrap">
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] text-foreground/50">
+                  key{' '}
+                  <span className="text-foreground/35">
+                    — machine id: lowercase, no spaces (e.g.{' '}
+                    <span className="font-mono">stage</span>)
+                  </span>
+                </span>
+                <input
+                  value={fKey}
+                  onChange={(e) => setFKey(e.target.value)}
+                  placeholder="stage"
+                  disabled={isPending}
+                  title="Machine id — lowercase, no spaces (e.g. stage). Used internally; not shown in the matrix."
+                  className="border border-foreground/15 px-2 py-1 text-sm bg-background w-40 font-mono"
+                  aria-label="New facet key"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] text-foreground/50">
+                  label{' '}
+                  <span className="text-foreground/35">
+                    — display name (e.g. Stage)
+                  </span>
+                </span>
+                <input
+                  value={fLabel}
+                  onChange={(e) => setFLabel(e.target.value)}
+                  placeholder="Stage"
+                  disabled={isPending}
+                  title="Display name shown in the matrix axes (e.g. Stage)."
+                  className="border border-foreground/15 px-2 py-1 text-sm bg-background"
+                  aria-label="New facet label"
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] text-foreground/50">
+                  cardinality{' '}
+                  <span className="text-foreground/35">— values per code</span>
+                </span>
+                <select
+                  value={fCard}
+                  onChange={(e) => setFCard(e.target.value as Cardinality)}
+                  disabled={isPending}
+                  title="single = a code gets at most ONE value on this facet (radio). multi = a code can carry SEVERAL values (checkboxes)."
+                  className="border border-foreground/15 px-2 py-1 text-sm bg-background"
+                  aria-label="New facet cardinality"
+                >
+                  <option value="single">single — at most one value (radio)</option>
+                  <option value="multi">multi — several values (checkboxes)</option>
+                </select>
+              </label>
               <button
                 type="button"
                 disabled={isPending}
