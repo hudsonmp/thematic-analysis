@@ -66,6 +66,21 @@ export async function addCitations(
   return { inserted: entries.length, entries };
 }
 
+/**
+ * Resolve a single citation by id, or null if it doesn't exist. Used by the
+ * "code from citation" deductive-coding surface to render the bound-mode banner
+ * ("Deriving codes from: <bibtex_key / title>") from a `fromCitation` param.
+ * Returns null rather than throwing on a stale/unknown id so the surface can
+ * silently fall back to the unbound form instead of 500-ing.
+ */
+export async function getCitation(citationId: string): Promise<Citation | null> {
+  const res = await cbFrom('cb_citations').select('*').eq('id', citationId).maybeSingle();
+  if (res.error) {
+    throw new Error(`getCitation failed: ${res.error.message}`);
+  }
+  return res.data ?? null;
+}
+
 /** List a codebook's citations, oldest first (paste order). */
 export async function listCitations(codebookId: string): Promise<Citation[]> {
   const res = await cbFrom('cb_citations')

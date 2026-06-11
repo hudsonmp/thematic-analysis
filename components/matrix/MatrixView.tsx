@@ -151,12 +151,22 @@ function NewCodeForm({
   codebookId,
   origins,
   citations,
+  boundCitation,
 }: {
   codebookId: string;
   origins: readonly string[];
   citations: Citation[];
+  /**
+   * When set, the form is in "code from citation" (deductive) mode: every code
+   * created auto-links `derived_from` to this paper and defaults origin to
+   * `a_priori`. The binding persists across successive creates (the action
+   * redirects back to `/?fromCitation=<id>`), so the form auto-opens here and
+   * shows the locked citation instead of the multi-select picker.
+   */
+  boundCitation: Citation | null;
 }) {
-  const [open, setOpen] = useState(false);
+  const bound = boundCitation !== null;
+  const [open, setOpen] = useState(bound);
   const [state, formAction, isPending] = useActionState(createCodeAction, initialNewCode);
 
   if (!open) {
@@ -177,6 +187,12 @@ function NewCodeForm({
       className="border border-foreground/20 p-3 space-y-2 max-w-xl"
     >
       <input type="hidden" name="codebookId" value={codebookId} />
+      {/* Bound mode: carry the paper id so the action redirects back to
+          /?fromCitation=<id> (binding persists across creates). The single
+          hidden citationIds input guarantees the derived_from link without the
+          multi-select picker — and avoids any double-link. */}
+      {bound && <input type="hidden" name="fromCitation" value={boundCitation.id} />}
+      {bound && <input type="hidden" name="citationIds" value={boundCitation.id} />}
       <div className="flex gap-2 flex-wrap">
         <input
           name="mnemonic"
@@ -192,7 +208,7 @@ function NewCodeForm({
         />
         <select
           name="origin"
-          defaultValue="emergent"
+          defaultValue={bound ? 'a_priori' : 'emergent'}
           className="border border-foreground/15 px-2 py-1 text-sm bg-background"
           aria-label="Code origin"
         >
@@ -210,7 +226,18 @@ function NewCodeForm({
         placeholder="one-line definition (full anatomy editable on the code page)"
         className="w-full border border-foreground/15 px-2 py-1 text-sm bg-background"
       />
-      <CitationPicker citations={citations} />
+      {bound ? (
+        <p className="text-xs text-foreground/50">
+          Linking{' '}
+          <span className="font-medium text-foreground/80">derived from</span>{' '}
+          <span className="font-mono text-foreground/70">
+            {boundCitation.bibtex_key ?? boundCitation.title ?? boundCitation.id}
+          </span>
+          .
+        </p>
+      ) : (
+        <CitationPicker citations={citations} />
+      )}
       {state.error && <p className="text-sm text-red-600">{state.error}</p>}
       <div className="flex gap-2">
         <button
@@ -254,7 +281,20 @@ const ORIGINS = ['a_priori', 'pilot', 'emergent'] as const;
  * so no code is silently lost. The lane lists codes that are missing a value on
  * the row facet, the col facet, or both (deduped).
  */
-export default function MatrixView({ tree }: { tree: CodebookTree }) {
+export default function MatrixView({
+  tree,
+  boundCitation = null,
+}: {
+  tree: CodebookTree;
+  /**
+   * Deductive "code from citation" mode. When non-null, the matrix shows a
+   * banner naming the paper and the new-code form binds every create to it
+   * (auto-link derived_from + default origin a_priori, persisting across
+   * creates). Defaults to null so existing call sites (and tests) are
+   * unaffected.
+   */
+  boundCitation?: Citation | null;
+}) {
   const { codebook, facets, codes, episodes, labels, citations } = tree;
 
   const [rowFacetId, setRowFacetId] = useState<string>(facets[0]?.id ?? NONE);
@@ -346,9 +386,37 @@ export default function MatrixView({ tree }: { tree: CodebookTree }) {
 
   return (
     <main className="flex-1 px-6 py-6 space-y-6">
+      {/* Deductive-coding banner: present iff the page resolved a ?fromCitation
+          paper. "× exit" clears the binding by navigating to the bare matrix. */}
+      {boundCitation && (
+        <div className="flex items-center justify-between gap-3 border border-foreground/30 bg-foreground/5 px-3 py-2 text-sm">
+          <span className="min-w-0">
+            <span className="text-foreground/60">Deriving codes from:</span>{' '}
+            <span className="font-mono text-foreground/90">
+              {boundCitation.bibtex_key ?? boundCitation.title ?? boundCitation.id}
+            </span>
+            {boundCitation.bibtex_key && boundCitation.title && (
+              <span className="text-foreground/50"> — {boundCitation.title}</span>
+            )}
+          </span>
+          <Link
+            href="/"
+            title="Exit coding-from-paper mode"
+            className="shrink-0 border border-foreground/30 px-2 py-0.5 text-xs hover:bg-foreground hover:text-background transition"
+          >
+            × exit
+          </Link>
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <h1 className="text-xl font-medium tracking-tight">Scheme</h1>
-        <NewCodeForm codebookId={codebook.id} origins={ORIGINS} citations={citations} />
+        <NewCodeForm
+          codebookId={codebook.id}
+          origins={ORIGINS}
+          citations={citations}
+          boundCitation={boundCitation}
+        />
       </div>
 
       <p className="max-w-3xl text-sm leading-relaxed text-foreground/60 border-l-2 border-foreground/15 pl-3">

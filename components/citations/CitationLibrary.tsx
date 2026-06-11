@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useTransition } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   addCitations,
@@ -310,6 +311,17 @@ function CitationRow({
         )}
       </div>
       <div className="flex items-center gap-2 shrink-0">
+        {/* Deductive coding: jump to the matrix new-code form bound to THIS
+            paper, so every code created there auto-links (derived_from) and
+            defaults origin=a_priori. The binding persists across creates until
+            the researcher exits. */}
+        <Link
+          href={`/?fromCitation=${c.id}`}
+          title={`Derive a priori codes from "${c.bibtex_key ?? c.id}"`}
+          className="border border-foreground/30 px-2 py-0.5 text-xs hover:bg-foreground hover:text-background transition whitespace-nowrap"
+        >
+          Add codes →
+        </Link>
         <button
           type="button"
           disabled={isPending}

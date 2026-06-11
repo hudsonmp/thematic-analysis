@@ -39,6 +39,15 @@ function isOrigin(value: string): value is CodeOrigin {
  * id surfaces a clean error rather than an unhandled rejection. A code created
  * with NO citations picked links nothing (the create still succeeds).
  *
+ * Deductive "code from citation" mode: when the form carries a `fromCitation`
+ * field (the matrix bound-mode banner), the bound paper id is also present in
+ * `citationIds` (so the derived_from link happens through the normal path — no
+ * double-link), and origin defaults to `a_priori`. On success we redirect back
+ * to `/?fromCitation=<id>` instead of the new code's page, so the binding
+ * PERSISTS and the researcher can derive several a priori codes in a row from
+ * the same paper until they exit. Out of bound mode, we redirect to the new
+ * code's anatomy page as before.
+ *
  * `redirect` throws a framework control-flow signal, so nothing after it runs;
  * the trailing `return {}` exists only to satisfy the `useActionState` return
  * contract on the (unreachable) success path.
@@ -52,6 +61,8 @@ export async function createCodeAction(
   const name = (formData.get('name') ?? '').toString().trim();
   const originRaw = (formData.get('origin') ?? '').toString().trim();
   const definition = (formData.get('definition') ?? '').toString().trim();
+  // Bound "code from citation" mode marker (empty string when unbound).
+  const fromCitation = (formData.get('fromCitation') ?? '').toString().trim();
   // Repeated `citationIds` fields → de-duped list of citation ids to link.
   const citationIds = [
     ...new Set(
@@ -84,5 +95,10 @@ export async function createCodeAction(
     return { error: err instanceof Error ? err.message : 'Failed to create code.' };
   }
 
+  // Bound mode: stay on the paper so the next create is still bound (persist the
+  // binding). Otherwise go to the new code's anatomy page.
+  if (fromCitation) {
+    redirect(`/?fromCitation=${encodeURIComponent(fromCitation)}`);
+  }
   redirect(`/codes/${newId}`);
 }
