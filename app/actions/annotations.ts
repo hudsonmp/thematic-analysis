@@ -322,3 +322,206 @@ export async function listAllAnnotations(
 
   return { annotations, coders };
 }
+
+/* ───────────────────────── negotiated canonical layer (Task 12) ───────────────────────────
+ *
+ * After coders code INDEPENDENTLY (own-coding view) and view the diff (Compare),
+ * they RECONCILE disagreements into a CANONICAL set: the authoritative coding for
+ * a segment, used for export/analysis downstream (SP-C / SP-3). A canonical entry
+ * is an ordinary `cb_annotations` row distinguished only by `is_canonical = true`.
+ *
+ * Ownership: `is_canonical` rows are still coder-owned. The reconciler is the
+ * signed-in user; their uid is the `coder_id`. The RLS write policies
+ * (`coder_id = auth.uid()`) therefore admit canonical writes and own-row deletes
+ * exactly as they do for normal annotations — no separate policy is needed.
+ *
+ * Invariant: ONE canonical annotation per segment (the reconciled decision is
+ * singular). `acceptIntoCanonical` enforces this by REPLACING any existing
+ * canonical row for the segment before inserting the new one.
+ */
+
+/** A canonical (reconciled) annotation as Compare consumes it. */
+export type CanonicalView = {
+  id: string;
+  segmentId: string;
+  tStartMs: number;
+  tEndMs: number;
+  codes: { id: string; mnemonic: string }[];
+};
+
+/**
+ * Accept a reconciled coding into the session's CANONICAL set for one segment.
+ *
+ * Inserts a `cb_annotations` row with `is_canonical = true`, `kind = 'code'`,
+ * `coder_id = auth.uid()` (the reconciler), the segment's span/time, and one
+ * `cb_annotation_codes` link per `codeIds`. Mirrors `addAnnotation`'s write
+ * order and unwind (drop the annotation if the code-link write fails) so we never
+ * leave a code-less canonical anchor.
+ *
+ * Canonical is ONE-PER-SEGMENT: before inserting, we delete EVERY existing
+ * canonical annotation for this `segment_id` (and, by cascade, its code links),
+ * so a second accept for the same segment REPLACES the first. The delete is
+ * scoped to canonical rows — it never touches coders' independent annotations.
+ *
+ * `sourceAnnotationId` is accepted for provenance/telemetry (which coder's
+ * annotation was canonized); SP-A does not persist it on the canonical row
+ * (no column), so it is currently advisory only. Returns the inserted row.
+ *
+ * Note on RLS + replace: the delete runs through the user client, so it removes
+ * only canonical rows whose `coder_id = auth.uid()` (the delete policy). In the
+ * normal flow the same reconciler owns the prior canonical row, so the replace is
+ * total. A canonical row authored by a DIFFERENT reconciler would survive the
+ * delete (RLS no-op) and could transiently violate one-per-segment; reconciliation
+ * is a single-reconciler activity in SP-A, so this is acceptable (see spec).
+ */
+export async function acceptIntoCanonical({
+  sessionId,
+  versionId,
+  segmentId,
+  tStartMs,
+  tEndMs,
+  codeIds,
+  sourceAnnotationId: _sourceAnnotationId,
+}: {
+  sessionId: string;
+  versionId: string;
+  segmentId: string;
+  tStartMs: number;
+  tEndMs: number;
+  codeIds: string[];
+  sourceAnnotationId?: string;
+}): Promise<Annotation> {
+  const user = await requireAuthUser();
+  const sb = await createUserServerClient();
+
+  // Provenance hint only in SP-A: there is no column to persist which coder's
+  // annotation was canonized, so we accept the id but do not store it. Explicitly
+  // consume it so it stays part of the documented signature without a lint warning.
+  void _sourceAnnotationId;
+
+  // Enforce one-canonical-per-segment: drop any prior canonical row for this
+  // segment first. cb_annotation_codes cascades on the annotation delete.
+  const delRes = await sb
+    .from('cb_annotations')
+    .delete()
+    .eq('session_id', sessionId)
+    .eq('segment_id', segmentId)
+    .eq('is_canonical', true);
+  if (delRes.error) {
+    throw new Error(
+      `acceptIntoCanonical: clearing prior canonical failed: ${delRes.error.message}`,
+    );
+  }
+
+  const annRes = await sb
+    .from('cb_annotations')
+    .insert({
+      session_id: sessionId,
+      version_id: versionId,
+      segment_id: segmentId,
+      // Whole-segment anchor (SP-A granularity); canonical decisions are per-segment.
+      char_start: 0,
+      char_end: 0,
+      t_start_ms: tStartMs,
+      t_end_ms: tEndMs,
+      kind: 'code',
+      is_canonical: true,
+      // The reconciler owns the canonical row; RLS `with check (coder_id = auth.uid())`.
+      coder_id: user.id,
+    })
+    .select('*')
+    .single();
+  if (annRes.error || !annRes.data) {
+    throw new Error(
+      `acceptIntoCanonical: cb_annotations insert failed: ${annRes.error?.message ?? 'no row returned'}`,
+    );
+  }
+  const annotation = annRes.data;
+
+  const uniqueCodeIds = [...new Set(codeIds)];
+  if (uniqueCodeIds.length > 0) {
+    const linkRes = await sb.from('cb_annotation_codes').insert(
+      uniqueCodeIds.map((code_id) => ({ annotation_id: annotation.id, code_id })),
+    );
+    if (linkRes.error) {
+      // Unwind: drop the canonical anchor so we never leave a code-less canonical row.
+      await sb.from('cb_annotations').delete().eq('id', annotation.id);
+      throw new Error(
+        `acceptIntoCanonical: cb_annotation_codes insert failed: ${linkRes.error.message}`,
+      );
+    }
+  }
+
+  return annotation;
+}
+
+/**
+ * List the session's CANONICAL (reconciled) annotations:
+ * `cb_annotations where session_id = ? and is_canonical = true`, each joined to
+ * its `cb_annotation_codes → cb_codes(id, mnemonic)`. One row per segment by the
+ * `acceptIntoCanonical` invariant. Ordered by `t_start_ms` (playback order).
+ *
+ * Reads through the user client; the read-all RLS policy admits the select.
+ */
+export async function listCanonical(sessionId: string): Promise<CanonicalView[]> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+
+  const { data, error } = await sb
+    .from('cb_annotations')
+    .select(
+      'id, segment_id, t_start_ms, t_end_ms, cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
+    )
+    .eq('session_id', sessionId)
+    .eq('is_canonical', true)
+    .order('t_start_ms', { ascending: true });
+  if (error) {
+    throw new Error(`listCanonical: cb_annotations select failed: ${error.message}`);
+  }
+
+  const rows = (data ?? []) as Array<{
+    id: string;
+    segment_id: string;
+    t_start_ms: number;
+    t_end_ms: number;
+    cb_annotation_codes: Array<{
+      code_id: string;
+      cb_codes: { id: string; mnemonic: string } | null;
+    }> | null;
+  }>;
+
+  return rows.map((r) => ({
+    id: r.id,
+    segmentId: r.segment_id,
+    tStartMs: r.t_start_ms,
+    tEndMs: r.t_end_ms,
+    codes: (r.cb_annotation_codes ?? []).map((link) => ({
+      id: link.cb_codes?.id ?? link.code_id,
+      mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
+    })),
+  }));
+}
+
+/**
+ * Remove the canonical (reconciled) coding for a segment: delete the canonical
+ * annotation(s) for `segment_id` on `session_id`. `cb_annotation_codes` cascades.
+ *
+ * Reconciliation is collaborative, but RLS restricts delete to the row's own
+ * `coder_id` — so this clears the reconciler's OWN canonical row(s) for the
+ * segment. A canonical row authored by another reconciler is a silent no-op
+ * (RLS), which is acceptable in SP-A's single-reconciler model.
+ */
+export async function removeCanonical(
+  segmentId: string,
+  sessionId: string,
+): Promise<void> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+  const { error } = await sb
+    .from('cb_annotations')
+    .delete()
+    .eq('session_id', sessionId)
+    .eq('segment_id', segmentId)
+    .eq('is_canonical', true);
+  if (error) throw new Error(`removeCanonical failed: ${error.message}`);
+}

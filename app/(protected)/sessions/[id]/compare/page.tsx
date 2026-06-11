@@ -1,5 +1,5 @@
 import { getSessionCloud } from '@/app/actions/sessions';
-import { listAllAnnotations } from '@/app/actions/annotations';
+import { listAllAnnotations, listCanonical } from '@/app/actions/annotations';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import CompareView from '@/components/sessions/CompareView';
 
@@ -17,7 +17,11 @@ import CompareView from '@/components/sessions/CompareView';
  *
  * `getSessionCloud(id)` supplies the transcript segments (and 404s a missing id);
  * `listAllAnnotations(id)` supplies all coders' annotations + the distinct coder
- * list (the matrix columns).
+ * list (the matrix columns); `listCanonical(id)` supplies the reconciled
+ * (canonical) coding per segment — the authoritative set Task 12 lets a
+ * reconciler accept codes into. Unlike Task 11 this page is NO LONGER strictly
+ * read-only: the Canonical column carries the accept/clear reconciliation
+ * controls. Independent per-coder coding still lives only on the own-coding page.
  */
 export default async function ComparePage({
   params,
@@ -27,18 +31,21 @@ export default async function ComparePage({
   const { id } = await params;
   await requireAuthUser();
 
-  const [session, { annotations, coders }] = await Promise.all([
+  const [session, { annotations, coders }, canonical] = await Promise.all([
     getSessionCloud(id),
     listAllAnnotations(id),
+    listCanonical(id),
   ]);
 
   return (
     <CompareView
       sessionId={session.id}
+      versionId={session.versionId}
       pidLabel={session.pidLabel}
       segments={session.segments}
       annotations={annotations}
       coders={coders}
+      canonical={canonical}
     />
   );
 }
