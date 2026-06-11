@@ -19,8 +19,11 @@ import { NextResponse, type NextRequest } from 'next/server';
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // The only publicly reachable route.
-  if (pathname === '/create/login') {
+  // Publicly reachable auth routes: the login and registration forms (and their
+  // Server Action POSTs, which share these pathnames). An unauthenticated
+  // researcher must be able to reach both to obtain a session in the first
+  // place. Everything else is gated below.
+  if (pathname === '/create/login' || pathname === '/create/register') {
     return NextResponse.next();
   }
 

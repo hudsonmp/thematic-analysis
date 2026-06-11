@@ -1,22 +1,20 @@
 'use client';
 
+import Link from 'next/link';
 import { useActionState } from 'react';
-import { researcherLoginAction, type CreateLoginState } from './actions';
+import { loginAction, type AuthFormState } from '@/app/actions/auth';
 
-const initial: CreateLoginState = {};
+const initial: AuthFormState = {};
 
-export default function ResearcherLoginForm({ next }: { next: string }) {
-  const [state, formAction, isPending] = useActionState(
-    researcherLoginAction,
-    initial,
-  );
+export default function ResearcherLoginForm() {
+  const [state, formAction, isPending] = useActionState(loginAction, initial);
 
   return (
     <main className="flex-1 flex items-center justify-center px-6 py-16">
       <div className="max-w-md w-full">
         <header className="border-b border-foreground/15 pb-4 mb-8">
           <h1 className="text-2xl font-medium tracking-tight">
-            Researcher access
+            Researcher sign in
           </h1>
           <p className="text-sm text-foreground/60 mt-1">
             Restricted to study authors.
@@ -24,7 +22,19 @@ export default function ResearcherLoginForm({ next }: { next: string }) {
         </header>
 
         <form action={formAction} className="space-y-5">
-          <input type="hidden" name="next" value={next} />
+          <label className="block">
+            <span className="text-xs uppercase tracking-wider text-foreground/60">
+              Email
+            </span>
+            <input
+              type="email"
+              name="email"
+              required
+              autoComplete="email"
+              className="mt-1 w-full border border-foreground/15 px-3 py-2 bg-background focus:outline-none focus:border-foreground"
+            />
+          </label>
+
           <label className="block">
             <span className="text-xs uppercase tracking-wider text-foreground/60">
               Password
@@ -38,9 +48,7 @@ export default function ResearcherLoginForm({ next }: { next: string }) {
             />
           </label>
 
-          {state.error && (
-            <p className="text-sm text-red-600">{state.error}</p>
-          )}
+          {state.error && <p className="text-sm text-red-600">{state.error}</p>}
 
           <button
             type="submit"
@@ -50,6 +58,16 @@ export default function ResearcherLoginForm({ next }: { next: string }) {
             {isPending ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
+
+        <p className="text-sm text-foreground/60 mt-6">
+          No account yet?{' '}
+          <Link
+            href="/create/register"
+            className="underline underline-offset-2 hover:text-foreground"
+          >
+            Register
+          </Link>
+        </p>
       </div>
     </main>
   );
