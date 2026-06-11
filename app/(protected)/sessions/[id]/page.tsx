@@ -59,6 +59,7 @@ export default async function SessionPage({
       codes={codes}
       myAnnotations={myAnnotations}
       myUid={user?.id ?? null}
+      compareHref={`/sessions/${session.id}/compare`}
     />
   );
 }

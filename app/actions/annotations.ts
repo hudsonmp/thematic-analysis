@@ -194,3 +194,131 @@ export async function deleteAnnotation(id: string): Promise<void> {
   const { error } = await sb.from('cb_annotations').delete().eq('id', id);
   if (error) throw new Error(`deleteAnnotation failed: ${error.message}`);
 }
+
+/**
+ * One annotation as the post-hoc Compare view consumes it (Task 11): EVERY
+ * coder's annotation on a session — NOT coder-filtered, the deliberate inverse of
+ * `listMyAnnotations`. The read-all RLS policy (`cb_ann_read using(true)`) admits
+ * the cross-coder select; this is the only surface that reads other coders' work.
+ * Read-only: Compare never writes.
+ */
+export type CompareAnnotationView = {
+  id: string;
+  coderId: string;
+  coderName: string;
+  segmentId: string;
+  tStartMs: number;
+  tEndMs: number;
+  isCanonical: boolean;
+  codes: { id: string; mnemonic: string }[];
+};
+
+/** A distinct coder who has annotated the session (a Compare matrix column). */
+export type CompareCoder = { coderId: string; coderName: string };
+
+/**
+ * List ALL coders' annotations for a session for the Compare matrix.
+ *
+ * Two reads, joined in JS:
+ *   1. `cb_annotations where session_id = ?` (every coder — NO coder_id filter),
+ *      joined to `cb_annotation_codes → cb_codes(id, mnemonic, name)` and to the
+ *      anchor segment's `cb_segments(ordinal)` so we can order by transcript
+ *      position. We also pull the segment ordinal to sort by.
+ *   2. `cb_profiles(user_id, display_name)` for the distinct coder_ids. `coder_id`
+ *      FK-references `auth.users`, NOT `cb_profiles`, so PostgREST cannot embed
+ *      the profile in the annotation select — we fetch profiles by the distinct
+ *      coder ids and join in memory. A coder with no profile row falls back to a
+ *      short slice of their uid so the column still has a stable label.
+ *
+ * Ordered by segment ordinal, then coderName, then created_at — the matrix reads
+ * top-to-bottom in transcript order with coders grouped stably. Returns the rows
+ * plus the distinct `coders` list (the matrix's columns).
+ */
+export async function listAllAnnotations(
+  sessionId: string,
+): Promise<{ annotations: CompareAnnotationView[]; coders: CompareCoder[] }> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+
+  const { data, error } = await sb
+    .from('cb_annotations')
+    .select(
+      'id, coder_id, segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments(ordinal), cb_annotation_codes(code_id, cb_codes(id, mnemonic, name))',
+    )
+    .eq('session_id', sessionId);
+  if (error) {
+    throw new Error(`listAllAnnotations: cb_annotations select failed: ${error.message}`);
+  }
+
+  const rows = (data ?? []) as Array<{
+    id: string;
+    coder_id: string;
+    segment_id: string;
+    t_start_ms: number;
+    t_end_ms: number;
+    is_canonical: boolean;
+    created_at: string;
+    cb_segments: { ordinal: number } | null;
+    cb_annotation_codes: Array<{
+      code_id: string;
+      cb_codes: { id: string; mnemonic: string; name: string } | null;
+    }> | null;
+  }>;
+
+  // Resolve display names for the distinct coder ids. Separate read because
+  // coder_id references auth.users (no PostgREST embed to cb_profiles).
+  const coderIds = [...new Set(rows.map((r) => r.coder_id))];
+  const nameById = new Map<string, string>();
+  if (coderIds.length > 0) {
+    const { data: profiles, error: profErr } = await sb
+      .from('cb_profiles')
+      .select('user_id, display_name')
+      .in('user_id', coderIds);
+    if (profErr) {
+      throw new Error(`listAllAnnotations: cb_profiles select failed: ${profErr.message}`);
+    }
+    for (const p of profiles ?? []) {
+      if (p.display_name) nameById.set(p.user_id, p.display_name);
+    }
+  }
+  // Fallback label for a coder with no profile row (or a null display_name):
+  // a short uid slice keeps the column stably identified.
+  const nameFor = (coderId: string) =>
+    nameById.get(coderId) ?? `coder-${coderId.slice(0, 8)}`;
+
+  const annotations: CompareAnnotationView[] = rows.map((r) => ({
+    id: r.id,
+    coderId: r.coder_id,
+    coderName: nameFor(r.coder_id),
+    segmentId: r.segment_id,
+    tStartMs: r.t_start_ms,
+    tEndMs: r.t_end_ms,
+    isCanonical: r.is_canonical,
+    codes: (r.cb_annotation_codes ?? []).map((link) => ({
+      id: link.cb_codes?.id ?? link.code_id,
+      mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
+    })),
+  }));
+
+  // Sort by segment ordinal (transcript order), then coderName, then created_at.
+  // The ordinal lives on the joined segment; a missing join sorts last.
+  const ordinalById = new Map<string, number>();
+  for (const r of rows) {
+    if (r.cb_segments) ordinalById.set(r.segment_id, r.cb_segments.ordinal);
+  }
+  const createdById = new Map(rows.map((r) => [r.id, r.created_at]));
+  annotations.sort((a, b) => {
+    const oa = ordinalById.get(a.segmentId) ?? Number.MAX_SAFE_INTEGER;
+    const ob = ordinalById.get(b.segmentId) ?? Number.MAX_SAFE_INTEGER;
+    if (oa !== ob) return oa - ob;
+    if (a.coderName !== b.coderName) return a.coderName.localeCompare(b.coderName);
+    return (createdById.get(a.id) ?? '').localeCompare(createdById.get(b.id) ?? '');
+  });
+
+  // Distinct coders (matrix columns), ordered by display name for a stable layout.
+  const coders: CompareCoder[] = coderIds
+    .map((coderId) => ({ coderId, coderName: nameFor(coderId) }))
+    .sort((a, b) => a.coderName.localeCompare(b.coderName));
+
+  return { annotations, coders };
+}

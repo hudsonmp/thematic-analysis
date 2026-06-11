@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import type { CloudSegment } from '@/app/actions/sessions';
 import {
   addAnnotation,
@@ -94,6 +95,7 @@ export default function SessionPlayer({
   codes = [],
   myAnnotations = [],
   myUid = null,
+  compareHref = null,
 }: {
   id: string;
   pidLabel: string;
@@ -108,6 +110,8 @@ export default function SessionPlayer({
   myAnnotations?: MyAnnotationView[];
   /** The signed-in coder's auth uid — used to scope realtime sync to own rows. */
   myUid?: string | null;
+  /** Link to the post-hoc, read-only Compare tab (own-coding stays here). */
+  compareHref?: string | null;
 }) {
   const router = useRouter();
 
@@ -297,10 +301,21 @@ export default function SessionPlayer({
   return (
     <main className="px-6 py-6">
       <header className="mb-4">
-        <h1 className="text-lg font-medium tracking-tight">
-          Participant{' '}
-          <span className="font-mono text-foreground/50">({pidLabel})</span>
-        </h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-lg font-medium tracking-tight">
+            Participant{' '}
+            <span className="font-mono text-foreground/50">({pidLabel})</span>
+          </h1>
+          {compareHref && (
+            <Link
+              href={compareHref}
+              className="rounded border border-foreground/30 px-2 py-1 text-xs text-foreground/70 hover:text-foreground"
+              title="Post-hoc, read-only: how every coder coded this session"
+            >
+              Compare ⇄
+            </Link>
+          )}
+        </div>
         <p className="text-sm text-foreground/60">
           Total duration{' '}
           <span className="font-mono">{formatTime(durationMs)}</span>
