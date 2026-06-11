@@ -1,6 +1,8 @@
 'use server';
 
 import { cbFrom } from '@/lib/supabase/guard';
+import { linkCitation } from '@/app/actions/citations';
+import { resolveRows, type CodebookRow } from '@/lib/codebook/mnemonic';
 import { CodeVersionInput, type CodeVersionInputT } from '@/lib/types/contracts';
 import type { Json, Tables, TablesInsert } from '@/lib/types/cb-db';
 
@@ -218,4 +220,90 @@ export async function setCodeEpisodes(codeId: string, episodeIds: string[]): Pro
   if (ins.error) {
     throw new Error(`setCodeEpisodes (insert) failed: ${ins.error.message}`);
   }
+}
+
+/** The result of a bulk create: how many rows were created, and which input rows
+ *  failed (by their 0-based index in the submitted batch, with a message). The
+ *  Codebook grid keeps the failed rows so the researcher can fix + retry them. */
+export type BulkCreateResult = {
+  created: number;
+  errors: { index: number; message: string }[];
+};
+
+/**
+ * Bulk-create codes from the Codebook spreadsheet grid.
+ *
+ * Each row is `{ name, mnemonic?, definition? }`; only `name` is required.
+ * `origin` (the session "mode") applies to EVERY code in the batch; an optional
+ * `citationId` links every created code `derived_from` that paper (the same
+ * binding the deductive `/?fromCitation` flow uses, applied to a whole batch).
+ *
+ * Mnemonic handling: `cb_codes.mnemonic` is NOT NULL + UNIQUE(codebook_id,
+ * mnemonic), so a blank mnemonic is synthesized from the name (slugified + made
+ * unique against the codebook's existing mnemonics and the rest of this batch).
+ * `resolveRows` (pure, unit-tested) does that validation/derivation up front,
+ * so each create gets a non-empty, batch-unique mnemonic; a row with content but
+ * no name, or an explicit mnemonic that duplicates an existing/earlier one, is
+ * returned as an error and NOT created.
+ *
+ * Creation reuses the single-row `createCode` path (no duplicated version logic)
+ * and runs sequentially so a partial failure reports the exact failing row index
+ * (and the already-created rows persist). A blank definition cell falls back to
+ * the code NAME: both `cb_code_versions.definition` (DB) and `CodeVersionInput`
+ * (Zod `.min(1)`) require a non-empty definition, so a meaningful non-empty
+ * stand-in is needed; the name is the natural one (and is overwritten the moment
+ * the researcher edits the code's anatomy). Where a definition IS provided it is
+ * stored verbatim, exactly like the one-line form.
+ */
+export async function createCodesBulk(
+  codebookId: string,
+  rows: CodebookRow[],
+  origin: CodeOrigin,
+  citationId?: string,
+): Promise<BulkCreateResult> {
+  if (!codebookId) throw new Error('createCodesBulk: missing codebook id.');
+
+  const existing = await listCodebookMnemonics(codebookId);
+  const { resolved, errors } = resolveRows(rows, existing);
+
+  let created = 0;
+  for (const row of resolved) {
+    try {
+      const newId = await createCode({
+        codebookId,
+        mnemonic: row.mnemonic,
+        name: row.name,
+        origin,
+        version: {
+          // Blank definition → fall back to the name (DB + Zod both require a
+          // non-empty definition; the name is a meaningful stand-in).
+          definition: row.definition || row.name,
+          include_if: [],
+          exclude_if: [],
+          exemplars: [],
+        },
+      });
+      if (citationId) {
+        await linkCitation(newId, citationId, 'derived_from');
+      }
+      created += 1;
+    } catch (err) {
+      errors.push({
+        index: row.index,
+        message: err instanceof Error ? err.message : 'Failed to create code.',
+      });
+    }
+  }
+
+  return { created, errors };
+}
+
+/** The codebook's current set of `cb_codes.mnemonic` values (case-sensitive) —
+ *  the collision target for synthesized mnemonics. READ via the cb_ client. */
+async function listCodebookMnemonics(codebookId: string): Promise<Set<string>> {
+  const res = await cbFrom('cb_codes').select('mnemonic').eq('codebook_id', codebookId);
+  if (res.error) {
+    throw new Error(`listCodebookMnemonics failed: ${res.error.message}`);
+  }
+  return new Set((res.data ?? []).map((r) => r.mnemonic));
 }
