@@ -13,8 +13,8 @@ export type CodeStatus = 'proposed' | 'active' | 'merged' | 'retired';
 /**
  * Map a validated `CodeVersionInput` to the `cb_code_versions` insert payload
  * for a given code + version number. `created_by` is the researcher identity;
- * the researcher session (iron-session) carries no per-user id today, so this
- * defaults to null and is populated by the UI/session when that lands.
+ * it is not populated here today, so this defaults to null and is filled in by
+ * the UI/session when that lands.
  */
 function versionInsert(
   codeId: string,

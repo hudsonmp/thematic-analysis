@@ -535,58 +535,6 @@ export type Database = {
           },
         ]
       }
-      cb_codings: {
-        Row: {
-          code_id: string
-          code_version: number | null
-          codebook_version_id: string | null
-          coder: string | null
-          created_at: string
-          episode_ref: Json | null
-          id: string
-        }
-        Insert: {
-          code_id: string
-          code_version?: number | null
-          codebook_version_id?: string | null
-          coder?: string | null
-          created_at?: string
-          episode_ref?: Json | null
-          id?: string
-        }
-        Update: {
-          code_id?: string
-          code_version?: number | null
-          codebook_version_id?: string | null
-          coder?: string | null
-          created_at?: string
-          episode_ref?: Json | null
-          id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cb_codings_code_id_code_version_fkey"
-            columns: ["code_id", "code_version"]
-            isOneToOne: false
-            referencedRelation: "cb_code_versions"
-            referencedColumns: ["code_id", "version"]
-          },
-          {
-            foreignKeyName: "cb_codings_code_id_fkey"
-            columns: ["code_id"]
-            isOneToOne: false
-            referencedRelation: "cb_codes"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cb_codings_codebook_version_id_fkey"
-            columns: ["codebook_version_id"]
-            isOneToOne: false
-            referencedRelation: "cb_codebook_versions"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       cb_episodes: {
         Row: {
           codebook_id: string

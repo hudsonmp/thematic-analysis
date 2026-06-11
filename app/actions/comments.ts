@@ -8,9 +8,8 @@ type CoderComment = Tables<'cb_coder_comments'>;
 /**
  * Add a coder comment on a code (optionally pinned to a specific version).
  *
- * The researcher session carries no per-user identity (iron-session, single
- * shared password), so `author` is supplied by the UI — the coder's name or
- * initials — not derived server-side. We require it to be a non-empty string so
+ * `author` is supplied by the UI — the coder's name or initials — rather than
+ * derived server-side. We require it to be a non-empty string so
  * comments are always attributable; an unattributed comment is worse than none
  * in a reliability-coding context.
  *
