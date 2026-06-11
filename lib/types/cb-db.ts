@@ -522,6 +522,41 @@ export type Database = {
           },
         ]
       }
+      cb_episodes: {
+        Row: {
+          codebook_id: string
+          created_at: string
+          description: string | null
+          id: string
+          name: string
+          position: number
+        }
+        Insert: {
+          codebook_id: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          name: string
+          position?: number
+        }
+        Update: {
+          codebook_id?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          name?: string
+          position?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_episodes_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_facet_values: {
         Row: {
           color: string | null
@@ -818,6 +853,51 @@ export type Database = {
           },
         ]
       }
+      cb_session_episodes: {
+        Row: {
+          created_at: string
+          episode_id: string
+          id: string
+          marked_by: string | null
+          session_id: string
+          t_end_ms: number | null
+          t_start_ms: number
+        }
+        Insert: {
+          created_at?: string
+          episode_id: string
+          id?: string
+          marked_by?: string | null
+          session_id: string
+          t_end_ms?: number | null
+          t_start_ms: number
+        }
+        Update: {
+          created_at?: string
+          episode_id?: string
+          id?: string
+          marked_by?: string | null
+          session_id?: string
+          t_end_ms?: number | null
+          t_start_ms?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_session_episodes_episode_id_fkey"
+            columns: ["episode_id"]
+            isOneToOne: false
+            referencedRelation: "cb_episodes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_session_episodes_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_sessions: {
         Row: {
           audio_path: string | null
@@ -1012,6 +1092,60 @@ export type Database = {
           visibility?: Database["public"]["Enums"]["project_visibility"]
         }
         Relationships: []
+      }
+      study_assistant_messages: {
+        Row: {
+          content: string
+          created_at: string
+          id: string
+          module_id: string
+          role: string
+          scenario_idx: number | null
+          state_entities: Json
+          state_spec: string
+          study_id: string
+          user_id: string
+        }
+        Insert: {
+          content?: string
+          created_at?: string
+          id?: string
+          module_id: string
+          role: string
+          scenario_idx?: number | null
+          state_entities?: Json
+          state_spec?: string
+          study_id: string
+          user_id: string
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          id?: string
+          module_id?: string
+          role?: string
+          scenario_idx?: number | null
+          state_entities?: Json
+          state_spec?: string
+          study_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "study_assistant_messages_study_id_fkey"
+            columns: ["study_id"]
+            isOneToOne: false
+            referencedRelation: "studies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "study_assistant_messages_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       study_events: {
         Row: {

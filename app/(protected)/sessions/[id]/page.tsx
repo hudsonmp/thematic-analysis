@@ -1,6 +1,7 @@
 import { getSessionCloud } from '@/app/actions/sessions';
 import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
 import { listMyAnnotations } from '@/app/actions/annotations';
+import { listEpisodes, listSessionEpisodes } from '@/app/actions/episodes';
 import { getAuthUser } from '@/lib/auth/supabase-auth';
 import SessionPlayer from '@/components/sessions/SessionPlayer';
 
@@ -32,16 +33,23 @@ export default async function SessionPage({
 }) {
   const { id } = await params;
 
-  const [session, codebook, myAnnotations, user] = await Promise.all([
+  const [session, codebook, myAnnotations, sessionEpisodes, user] = await Promise.all([
     getSessionCloud(id),
     getOrCreateCodebook(),
     listMyAnnotations(id),
+    listSessionEpisodes(id),
     getAuthUser(),
+  ]);
+
+  // The codebook tree (for the code picker) and the codebook's preset episodes
+  // (for the assign-during-coding control) both key off the resolved codebook id.
+  const [tree, episodes] = await Promise.all([
+    listCodebookTree(codebook.id),
+    listEpisodes(codebook.id),
   ]);
 
   // Flatten the codebook tree to the minimal `{id, mnemonic, name}` the code
   // picker consumes.
-  const tree = await listCodebookTree(codebook.id);
   const codes = tree.codes.map((c) => ({
     id: c.id,
     mnemonic: c.mnemonic,
@@ -59,6 +67,8 @@ export default async function SessionPage({
       codes={codes}
       myAnnotations={myAnnotations}
       myUid={user?.id ?? null}
+      episodes={episodes.map((e) => ({ id: e.id, name: e.name }))}
+      sessionEpisodes={sessionEpisodes}
       compareHref={`/sessions/${session.id}/compare`}
     />
   );

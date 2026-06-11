@@ -10,6 +10,11 @@ import {
   type MyAnnotationView,
 } from '@/app/actions/annotations';
 import {
+  markSessionEpisode,
+  deleteSessionEpisode,
+  type SessionEpisodeView,
+} from '@/app/actions/episodes';
+import {
   buildTextAnchor,
   splitIntoPieces,
   type Highlight,
@@ -19,6 +24,9 @@ import { useRealtimeAnnotations } from './useRealtimeAnnotations';
 
 /** Minimal code shape the picker needs (flattened from the codebook tree). */
 type CodeOption = { id: string; mnemonic: string; name: string };
+
+/** A preset episode the coder can mark at a timecode (name + id only). */
+type EpisodeOption = { id: string; name: string };
 
 /** Format a millisecond offset as `mm:ss` (minutes uncapped past 60). */
 function formatTime(ms: number): string {
@@ -158,6 +166,8 @@ export default function SessionPlayer({
   codes = [],
   myAnnotations = [],
   myUid = null,
+  episodes = [],
+  sessionEpisodes = [],
   compareHref = null,
 }: {
   id: string;
@@ -173,6 +183,10 @@ export default function SessionPlayer({
   myAnnotations?: MyAnnotationView[];
   /** The signed-in coder's auth uid — used to scope realtime sync to own rows. */
   myUid?: string | null;
+  /** The codebook's preset episodes the coder can mark at a timecode. */
+  episodes?: EpisodeOption[];
+  /** This session's episode marks (boundaries to navigate / resume by). */
+  sessionEpisodes?: SessionEpisodeView[];
   /** Link to the post-hoc, read-only Compare tab (own-coding stays here). */
   compareHref?: string | null;
 }) {
@@ -217,6 +231,12 @@ export default function SessionPlayer({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Episode-mark state: which preset episode is selected to mark at the current
+  // video timecode, and whether a mark/delete is in flight.
+  const [selectedEpisodeId, setSelectedEpisodeId] = useState('');
+  const [marking, setMarking] = useState(false);
+  const [busyEpisodeMarkId, setBusyEpisodeMarkId] = useState<string | null>(null);
 
   const handleTimeUpdate = useCallback(() => {
     const video = videoRef.current;
@@ -352,6 +372,41 @@ export default function SessionPlayer({
     }
   }, []);
 
+  // --- Episode marks -------------------------------------------------------
+
+  // Mark the selected preset episode at the CURRENT video time. Reads
+  // `videoRef.current.currentTime` at click time (so the mark lands wherever the
+  // coder has the playhead) and converts to ms. `router.refresh()` re-loads the
+  // session's marks server-side.
+  const handleMarkEpisode = useCallback(async () => {
+    if (!selectedEpisodeId) return;
+    const video = videoRef.current;
+    const tStartMs = Math.round((video?.currentTime ?? 0) * 1000);
+    setMarking(true);
+    setError(null);
+    try {
+      await markSessionEpisode({ sessionId: id, episodeId: selectedEpisodeId, tStartMs });
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to mark episode.');
+    } finally {
+      setMarking(false);
+    }
+  }, [selectedEpisodeId, id, router]);
+
+  const handleDeleteEpisodeMark = useCallback(async (markId: string) => {
+    setBusyEpisodeMarkId(markId);
+    setError(null);
+    try {
+      await deleteSessionEpisode(markId);
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete episode mark.');
+    } finally {
+      setBusyEpisodeMarkId(null);
+    }
+  }, [router]);
+
   // Focus a rail annotation (e.g. from clicking its transcript highlight):
   // switch to the right tab and flag it focused. The actual scroll-into-view is
   // an EFFECT keyed on `focusedAnnId` (below), NOT an imperative ref read here —
@@ -467,6 +522,89 @@ export default function SessionPlayer({
 
           {codingEnabled && (
             <>
+              {/* Episode marks: pick a preset episode + "Mark here" pins it at
+                  the current video time; the list below is the navigable timeline
+                  of episode boundaries (click → seek, ✕ → delete). */}
+              <section className="rounded border border-foreground/15 p-3">
+                <div className="mb-2 flex items-center gap-2">
+                  <h2 className="text-sm font-semibold">Episode</h2>
+                  <Link
+                    href="/episodes"
+                    className="ml-auto text-xs text-foreground/50 underline hover:text-foreground"
+                    title="Manage the codebook's preset episodes"
+                  >
+                    Manage presets
+                  </Link>
+                </div>
+
+                {episodes.length === 0 ? (
+                  <p className="text-sm text-foreground/50">
+                    No preset episodes.{' '}
+                    <Link href="/episodes" className="underline hover:text-foreground">
+                      Add some
+                    </Link>{' '}
+                    to mark session phases for navigation.
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={selectedEpisodeId}
+                      onChange={(e) => setSelectedEpisodeId(e.target.value)}
+                      className="min-w-40 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
+                      aria-label="Episode to mark"
+                    >
+                      <option value="">Select an episode…</option>
+                      {episodes.map((ep) => (
+                        <option key={ep.id} value={ep.id}>
+                          {ep.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={handleMarkEpisode}
+                      disabled={!selectedEpisodeId || marking}
+                      title="Mark the selected episode at the current video time"
+                      className="rounded bg-foreground px-3 py-1 text-sm text-background disabled:opacity-40"
+                    >
+                      {marking ? 'Marking…' : 'Mark here'}
+                    </button>
+                  </div>
+                )}
+
+                {sessionEpisodes.length > 0 && (
+                  <ul className="mt-2 divide-y divide-foreground/10">
+                    {sessionEpisodes.map((m) => (
+                      <li
+                        key={m.id}
+                        className="flex items-center gap-2 py-1.5 text-sm"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => seekTo(m.tStartMs)}
+                          className="flex-1 text-left hover:underline"
+                          title="Seek to this episode"
+                        >
+                          <span className="font-semibold">{m.episodeName}</span>{' '}
+                          <span className="font-mono text-xs text-foreground/50">
+                            [{formatTime(m.tStartMs)}]
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteEpisodeMark(m.id)}
+                          disabled={busyEpisodeMarkId === m.id}
+                          aria-label={`Delete episode mark ${m.episodeName}`}
+                          className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
+                        >
+                          {'✕'}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
               {/* Coding toolbar */}
               <section className="rounded border border-foreground/15 p-3">
                 <h2 className="mb-2 text-sm font-semibold">Code or quote a selection</h2>
