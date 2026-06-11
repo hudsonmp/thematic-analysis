@@ -1,8 +1,9 @@
 'use server';
 
+import { notFound } from 'next/navigation';
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
-import { parseSrt } from '@/lib/transcript/srt';
+import { parseSrt, type Segment } from '@/lib/transcript/srt';
 
 /**
  * Ingest a single uploaded Zoom-folder session into Postgres.
@@ -147,4 +148,120 @@ export async function createSessionFromUpload({
   }
 
   return { sessionId: id, segmentCount: segments.length };
+}
+
+/** A session index row for the `/sessions` list. */
+export type SessionListRow = {
+  id: string;
+  pidLabel: string;
+  collection: string;
+  durationMs: number | null;
+  trackMode: string;
+};
+
+/**
+ * List all cloud sessions for the index, ordered by collection then created_at.
+ *
+ * Reads through `createUserServerClient()` (the researcher's JWT), so the
+ * `authenticated` RLS read policy on `cb_sessions` admits the select. Returns
+ * the minimal shape the index needs — annotation counts come after Task 8.
+ */
+export async function listSessionsCloud(): Promise<SessionListRow[]> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+
+  const { data, error } = await sb
+    .from('cb_sessions')
+    .select('id, pid_label, collection, duration_ms, track_mode')
+    .order('collection', { ascending: true })
+    .order('created_at', { ascending: true });
+  if (error) {
+    throw new Error(`listSessionsCloud: cb_sessions select failed: ${error.message}`);
+  }
+
+  return (data ?? []).map((r) => ({
+    id: r.id,
+    pidLabel: r.pid_label,
+    collection: r.collection,
+    durationMs: r.duration_ms,
+    trackMode: r.track_mode,
+  }));
+}
+
+/** A loaded cloud session: the row's display fields + its original segments. */
+export type SessionDetailCloud = {
+  id: string;
+  pidLabel: string;
+  collection: string;
+  durationMs: number | null;
+  trackMode: string;
+  segments: Segment[];
+};
+
+/**
+ * Load one cloud session by id: the `cb_sessions` row plus its `cb_segments`
+ * (the original `cb_transcript_versions`), ordered by `ordinal`, mapped into the
+ * `Segment` shape `SessionPlayer` already consumes (t_start_ms→startMs, etc.).
+ *
+ * `notFound()` (→ 404) if the session is absent. Reads through the user client;
+ * the `authenticated` RLS read policies admit the selects.
+ */
+export async function getSessionCloud(id: string): Promise<SessionDetailCloud> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+
+  const { data: session, error: sessErr } = await sb
+    .from('cb_sessions')
+    .select('id, pid_label, collection, duration_ms, track_mode')
+    .eq('id', id)
+    .maybeSingle();
+  if (sessErr) {
+    throw new Error(`getSessionCloud: cb_sessions select failed: ${sessErr.message}`);
+  }
+  if (!session) {
+    notFound();
+  }
+
+  // The original verbatim version anchors the displayed transcript.
+  const { data: version, error: verErr } = await sb
+    .from('cb_transcript_versions')
+    .select('id')
+    .eq('session_id', id)
+    .eq('kind', 'original')
+    .maybeSingle();
+  if (verErr) {
+    throw new Error(
+      `getSessionCloud: cb_transcript_versions select failed: ${verErr.message}`,
+    );
+  }
+
+  // Pull this version's segments in display order. No original version (a
+  // pathological half-ingested session) → an empty transcript, not a crash.
+  let segments: Segment[] = [];
+  if (version) {
+    const { data: rows, error: segErr } = await sb
+      .from('cb_segments')
+      .select('speaker, t_start_ms, t_end_ms, text, ordinal')
+      .eq('version_id', version.id)
+      .order('ordinal', { ascending: true });
+    if (segErr) {
+      throw new Error(`getSessionCloud: cb_segments select failed: ${segErr.message}`);
+    }
+    segments = (rows ?? []).map((r) => ({
+      idx: r.ordinal,
+      startMs: r.t_start_ms,
+      endMs: r.t_end_ms,
+      speaker: r.speaker,
+      text: r.text,
+    }));
+  }
+
+  return {
+    id: session.id,
+    pidLabel: session.pid_label,
+    collection: session.collection,
+    durationMs: session.duration_ms,
+    trackMode: session.track_mode,
+    segments,
+  };
 }

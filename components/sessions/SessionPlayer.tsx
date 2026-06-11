@@ -40,7 +40,7 @@ function findActiveIndex(segments: Segment[], tMs: number): number {
 /**
  * Two-pane participant-session player: a 2/3-width video on the left and a
  * 1/3-width synchronized, click-to-seek, brushable transcript on the right,
- * plus a coding rail and an analytic-comment panel.
+ * plus (when coding is enabled) a coding rail and an analytic-comment panel.
  *
  * Sync (video → transcript): when SYNC is on (default), the video's `timeupdate`
  * — which fires on play AND on seek/scrub/fast-forward — recomputes the active
@@ -60,29 +60,39 @@ function findActiveIndex(segments: Segment[], tMs: number): number {
  * the `cb_memos` table / `addMemo` action), optionally pinned to the current
  * selection. Every mutation calls `router.refresh()` so the page re-loads
  * codings/comments server-side; no Server Action runs during client render.
+ *
+ * NOTE (Task 7): coding + comments are written against the OLD `cb_codings` /
+ * `cb_memos` tables, which are being replaced by `cb_annotations` in Task 9. To
+ * avoid a half-broken UI during the cloud-sessions migration, that whole surface
+ * is gated behind `codingEnabled` (default false) — the code is intact but not
+ * rendered. When `codingEnabled` is false the coding props are unused, so they
+ * are optional with inert defaults. Task 9 re-enables it on the new schema.
  */
 export default function SessionPlayer({
-  pid,
-  firstName,
+  id,
+  pidLabel,
   segments,
   durationMs,
-  userId,
-  studyId,
-  codebookId,
-  codes,
-  codings,
-  memos,
+  codingEnabled = false,
+  userId = null,
+  studyId = null,
+  codebookId = '',
+  codes = [],
+  codings = [],
+  memos = [],
 }: {
-  pid: string;
-  firstName: string | null;
+  id: string;
+  pidLabel: string;
   segments: Segment[];
   durationMs: number;
-  userId: string | null;
-  studyId: string | null;
-  codebookId: string;
-  codes: CodeOption[];
-  codings: CodingView[];
-  memos: MemoView[];
+  /** Render the coding toolbar/rail + comments panel. Hidden until Task 9. */
+  codingEnabled?: boolean;
+  userId?: string | null;
+  studyId?: string | null;
+  codebookId?: string;
+  codes?: CodeOption[];
+  codings?: CodingView[];
+  memos?: MemoView[];
 }) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -202,7 +212,7 @@ export default function SessionPlayer({
           kind: 'recording',
           user_id: userId,
           study_id: studyId,
-          pid,
+          pid: pidLabel,
           span: [selection.startMs, selection.endMs],
           segment_idxs: selection.segmentIdxs,
         },
@@ -215,7 +225,7 @@ export default function SessionPlayer({
     } finally {
       setApplying(false);
     }
-  }, [selection, selectedCodeId, coder, userId, studyId, pid, clearSelection, router]);
+  }, [selection, selectedCodeId, coder, userId, studyId, pidLabel, clearSelection, router]);
 
   const handleDeleteCoding = useCallback(async (id: string) => {
     setBusyId(id);
@@ -237,7 +247,7 @@ export default function SessionPlayer({
     try {
       await addMemo({
         codebookId,
-        pid,
+        pid: pidLabel,
         body: memoBody,
         author: coder,
         span: memoPinned && selection ? [selection.startMs, selection.endMs] : null,
@@ -249,7 +259,7 @@ export default function SessionPlayer({
     } finally {
       setSavingMemo(false);
     }
-  }, [memoBody, codebookId, pid, coder, memoPinned, selection, router]);
+  }, [memoBody, codebookId, pidLabel, coder, memoPinned, selection, router]);
 
   const handleDeleteMemo = useCallback(async (id: string) => {
     setBusyId(id);
@@ -289,16 +299,20 @@ export default function SessionPlayer({
     <main className="px-6 py-6">
       <header className="mb-4">
         <h1 className="text-lg font-medium tracking-tight">
-          {firstName ?? 'Participant'}{' '}
-          <span className="font-mono text-foreground/50">({pid})</span>
+          Participant{' '}
+          <span className="font-mono text-foreground/50">({pidLabel})</span>
         </h1>
         <p className="text-sm text-foreground/60">
           Total duration{' '}
           <span className="font-mono">{formatTime(durationMs)}</span>
           {' · '}
           {segments.length} segment{segments.length === 1 ? '' : 's'}
-          {' · '}
-          {codings.length} coding{codings.length === 1 ? '' : 's'}
+          {codingEnabled && (
+            <>
+              {' · '}
+              {codings.length} coding{codings.length === 1 ? '' : 's'}
+            </>
+          )}
         </p>
       </header>
 
@@ -309,17 +323,21 @@ export default function SessionPlayer({
       )}
 
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* Left (2/3): video + coding toolbar + coding rail + comments */}
+        {/* Left (2/3): video + (when enabled) coding toolbar + rail + comments */}
         <div className="space-y-4 lg:col-span-2">
           <video
             ref={videoRef}
             controls
             preload="metadata"
-            src={`/api/media/${pid}/video`}
+            src={`/api/media/${id}/video`}
             onTimeUpdate={handleTimeUpdate}
             className="w-full bg-black"
           />
 
+          {/* Coding toolbar + rail + comments — hidden until Task 9 re-enables
+              them on cb_annotations. Code intact; not rendered. */}
+          {codingEnabled && (
+            <>
           {/* Coding toolbar */}
           <section className="rounded border border-foreground/15 p-3">
             <h2 className="mb-2 text-sm font-semibold">Apply code</h2>
@@ -506,6 +524,8 @@ export default function SessionPlayer({
               </ul>
             )}
           </section>
+            </>
+          )}
         </div>
 
         {/* Right (1/3): scrollable, click-to-seek, brushable transcript */}
