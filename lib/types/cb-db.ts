@@ -423,6 +423,32 @@ export type Database = {
           },
         ]
       }
+      cb_codebook_notes: {
+        Row: {
+          body: string
+          codebook_id: string
+          updated_at: string
+        }
+        Insert: {
+          body?: string
+          codebook_id: string
+          updated_at?: string
+        }
+        Update: {
+          body?: string
+          codebook_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_codebook_notes_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: true
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_codebook_versions: {
         Row: {
           calibration_round: number | null
@@ -1187,6 +1213,24 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      llm_prompts: {
+        Row: {
+          content: string
+          key: string
+          updated_at: string
+        }
+        Insert: {
+          content: string
+          key: string
+          updated_at?: string
+        }
+        Update: {
+          content?: string
+          key?: string
+          updated_at?: string
+        }
+        Relationships: []
       }
       onboarding_fields: {
         Row: {
