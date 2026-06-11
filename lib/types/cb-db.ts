@@ -533,6 +533,27 @@ export type Database = {
           },
         ]
       }
+      cb_profiles: {
+        Row: {
+          created_at: string
+          display_name: string | null
+          initials: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          display_name?: string | null
+          initials?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          display_name?: string | null
+          initials?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
       cb_reliability_runs: {
         Row: {
           bias_index: number | null
