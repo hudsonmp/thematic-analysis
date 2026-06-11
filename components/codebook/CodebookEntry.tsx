@@ -15,7 +15,10 @@ import {
   lastFilledIndex,
   rowToFacetWrites,
   isGridRowEmpty,
+  arrowTargetCell,
+  CORE_COL_COUNT,
   INITIAL_ROWS,
+  type ArrowKey,
   type FacetColumn,
   type RowData,
   type FacetCell,
@@ -142,6 +145,35 @@ export default function CodebookEntry({
     [],
   );
 
+  // ---- Arrow-key cell navigation -----------------------------------------
+  // Registry of the FOCUSABLE element for every (row, col) cell, keyed
+  // "row:col". Each cell registers its primary focusable element (the Name /
+  // Mnemonic / Definition textarea, the open-text textarea, the enum <select>,
+  // or the first button of a boolean / chips cell). The keydown handler resolves
+  // the arrow TARGET via the pure `arrowTargetCell`, then focuses that cell's
+  // element here — navigation never re-renders the grid (it only moves focus and,
+  // on Down past the end, extends like Enter does).
+  const totalCols = CORE_COL_COUNT + columns.length;
+  const cellRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const setCellRef = useCallback(
+    (row: number, col: number) => (el: HTMLElement | null) => {
+      const k = `${row}:${col}`;
+      if (el) cellRefs.current.set(k, el);
+      else cellRefs.current.delete(k);
+    },
+    [],
+  );
+
+  /** Is the column at `col` a free-text cell (so Left/Right gate on the caret)?
+   *  Core columns (Name/Mnemonic/Definition) and open-text facets are text. */
+  const isTextCol = useCallback(
+    (col: number) => {
+      if (col < CORE_COL_COUNT) return true;
+      return columns[col - CORE_COL_COUNT]?.mode === 'open-text';
+    },
+    [columns],
+  );
+
   const boundCitation = useMemo(
     () => citations.find((c) => c.id === citationId) ?? null,
     [citations, citationId],
@@ -199,20 +231,111 @@ export default function CodebookEntry({
     [ensureBuffer, reconcileFilled],
   );
 
+  /** Grow `rowsRef`/`rowCount` so row `index` exists (mirrors the Enter extend
+   *  math). No-op if the row already exists. */
+  const ensureRow = useCallback(
+    (index: number) => {
+      if (index < rowsRef.current.length) return;
+      const target = Math.max(index + 1, bufferedRowCount(index));
+      for (let i = rowsRef.current.length; i < target; i += 1) {
+        rowsRef.current.push(emptyRow(columns));
+      }
+      setRowCount(target);
+    },
+    [columns],
+  );
+
   /** Focus the Name cell of `index`, extending the grid first if needed. */
   const focusName = useCallback(
     (index: number) => {
-      if (index >= rowsRef.current.length) {
-        const target = Math.max(index + 1, bufferedRowCount(index));
-        for (let i = rowsRef.current.length; i < target; i += 1) {
-          rowsRef.current.push(emptyRow(columns));
-        }
-        setRowCount(target);
-      }
+      ensureRow(index);
       // Focus after the (possible) render commit.
       queueMicrotask(() => nameRefs.current.get(index)?.focus());
     },
-    [columns],
+    [ensureRow],
+  );
+
+  /** Focus the element of cell (row, col), extending the grid first if the row is
+   *  past the current end (ArrowDown auto-extend, like Enter). For text targets,
+   *  drop the caret at the END so vertical/right navigation feels continuous and
+   *  a subsequent ArrowRight can leave the cell immediately (matches the focus
+   *  model documented on the keydown handler). */
+  const focusCell = useCallback(
+    (row: number, col: number) => {
+      ensureRow(row);
+      queueMicrotask(() => {
+        const el = cellRefs.current.get(`${row}:${col}`);
+        if (!el) return;
+        el.focus();
+        if (
+          (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) &&
+          typeof el.value === 'string'
+        ) {
+          const end = el.value.length;
+          try {
+            el.setSelectionRange(end, end);
+          } catch {
+            // Some input types disallow setSelectionRange; focus alone is fine.
+          }
+        }
+      });
+    },
+    [ensureRow],
+  );
+
+  /** Shared arrow-key handler for every cell. Resolves the target cell from the
+   *  PURE `arrowTargetCell` (using the live caret state for text cells) and moves
+   *  focus there. Returns true iff it handled the key (so the caller can
+   *  `preventDefault`). For a native <select>, Up/Down are NOT intercepted (they
+   *  change the open option natively) — only Left/Right navigate; this is the
+   *  non-trapping choice for selects (you leave via Left/Right/Enter/Tab). */
+  const handleArrowNav = useCallback(
+    (
+      e: React.KeyboardEvent<HTMLElement>,
+      row: number,
+      col: number,
+      opts: { isText: boolean; isSelect?: boolean },
+    ): boolean => {
+      const key = e.key;
+      if (
+        key !== 'ArrowUp' &&
+        key !== 'ArrowDown' &&
+        key !== 'ArrowLeft' &&
+        key !== 'ArrowRight'
+      ) {
+        return false;
+      }
+      // Native <select>: let Up/Down change the option (don't trap the user);
+      // only Left/Right move cells.
+      if (opts.isSelect && (key === 'ArrowUp' || key === 'ArrowDown')) return false;
+
+      let caretAtStart = false;
+      let caretAtEnd = false;
+      if (opts.isText) {
+        const t = e.target as HTMLTextAreaElement | HTMLInputElement;
+        const len = t.value?.length ?? 0;
+        const noSelection = t.selectionStart === t.selectionEnd;
+        caretAtStart = noSelection && t.selectionStart === 0;
+        caretAtEnd = noSelection && t.selectionEnd === len;
+      }
+
+      const target = arrowTargetCell({
+        row,
+        col,
+        key: key as ArrowKey,
+        isTextCell: opts.isText,
+        caretAtStart,
+        caretAtEnd,
+        colCount: totalCols,
+        rowCount: rowsRef.current.length,
+      });
+      if (!target) return false;
+
+      e.preventDefault();
+      focusCell(target.row, target.col);
+      return true;
+    },
+    [focusCell, totalCols],
   );
 
   function chooseCitation(id: string) {
@@ -284,6 +407,7 @@ export default function CodebookEntry({
           // the Scheme/matrix reflects the new codes.
           rowsRef.current = makeRows(INITIAL_ROWS, columns);
           nameRefs.current.clear();
+          cellRefs.current.clear();
           filledFlags.current = new Array(INITIAL_ROWS).fill(false);
           setSeedRows(new Map());
           setFilledCount(0);
@@ -312,6 +436,7 @@ export default function CodebookEntry({
         for (let i = kept.length; i < target; i += 1) kept.push(emptyRow(columns));
         rowsRef.current = kept;
         nameRefs.current.clear();
+        cellRefs.current.clear();
         // Render-safe seeds for the kept (failed) rows, so their cells repopulate
         // after the remount without reading the ref during render. Buffer rows
         // (>= keptFilled) seed empty (absent from the map). Rebuild the filled
@@ -468,6 +593,9 @@ export default function CodebookEntry({
                   error={rowErrors[index]}
                   disabled={isPending}
                   setNameRef={setNameRef}
+                  setCellRef={setCellRef}
+                  handleArrowNav={handleArrowNav}
+                  isTextCol={isTextCol}
                   writeCore={writeCore}
                   writeFacet={writeFacet}
                   focusName={focusName}
@@ -526,6 +654,14 @@ function tableMinWidth(columns: FacetColumn[]): number {
 // Per-row view — memoized + locally-stateful so a keystroke re-renders ONE row.
 // ---------------------------------------------------------------------------
 
+/** Arrow-nav callback shared by every cell: (event, row, col, opts) → handled? */
+type ArrowNavHandler = (
+  e: React.KeyboardEvent<HTMLElement>,
+  row: number,
+  col: number,
+  opts: { isText: boolean; isSelect?: boolean },
+) => boolean;
+
 type GridRowProps = {
   index: number;
   initial: RowData;
@@ -534,6 +670,9 @@ type GridRowProps = {
   error?: string;
   disabled: boolean;
   setNameRef: (index: number) => (el: HTMLTextAreaElement | null) => void;
+  setCellRef: (row: number, col: number) => (el: HTMLElement | null) => void;
+  handleArrowNav: ArrowNavHandler;
+  isTextCol: (col: number) => boolean;
   writeCore: (index: number, patch: Partial<CodebookRow>) => void;
   writeFacet: (index: number, facetId: string, cell: FacetCell) => void;
   focusName: (index: number) => void;
@@ -548,6 +687,9 @@ const GridRowView = memo(function GridRowView({
   error,
   disabled,
   setNameRef,
+  setCellRef,
+  handleArrowNav,
+  isTextCol,
   writeCore,
   writeFacet,
   focusName,
@@ -576,26 +718,37 @@ const GridRowView = memo(function GridRowView({
     writeFacet(index, facetId, cell);
   }
 
-  /** Enter → next row's Name (commit). Shift+Enter → newline (text cells only),
-   *  handled by NOT preventing default on the textarea. */
-  function onTextKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      focusName(index + 1);
-    }
-    // Shift+Enter: let the textarea insert a newline (default behavior).
+  /** The Name cell registers with BOTH the name-ref map (Enter focus) and the
+   *  generic cell-ref registry (arrow nav at col 0). */
+  const nameCellRef = (el: HTMLTextAreaElement | null) => {
+    setNameRef(index)(el);
+    setCellRef(index, 0)(el);
+  };
+
+  /** Keydown for a CORE text cell at `col`: Enter→next Name, Shift+Enter→newline,
+   *  arrows→cell nav (caret-aware via the parent handler). */
+  function onCoreTextKeyDown(col: number) {
+    return (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        focusName(index + 1);
+        return;
+      }
+      // Shift+Enter: let the textarea insert a newline (default behavior).
+      handleArrowNav(e, index, col, { isText: true });
+    };
   }
 
   return (
     <tr className={`border-b border-foreground/10 ${error ? 'bg-red-500/5' : ''}`}>
       <td className="align-top">
         <textarea
-          ref={setNameRef(index)}
+          ref={nameCellRef}
           value={name}
           rows={1}
           disabled={disabled}
           onChange={(e) => commitName(e.target.value)}
-          onKeyDown={onTextKeyDown}
+          onKeyDown={onCoreTextKeyDown(0)}
           placeholder="code name"
           aria-label="Code name"
           className="w-full resize-none bg-transparent px-3 py-1.5 outline-none focus:bg-foreground/5 disabled:opacity-50"
@@ -604,11 +757,12 @@ const GridRowView = memo(function GridRowView({
       </td>
       <td className="align-top">
         <textarea
+          ref={setCellRef(index, 1)}
           value={mnemonic}
           rows={1}
           disabled={disabled}
           onChange={(e) => commitMnemonic(e.target.value)}
-          onKeyDown={onTextKeyDown}
+          onKeyDown={onCoreTextKeyDown(1)}
           placeholder="(auto)"
           aria-label="Code mnemonic (optional)"
           className="w-full resize-none bg-transparent px-3 py-1.5 font-mono text-xs outline-none focus:bg-foreground/5 disabled:opacity-50"
@@ -616,29 +770,40 @@ const GridRowView = memo(function GridRowView({
       </td>
       <td className="align-top">
         <textarea
+          ref={setCellRef(index, 2)}
           value={definition}
           rows={1}
           disabled={disabled}
           onChange={(e) => commitDefinition(e.target.value)}
-          onKeyDown={onTextKeyDown}
+          onKeyDown={onCoreTextKeyDown(2)}
           placeholder="one-line definition (optional)"
           aria-label="Code definition (optional)"
           className="w-full resize-none bg-transparent px-3 py-1.5 outline-none focus:bg-foreground/5 disabled:opacity-50"
         />
       </td>
-      {columns.map((col) => (
-        <td key={col.facetId} className="align-top px-2 py-1">
-          <FacetCellInput
-            col={col}
-            values={facetValues.get(col.facetId) ?? []}
-            cell={facetState[col.facetId] ?? { kind: 'enum', valueIds: [] }}
-            disabled={disabled}
-            onChange={(cell) => commitFacet(col.facetId, cell)}
-            onAddValue={(label) => addFacetValue(col.facetId, label)}
-            onEnter={() => focusName(index + 1)}
-          />
-        </td>
-      ))}
+      {columns.map((col, ci) => {
+        const colIndex = CORE_COL_COUNT + ci;
+        return (
+          <td key={col.facetId} className="align-top px-2 py-1">
+            <FacetCellInput
+              col={col}
+              values={facetValues.get(col.facetId) ?? []}
+              cell={facetState[col.facetId] ?? { kind: 'enum', valueIds: [] }}
+              disabled={disabled}
+              registerRef={setCellRef(index, colIndex)}
+              onArrowKeyDown={(e) =>
+                handleArrowNav(e, index, colIndex, {
+                  isText: isTextCol(colIndex),
+                  isSelect: col.mode === 'enum-single',
+                })
+              }
+              onChange={(cell) => commitFacet(col.facetId, cell)}
+              onAddValue={(label) => addFacetValue(col.facetId, label)}
+              onEnter={() => focusName(index + 1)}
+            />
+          </td>
+        );
+      })}
     </tr>
   );
 });
@@ -652,6 +817,8 @@ function FacetCellInput({
   values,
   cell,
   disabled,
+  registerRef,
+  onArrowKeyDown,
   onChange,
   onAddValue,
   onEnter,
@@ -660,6 +827,10 @@ function FacetCellInput({
   values: FacetValue[];
   cell: FacetCell;
   disabled: boolean;
+  /** Register THIS cell's primary focusable element for arrow-nav focus. */
+  registerRef: (el: HTMLElement | null) => void;
+  /** Arrow-key handler (caret-aware) shared across cell types. */
+  onArrowKeyDown: (e: React.KeyboardEvent<HTMLElement>) => void;
   onChange: (cell: FacetCell) => void;
   onAddValue: (label: string) => Promise<FacetValue | null>;
   onEnter: () => void;
@@ -671,6 +842,8 @@ function FacetCellInput({
           values={values}
           selected={cell.kind === 'enum' ? cell.valueIds[0] ?? '' : ''}
           disabled={disabled}
+          registerRef={registerRef}
+          onArrowKeyDown={onArrowKeyDown}
           onPick={(valueId) => onChange({ kind: 'enum', valueIds: valueId ? [valueId] : [] })}
           onAddValue={onAddValue}
         />
@@ -681,6 +854,8 @@ function FacetCellInput({
           values={values}
           selected={cell.kind === 'enum' ? cell.valueIds : []}
           disabled={disabled}
+          registerRef={registerRef}
+          onArrowKeyDown={onArrowKeyDown}
           onToggle={(valueId) => {
             const cur = cell.kind === 'enum' ? cell.valueIds : [];
             const next = cur.includes(valueId)
@@ -696,6 +871,8 @@ function FacetCellInput({
         <BooleanCell
           value={cell.kind === 'boolean' ? cell.bool : null}
           disabled={disabled}
+          registerRef={registerRef}
+          onArrowKeyDown={onArrowKeyDown}
           onChange={(b) => onChange({ kind: 'boolean', bool: b })}
         />
       );
@@ -705,6 +882,8 @@ function FacetCellInput({
         <OpenTextCell
           value={cell.kind === 'open_text' ? cell.text : ''}
           disabled={disabled}
+          registerRef={registerRef}
+          onArrowKeyDown={onArrowKeyDown}
           onChange={(t) => onChange({ kind: 'open_text', text: t })}
           onEnter={onEnter}
         />
@@ -718,12 +897,16 @@ function EnumSingleCell({
   values,
   selected,
   disabled,
+  registerRef,
+  onArrowKeyDown,
   onPick,
   onAddValue,
 }: {
   values: FacetValue[];
   selected: string;
   disabled: boolean;
+  registerRef: (el: HTMLElement | null) => void;
+  onArrowKeyDown: (e: React.KeyboardEvent<HTMLElement>) => void;
   onPick: (valueId: string) => void;
   onAddValue: (label: string) => Promise<FacetValue | null>;
 }) {
@@ -733,6 +916,7 @@ function EnumSingleCell({
   return (
     <div className="flex flex-col gap-1">
       <select
+        ref={registerRef}
         value={adding ? OTHER : selected}
         disabled={disabled || busy}
         onChange={(e) => {
@@ -743,6 +927,7 @@ function EnumSingleCell({
             onPick(v);
           }
         }}
+        onKeyDown={onArrowKeyDown}
         aria-label={`${values.length} options`}
         className="w-full border border-foreground/15 bg-background px-2 py-1 text-sm disabled:opacity-50"
       >
@@ -779,32 +964,42 @@ function EnumMultiCell({
   values,
   selected,
   disabled,
+  registerRef,
+  onArrowKeyDown,
   onToggle,
   onAddValue,
 }: {
   values: FacetValue[];
   selected: string[];
   disabled: boolean;
+  registerRef: (el: HTMLElement | null) => void;
+  onArrowKeyDown: (e: React.KeyboardEvent<HTMLElement>) => void;
   onToggle: (valueId: string) => void;
   onAddValue: (label: string) => Promise<FacetValue | null>;
 }) {
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const sel = new Set(selected);
+  // The cell's focusable target for arrow-nav is the FIRST chip; if there are no
+  // value chips, the "+ Other…" button is the first focusable element instead.
+  const hasChips = values.length > 0;
 
   return (
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap gap-1">
         {values.length === 0 && <span className="text-xs text-foreground/30">no values</span>}
-        {values.map((v) => {
+        {values.map((v, i) => {
           const on = sel.has(v.id);
+          const isFirst = i === 0;
           return (
             <button
               key={v.id}
+              ref={isFirst ? registerRef : undefined}
               type="button"
               disabled={disabled || busy}
               aria-pressed={on}
               onClick={() => onToggle(v.id)}
+              onKeyDown={isFirst ? onArrowKeyDown : undefined}
               className={`inline-flex items-center gap-1 border px-1.5 py-0.5 text-xs transition disabled:opacity-50 ${
                 on
                   ? 'border-foreground bg-foreground text-background'
@@ -824,9 +1019,11 @@ function EnumMultiCell({
         })}
         {!adding && (
           <button
+            ref={hasChips ? undefined : registerRef}
             type="button"
             disabled={disabled || busy}
             onClick={() => setAdding(true)}
+            onKeyDown={hasChips ? undefined : onArrowKeyDown}
             className="inline-flex items-center border border-dashed border-foreground/30 px-1.5 py-0.5 text-xs hover:border-foreground transition disabled:opacity-50"
           >
             + Other…
@@ -857,10 +1054,14 @@ function EnumMultiCell({
 function BooleanCell({
   value,
   disabled,
+  registerRef,
+  onArrowKeyDown,
   onChange,
 }: {
   value: boolean | null;
   disabled: boolean;
+  registerRef: (el: HTMLElement | null) => void;
+  onArrowKeyDown: (e: React.KeyboardEvent<HTMLElement>) => void;
   onChange: (b: boolean | null) => void;
 }) {
   const opts: { label: string; v: boolean | null }[] = [
@@ -872,14 +1073,17 @@ function BooleanCell({
     <div className="inline-flex border border-foreground/20" role="radiogroup" aria-label="yes/no">
       {opts.map((o, i) => {
         const on = value === o.v;
+        const isFirst = i === 0;
         return (
           <button
             key={o.label}
+            ref={isFirst ? registerRef : undefined}
             type="button"
             role="radio"
             aria-checked={on}
             disabled={disabled}
             onClick={() => onChange(o.v)}
+            onKeyDown={isFirst ? onArrowKeyDown : undefined}
             className={`px-1.5 py-0.5 text-xs transition disabled:opacity-50 ${
               i > 0 ? 'border-l border-foreground/20' : ''
             } ${on ? 'bg-foreground text-background' : 'hover:bg-foreground/10'}`}
@@ -893,20 +1097,26 @@ function BooleanCell({
 }
 
 /** open_text: a text input; Enter (no shift) advances to the next row's Name,
- *  Shift+Enter is left to the textarea to insert a newline. */
+ *  Shift+Enter is left to the textarea to insert a newline, arrows navigate cells
+ *  (caret-aware via the parent handler). */
 function OpenTextCell({
   value,
   disabled,
+  registerRef,
+  onArrowKeyDown,
   onChange,
   onEnter,
 }: {
   value: string;
   disabled: boolean;
+  registerRef: (el: HTMLElement | null) => void;
+  onArrowKeyDown: (e: React.KeyboardEvent<HTMLElement>) => void;
   onChange: (t: string) => void;
   onEnter: () => void;
 }) {
   return (
     <textarea
+      ref={registerRef}
       value={value}
       rows={1}
       disabled={disabled}
@@ -916,7 +1126,9 @@ function OpenTextCell({
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
           onEnter();
+          return;
         }
+        onArrowKeyDown(e);
       }}
       aria-label="Open response"
       className="w-full resize-none border border-foreground/15 bg-background px-2 py-1 text-sm outline-none disabled:opacity-50"

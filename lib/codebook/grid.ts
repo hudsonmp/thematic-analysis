@@ -202,3 +202,99 @@ export function lastFilledIndex(rows: RowData[]): number {
 export function nextRowFocusIndex(currentIndex: number): number {
   return currentIndex + 1;
 }
+
+// ---------------------------------------------------------------------------
+// Arrow-key cell navigation (pure target-cell computation)
+//
+// The grid is a spreadsheet of CELLS addressed by (rowIndex, colIndex):
+//   col 0 = Name, col 1 = Mnemonic, col 2 = Definition, col 3.. = one per facet.
+// `CORE_COL_COUNT` is the count of fixed leading columns; `colCount` for a grid
+// is therefore `CORE_COL_COUNT + facetColumns.length`.
+//
+// `arrowTargetCell` is the single source of truth for "where does an arrow key
+// move focus?", unit-tested in isolation. It is PURE: it takes the current cell,
+// the pressed key, and the caret situation, and returns the next cell or null
+// (null = do nothing / let the event fall through to the browser, e.g. moving
+// the caret inside a text field). The component wires the result to focus the
+// right element for the target cell's type and to auto-extend the grid.
+// ---------------------------------------------------------------------------
+
+/** Number of fixed leading columns before the facet columns (Name/Mnemonic/Definition). */
+export const CORE_COL_COUNT = 3;
+
+/** The four arrow keys this navigation responds to. */
+export type ArrowKey = 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight';
+
+/** A cell address in the grid. */
+export type CellPos = { row: number; col: number };
+
+/**
+ * Inputs to the pure arrow-navigation decision:
+ *   - `row`/`col`     — the currently focused cell.
+ *   - `key`           — the arrow key pressed.
+ *   - `isTextCell`    — whether the FOCUSED cell is a free-text field (Name /
+ *                       Mnemonic / Definition / open-text facet). Only text
+ *                       cells gate Left/Right on the caret; non-text cells
+ *                       (select, yes/no, chips) move cells immediately.
+ *   - `caretAtStart`  — for a text cell, whether the caret sits at offset 0 with
+ *                       no selection (so ArrowLeft should leave the field).
+ *   - `caretAtEnd`    — for a text cell, whether the caret sits at the end with
+ *                       no selection (so ArrowRight should leave the field).
+ *   - `colCount`      — total columns (CORE_COL_COUNT + facet columns).
+ *   - `rowCount`      — current total rows (the target may exceed this on Down,
+ *                       signalling the caller to auto-extend; see below).
+ */
+export type ArrowNavInput = {
+  row: number;
+  col: number;
+  key: ArrowKey;
+  isTextCell: boolean;
+  caretAtStart: boolean;
+  caretAtEnd: boolean;
+  colCount: number;
+  rowCount: number;
+};
+
+/**
+ * Compute the target cell for an arrow key, or null to take no action (let the
+ * browser handle the key — e.g. move the caret within a text field, or stay put
+ * at a grid edge). Spreadsheet semantics:
+ *
+ *   - DOWN  → same column, next row. ALWAYS moves (never null while in-grid);
+ *     if it passes the last row it returns `row+1` anyway — the caller treats a
+ *     target row >= rowCount as "extend the grid, then focus" (exactly like
+ *     Enter via `focusName`). So Down never returns null.
+ *   - UP    → same column, previous row. Null at row 0 (nowhere above).
+ *   - LEFT  → previous column, same row. For a TEXT cell, only when the caret is
+ *     at the start (otherwise null, so the caret moves within the text). Null at
+ *     col 0 (nowhere to the left).
+ *   - RIGHT → next column, same row. For a TEXT cell, only when the caret is at
+ *     the end (otherwise null). Null at the last column.
+ *
+ * Up/Down do NOT depend on caret position: a spreadsheet always moves the
+ * selection vertically. (For native <select> the component must only call this
+ * with Up/Down when the select is CLOSED, since an open select uses Up/Down to
+ * change its option — see CodebookEntry.)
+ */
+export function arrowTargetCell(input: ArrowNavInput): CellPos | null {
+  const { row, col, key, isTextCell, caretAtStart, caretAtEnd, colCount } = input;
+
+  switch (key) {
+    case 'ArrowDown':
+      // Always move down; row+1 may exceed rowCount → caller auto-extends.
+      return { row: row + 1, col };
+    case 'ArrowUp':
+      return row > 0 ? { row: row - 1, col } : null;
+    case 'ArrowLeft':
+      if (col <= 0) return null;
+      // Text cells only jump when the caret is already at the field start.
+      if (isTextCell && !caretAtStart) return null;
+      return { row, col: col - 1 };
+    case 'ArrowRight':
+      if (col >= colCount - 1) return null;
+      if (isTextCell && !caretAtEnd) return null;
+      return { row, col: col + 1 };
+    default:
+      return null;
+  }
+}
