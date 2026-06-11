@@ -188,6 +188,14 @@ export async function listSessionsCloud(): Promise<SessionListRow[]> {
   }));
 }
 
+/**
+ * A cloud segment is the pure-parser `Segment` plus the real `cb_segments.id`.
+ * Annotations anchor to that DB id (it is the `segment_id` FK), so the player
+ * needs it on every row — `Segment` (the SRT-parser shape) carries only `idx`,
+ * the in-file ordinal, which is NOT a stable DB key.
+ */
+export type CloudSegment = Segment & { id: string };
+
 /** A loaded cloud session: the row's display fields + its original segments. */
 export type SessionDetailCloud = {
   id: string;
@@ -195,7 +203,9 @@ export type SessionDetailCloud = {
   collection: string;
   durationMs: number | null;
   trackMode: string;
-  segments: Segment[];
+  /** The original verbatim version id — annotations anchor to it (version_id). */
+  versionId: string | null;
+  segments: CloudSegment[];
 };
 
 /**
@@ -237,17 +247,20 @@ export async function getSessionCloud(id: string): Promise<SessionDetailCloud> {
 
   // Pull this version's segments in display order. No original version (a
   // pathological half-ingested session) → an empty transcript, not a crash.
-  let segments: Segment[] = [];
+  // We select the real `cb_segments.id` so each row carries the DB key that
+  // annotations anchor to (segment_id), not just the in-file `ordinal`.
+  let segments: CloudSegment[] = [];
   if (version) {
     const { data: rows, error: segErr } = await sb
       .from('cb_segments')
-      .select('speaker, t_start_ms, t_end_ms, text, ordinal')
+      .select('id, speaker, t_start_ms, t_end_ms, text, ordinal')
       .eq('version_id', version.id)
       .order('ordinal', { ascending: true });
     if (segErr) {
       throw new Error(`getSessionCloud: cb_segments select failed: ${segErr.message}`);
     }
     segments = (rows ?? []).map((r) => ({
+      id: r.id,
       idx: r.ordinal,
       startMs: r.t_start_ms,
       endMs: r.t_end_ms,
@@ -262,6 +275,7 @@ export async function getSessionCloud(id: string): Promise<SessionDetailCloud> {
     collection: session.collection,
     durationMs: session.duration_ms,
     trackMode: session.track_mode,
+    versionId: version?.id ?? null,
     segments,
   };
 }
