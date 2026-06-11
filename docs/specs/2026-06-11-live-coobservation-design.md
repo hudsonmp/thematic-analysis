@@ -22,7 +22,7 @@ Because the analyst flags and participant events are both absolute-timestamped, 
 ## Locked decisions
 
 1. **Live marking = interpretive flags only** (not structural, not full coding). Read/ponder/revise/scenario boundaries are *auto-derived* from `step_advance`/`module_start`. (Researcher choice: A.)
-2. **Anchor = auto.** `recording_started_at` is set to the `created_at` of the `module_start` event for the `type:'task'` module, for that PID. No live button, no Zoom. (Choice: 1.)
+2. **Anchor = auto, +2 s correction.** `recording_started_at` = the `created_at` of the `type:'task'` `module_start` event for that PID **plus `ANCHOR_CORRECTION_MS` = 2000** (one named, tunable constant) to absorb record-start reaction time so markers land on the moment without scrubbing. No live button, no Zoom. (Choice: 1, with offset.)
 3. **Live feed = lightweight.** Current module/step + a running clock — not a full scrolling event feed. The researcher is already watching the participant on Zoom; the rich timeline is reconstructed at *review*. (Choice: a.) The live "current step" is read via **polling** (every 3 s) of the latest `study_event` for the PID — no change to the study-table realtime publication, stays read-only.
 4. **Custom flag taxonomy.** Flags are researcher-defined presets (`cb_flag_types`), editable like episode presets — not a fixed Confusion/Aha/etc. list.
 5. **No codebook editing on the live screen.** The researcher edits codes/flags in a separate tab. The live screen is a minimal note-capture surface.
@@ -52,9 +52,9 @@ Because the analyst flags and participant events are both absolute-timestamped, 
 - When a recording is linked to a session for a PID (existing upload flow sets `cb_sessions.pid_label`), set `recording_started_at` automatically:
   - Resolve `user_id` from `users.pid = pid_label`.
   - Resolve the `type:'task'` `module_id` from the active study's `authored_data` (the recorded module).
-  - `recording_started_at = min(created_at) of study_events where user_id=… and module_id=… and event_type='module_start'`.
+  - `recording_started_at = min(created_at) of study_events where user_id=… and module_id=… and event_type='module_start'` **+ `ANCHOR_CORRECTION_MS` (a single named constant = `2000`)**, so markers land on the moment without scrubbing.
   - If absent (no task event), leave null and surface "anchor unset — set manually" (a manual fallback: pick any event/observation and declare its video position; out of MVP scope, flagged).
-- **Auto-episodes:** at link time, derive episode marks from `study_events` for the PID and materialize into `cb_session_episodes` (so they're editable beside the researcher's presets): each `step_advance`/`module_start` boundary → a `cb_session_episodes` row with `t_start_ms = created_at − recording_started_at`, `episode_id` mapped from a step→episode lookup (auto-create `cb_episodes` for the canonical steps: intro/initial-spec/read/ponder/revise, idempotent). Negative offsets (events before record start) are clamped/dropped.
+- **Auto-episodes:** at link time, derive episode marks from `study_events` for the PID and materialize into `cb_session_episodes` (so they sit beside the researcher's own marks): each `step_advance`/`module_start` boundary → a `cb_session_episodes` row with `t_start_ms = created_at − recording_started_at`, `episode_id` mapped from a step→episode lookup. **The researcher owns episodes** — the existing `cb_episodes` manager (create/rename/reorder/delete) is the source of truth; the auto-derivation maps step boundaries onto *existing* presets by a case-insensitive name match (intro/initial-spec/read/ponder/revise) and only auto-creates a `cb_episodes` row when no matching preset exists (idempotent, and the researcher may then rename/merge it). Negative offsets (events before record start) are clamped to 0 / dropped.
 
 ### E. Review timeline (extends the session player)
 - In the existing session page, render `cb_observations` for the session's PID as **clickable markers** on the transcript/video timeline at `offset = created_at − recording_started_at`; clicking seeks the video. Color by flag type; show the note on hover/click.
