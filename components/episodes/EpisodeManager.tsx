@@ -66,15 +66,15 @@ export default function EpisodeManager({
     <main className="px-6 py-6">
       <header className="mb-4">
         <h1 className="text-lg font-medium tracking-tight">
-          Episodes{' '}
+          Events{' '}
           {isPending && (
             <span className="text-sm font-normal text-foreground/40">· saving…</span>
           )}
         </h1>
         <p className="text-sm text-foreground/60">
           Preset the named phases of a session (e.g. “Scenario 1 read”, “revise”).
-          While coding a session you mark where each episode starts at the current
-          video time, so a coder can resume / navigate by episode.
+          While coding a session you mark where each event starts at the current
+          video time, so a coder can resume / navigate by event.
         </p>
       </header>
 
@@ -87,7 +87,7 @@ export default function EpisodeManager({
       {/* Existing episodes */}
       {episodes.length === 0 ? (
         <p className="mb-6 text-sm text-foreground/50">
-          No preset episodes yet. Add one below.
+          No preset events yet. Add one below.
         </p>
       ) : (
         <ul className="mb-6 divide-y divide-foreground/10 border border-foreground/15">
@@ -105,7 +105,7 @@ export default function EpisodeManager({
                     if (v && v !== ep.name) run(() => renameEpisode(ep.id, { name: v }));
                   }}
                   className="border border-foreground/15 bg-background px-2 py-1 text-sm"
-                  aria-label={`Rename episode ${ep.name}`}
+                  aria-label={`Rename event ${ep.name}`}
                 />
                 <input
                   defaultValue={ep.description ?? ''}
@@ -146,11 +146,11 @@ export default function EpisodeManager({
                   type="button"
                   disabled={isPending}
                   onClick={() => {
-                    if (confirm(`Delete episode "${ep.name}" and its session marks?`)) {
+                    if (confirm(`Delete event "${ep.name}" and its session marks?`)) {
                       run(() => deleteEpisode(ep.id));
                     }
                   }}
-                  aria-label={`Delete episode ${ep.name}`}
+                  aria-label={`Delete event ${ep.name}`}
                   className="px-1 text-red-600 hover:underline disabled:opacity-50"
                 >
                   ×
@@ -164,7 +164,7 @@ export default function EpisodeManager({
       {/* Add episode */}
       <div className="border-t border-foreground/10 pt-4">
         <p className="mb-2 text-xs uppercase tracking-wider text-foreground/50">
-          New episode
+          New event
         </p>
         <div className="flex flex-wrap items-end gap-2">
           <label className="flex flex-col gap-1">
@@ -175,7 +175,7 @@ export default function EpisodeManager({
               placeholder="Scenario 1 read"
               disabled={isPending}
               className="w-56 border border-foreground/15 bg-background px-2 py-1 text-sm"
-              aria-label="New episode name"
+              aria-label="New event name"
             />
           </label>
           <label className="flex flex-col gap-1">
@@ -188,7 +188,7 @@ export default function EpisodeManager({
               placeholder="participant first reads the scenario"
               disabled={isPending}
               className="w-72 border border-foreground/15 bg-background px-2 py-1 text-sm"
-              aria-label="New episode description"
+              aria-label="New event description"
             />
           </label>
           <button
@@ -197,7 +197,7 @@ export default function EpisodeManager({
             onClick={() => {
               const n = name.trim();
               if (!n) {
-                setError('Episode needs a name.');
+                setError('Event needs a name.');
                 return;
               }
               run(async () => {
@@ -211,7 +211,7 @@ export default function EpisodeManager({
             }}
             className="border border-foreground px-3 py-1 text-sm transition hover:bg-foreground hover:text-background disabled:opacity-50"
           >
-            Add episode
+            Add event
           </button>
         </div>
       </div>

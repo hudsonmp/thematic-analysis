@@ -10,7 +10,7 @@ const LINKS: NavLink[] = [
   { href: '/', label: 'Scheme' },
   { href: '/sessions/live', label: 'Live' },
   { href: '/sessions', label: 'Sessions' },
-  { href: '/episodes', label: 'Episodes' },
+  { href: '/episodes', label: 'Events' },
   { href: '/flag-types', label: 'Flags' },
   { href: '/labels', label: 'Labels' },
   { href: '/citations', label: 'Citations' },

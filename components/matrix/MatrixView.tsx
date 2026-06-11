@@ -453,11 +453,11 @@ export default function MatrixView({
             />
             {episodes.length > 0 && (
               <label className="flex items-center gap-2 text-sm">
-                <span className="text-foreground/60">Episode</span>
+                <span className="text-foreground/60">Event</span>
                 <select
                   value={episodeId}
                   onChange={(e) => setEpisodeId(e.target.value)}
-                  aria-label="Filter codes by episode"
+                  aria-label="Filter codes by event"
                   className="border border-foreground/15 px-2 py-1 bg-background"
                 >
                   <option value={NONE}>all</option>

@@ -43,7 +43,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'anatomy', label: 'Anatomy' },
   { key: 'classification', label: 'Classification' },
   { key: 'citations', label: 'Citations' },
-  { key: 'episodes', label: 'Episodes' },
+  { key: 'episodes', label: 'Events' },
   { key: 'labels', label: 'Labels' },
   { key: 'versions', label: 'Versions' },
   { key: 'comments', label: 'Comments' },

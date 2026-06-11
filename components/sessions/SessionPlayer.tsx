@@ -886,7 +886,7 @@ export default function SessionPlayer({
       await markSessionEpisode({ sessionId: id, episodeId: selectedEpisodeId, tStartMs });
       router.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to mark episode.');
+      setError(e instanceof Error ? e.message : 'Failed to mark event.');
     } finally {
       setMarking(false);
     }
@@ -899,7 +899,7 @@ export default function SessionPlayer({
       await deleteSessionEpisode(markId);
       router.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete episode mark.');
+      setError(e instanceof Error ? e.message : 'Failed to delete event mark.');
     } finally {
       setBusyEpisodeMarkId(null);
     }
@@ -1204,11 +1204,11 @@ export default function SessionPlayer({
                   of episode boundaries (click → seek, ✕ → delete). */}
               <section className="rounded border border-foreground/15 p-3">
                 <div className="mb-2 flex items-center gap-2">
-                  <h2 className="text-sm font-semibold">Episode</h2>
+                  <h2 className="text-sm font-semibold">Event</h2>
                   <Link
                     href="/episodes"
                     className="ml-auto text-xs text-foreground/50 underline hover:text-foreground"
-                    title="Manage the codebook's preset episodes"
+                    title="Manage the codebook's preset events"
                   >
                     Manage presets
                   </Link>
@@ -1216,7 +1216,7 @@ export default function SessionPlayer({
 
                 {episodes.length === 0 ? (
                   <p className="text-sm text-foreground/50">
-                    No preset episodes.{' '}
+                    No preset events.{' '}
                     <Link href="/episodes" className="underline hover:text-foreground">
                       Add some
                     </Link>{' '}
@@ -1228,9 +1228,9 @@ export default function SessionPlayer({
                       value={selectedEpisodeId}
                       onChange={(e) => setSelectedEpisodeId(e.target.value)}
                       className="min-w-40 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
-                      aria-label="Episode to mark"
+                      aria-label="Event to mark"
                     >
-                      <option value="">Select an episode…</option>
+                      <option value="">Select an event…</option>
                       {episodes.map((ep) => (
                         <option key={ep.id} value={ep.id}>
                           {ep.name}
@@ -1241,7 +1241,7 @@ export default function SessionPlayer({
                       type="button"
                       onClick={handleMarkEpisode}
                       disabled={!selectedEpisodeId || marking}
-                      title="Mark the selected episode at the current video time"
+                      title="Mark the selected event at the current video time"
                       className="rounded bg-foreground px-3 py-1 text-sm text-background disabled:opacity-40"
                     >
                       {marking ? 'Marking…' : 'Mark here'}
@@ -1260,7 +1260,7 @@ export default function SessionPlayer({
                           type="button"
                           onClick={() => seekTo(m.tStartMs)}
                           className="flex-1 text-left hover:underline"
-                          title="Seek to this episode"
+                          title="Seek to this event"
                         >
                           <span className="font-semibold">{m.episodeName}</span>{' '}
                           <span className="font-mono text-xs text-foreground/50">
@@ -1271,7 +1271,7 @@ export default function SessionPlayer({
                           type="button"
                           onClick={() => handleDeleteEpisodeMark(m.id)}
                           disabled={busyEpisodeMarkId === m.id}
-                          aria-label={`Delete episode mark ${m.episodeName}`}
+                          aria-label={`Delete event mark ${m.episodeName}`}
                           className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
                         >
                           {'✕'}

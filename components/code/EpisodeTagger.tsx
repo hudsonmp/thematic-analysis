@@ -39,7 +39,7 @@ export default function EpisodeTagger({
         await setCodeEpisodes(codeId, [...next]);
         router.refresh();
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to save episode tags.');
+        setError(err instanceof Error ? err.message : 'Failed to save event tags.');
         setSelected(new Set(selectedEpisodeIds)); // roll back to server truth
       }
     });
@@ -55,7 +55,7 @@ export default function EpisodeTagger({
   if (episodes.length === 0) {
     return (
       <p className="text-sm text-foreground/50">
-        No episodes defined yet — add preset episodes on the Episodes page to tag this code.
+        No events defined yet — add preset events on the Events page to tag this code.
       </p>
     );
   }
@@ -64,7 +64,7 @@ export default function EpisodeTagger({
     <div className="space-y-3">
       {error && <p className="text-sm text-red-600">{error}</p>}
       <p className="text-xs text-foreground/50">
-        Tag which protocol episodes this code pertains to. The matrix can filter codes by episode.
+        Tag which events this code pertains to. The matrix can filter codes by event.
       </p>
       <div className="flex flex-wrap gap-1.5">
         {episodes.map((ep) => {
