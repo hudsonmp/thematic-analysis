@@ -9,6 +9,12 @@ import {
   deleteAnnotation,
   type MyAnnotationView,
 } from '@/app/actions/annotations';
+import {
+  buildTextAnchor,
+  splitIntoPieces,
+  type Highlight,
+  type TextAnchor,
+} from '@/lib/transcript/selection';
 import { useRealtimeAnnotations } from './useRealtimeAnnotations';
 
 /** Minimal code shape the picker needs (flattened from the codebook tree). */
@@ -43,6 +49,66 @@ function findActiveIndex(segments: CloudSegment[], tMs: number): number {
 }
 
 /**
+ * Resolve the current `window.getSelection()` to a single-segment text anchor.
+ *
+ * Each segment's text is rendered into ONE element tagged `data-seg-idx={i}`
+ * (see the transcript render below). We walk up from the selection's anchor node
+ * to that element and require BOTH ends of the selection to live inside the SAME
+ * segment element (single-segment selections only in SP-A; multi-segment is
+ * SP-future — we clamp to the anchor segment by bailing out). Char offsets are
+ * computed by measuring a Range from the start of the segment element to each
+ * selection boundary with `toString().length`, which counts rendered text chars
+ * and is robust to the text being split across child text nodes.
+ *
+ * Returns `{ segIdx, anchor }` or `null` (no/collapsed selection, or a selection
+ * that isn't fully within one segment's text element).
+ */
+function resolveSelection(root: HTMLElement | null): { segIdx: number; anchor: TextAnchor } | null {
+  if (!root) return null;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+  const range = sel.getRangeAt(0);
+
+  const startEl = segElementFor(range.startContainer, root);
+  const endEl = segElementFor(range.endContainer, root);
+  // Require both boundaries inside the SAME segment text element.
+  if (!startEl || startEl !== endEl) return null;
+
+  const segIdx = Number(startEl.dataset.segIdx);
+  if (!Number.isInteger(segIdx)) return null;
+
+  const text = startEl.textContent ?? '';
+  const startOffset = charOffsetWithin(startEl, range.startContainer, range.startOffset);
+  const endOffset = charOffsetWithin(startEl, range.endContainer, range.endOffset);
+  const anchor = buildTextAnchor(text, startOffset, endOffset);
+  if (!anchor) return null;
+  return { segIdx, anchor };
+}
+
+/** Walk up from `node` to the nearest `[data-seg-idx]` element within `root`, or null. */
+function segElementFor(node: Node | null, root: HTMLElement): HTMLElement | null {
+  let el: Node | null = node;
+  while (el && el !== root) {
+    if (el instanceof HTMLElement && el.dataset.segIdx !== undefined) return el;
+    el = el.parentNode;
+  }
+  return null;
+}
+
+/**
+ * Char offset of (container, offset) measured from the start of `segEl`, in
+ * rendered-text chars. Builds a Range from segEl's start to the boundary and
+ * reads its string length — correct even when the segment text is split across
+ * multiple text nodes.
+ */
+function charOffsetWithin(segEl: HTMLElement, container: Node, offset: number): number {
+  const r = document.createRange();
+  r.selectNodeContents(segEl);
+  r.setEnd(container, offset);
+  return r.toString().length;
+}
+
+/**
  * Two-pane participant-session player: a 2/3-width video on the left and a
  * 1/3-width synchronized, click-to-seek, brushable transcript on the right,
  * plus (when coding is enabled) a coding rail.
@@ -50,40 +116,37 @@ function findActiveIndex(segments: CloudSegment[], tMs: number): number {
  * Sync (video → transcript): when SYNC is on (default), the video's `timeupdate`
  * — which fires on play AND on seek/scrub/fast-forward — recomputes the active
  * segment; we highlight that row and scroll it into view, so scrubbing the video
- * drags the transcript along. The explicit Sync/Unsync toggle turns this off so
- * the coder can read and scroll freely without being yanked back to the playhead
- * (the highlight still tracks, but no forced scroll).
+ * drags the transcript along. The explicit Sync/Unsync toggle turns this off.
  *
  * Seek (transcript → video): clicking a row's TIMESTAMP sets `currentTime` to
- * that segment's start and plays. Clicking the row BODY starts/replaces the
- * selection at that segment; shift-clicking another row extends the selection to
- * the contiguous range [min, max] of the two clicked rows.
+ * that segment's start and plays.
  *
- * Coding (Task 9, cb_annotations): with a selection, pick a code → "Apply code"
- * → `addAnnotation` writes a `cb_annotations` row owned by the SIGNED-IN coder
- * (coder_id = auth.uid(), enforced server-side; there is NO coder input). SP-A
- * anchors at whole-segment granularity: the annotation's `segment_id` is the
- * FIRST selected segment's real `cb_segments.id` and the char range is the whole
- * segment text (`charStart:0, charEnd:text.length`); the recording-clock span
- * `[tStartMs,tEndMs]` is the brushed selection's [minStart,maxEnd]. SP-B will add
- * sub-segment char ranges. The rail shows ONLY the signed-in coder's OWN
- * annotations (own-coding isolation): click a rail row → seek to its `tStartMs`;
- * ✕ → `deleteAnnotation`. Every mutation calls `router.refresh()` so the page
- * re-loads `myAnnotations` server-side; no Server Action runs during client
- * render.
+ * Coding (SP-A, cb_annotations): Google-Docs style. SELECT arbitrary TEXT within
+ * a single transcript segment (drag → `mouseup` reads `window.getSelection()` and
+ * resolves it to char offsets WITHIN that segment's text). Then either:
+ *   • pick a code → "Apply code" → `addAnnotation({kind:'code', codeIds:[id], …})`
+ *   • "Flag quote ❝" → `addAnnotation({kind:'quote', codeIds:[]})` (a paper quote).
+ * Both store `char_start`/`char_end` (the sub-segment range), `quote_text` (the
+ * exact substring), and `prefix`/`suffix` (≤32 chars context) for re-anchoring;
+ * `[t_start_ms,t_end_ms]` is the whole segment's time (sub-segment word-timing is
+ * future). Selecting a segment's ENTIRE text reproduces the old whole-segment
+ * anchor (`charStart:0, charEnd:text.length`); the apply/flag buttons are inert
+ * until text is brushed, so an empty selection can never write a stray anchor.
+ * (`addAnnotation` still accepts whole-segment ranges directly — the canonical
+ * reconciliation layer uses that path.)
  *
- * Realtime (Task 10): `useRealtimeAnnotations` subscribes (via the authenticated
- * browser client) to this session's `cb_annotations` changes and, when the
- * signed-in coder's OWN rows change in ANOTHER tab/device (#16: laptop transcript
- * + monitor video, same user), calls `router.refresh()` (debounced). That re-runs
- * the page server-side and re-passes `myAnnotations` WITH joined codes, so the
- * rail — which renders from that prop — reflects a sibling tab's insert/delete
- * live. Other coders' in-progress work never surfaces (own-coding isolation is
- * enforced in the hook by gating on `coder_id`).
+ * The annotation's `segment_id` is the selected segment's real `cb_segments.id`,
+ * `coder_id = auth.uid()` (enforced server-side; NO coder input). The rail shows
+ * ONLY the signed-in coder's OWN annotations (own-coding isolation): click a rail
+ * row → seek; ✕ → `deleteAnnotation`. A "Quotes" view lists flagged quotes with a
+ * copy-to-clipboard button. Highlights in the transcript mark each annotation's
+ * char-range (code one color, quote another); clicking a highlight selects its
+ * rail row. Every mutation calls `router.refresh()` so the page re-loads
+ * `myAnnotations` server-side.
  *
- * NOTE: the comments panel (`cb_memos`) is intentionally NOT re-enabled here —
- * it awaits its own migration. The coding surface is gated behind `codingEnabled`
- * so a session viewed without codebook context still renders the player.
+ * Realtime (Task 10): `useRealtimeAnnotations` subscribes to this session's
+ * `cb_annotations` changes and, on the signed-in coder's OWN rows changing in
+ * ANOTHER tab/device, calls `router.refresh()` (debounced).
  */
 export default function SessionPlayer({
   id,
@@ -115,11 +178,6 @@ export default function SessionPlayer({
 }) {
   const router = useRouter();
 
-  // Live-sync the coder's OWN annotations across their tabs/devices (Task 10).
-  // The hook holds no state; on a relevant own-row change in another tab it calls
-  // onChange (debounced), which re-runs the page and re-passes `myAnnotations`
-  // (with joined codes) — so the rail below, rendered from that prop, reflects a
-  // sibling tab's add/delete live.
   useRealtimeAnnotations({
     sessionId: id,
     myUid,
@@ -128,33 +186,37 @@ export default function SessionPlayer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const railRowRefs = useRef<Record<string, HTMLLIElement | null>>({});
 
   const [activeIdx, setActiveIdx] = useState(-1);
 
-  // When ON (default), the transcript follows the video: on every `timeupdate`
-  // (play AND seek/scrub) we highlight the active segment and scroll it into
-  // view. When OFF, the highlight still tracks but we never force-scroll, so the
-  // coder can read ahead freely. `synced` is mirrored into a ref so the
-  // scroll-into-view effect can read the latest value without re-keying on it.
   const [synced, setSynced] = useState(true);
   const syncedRef = useRef(true);
   useEffect(() => {
     syncedRef.current = synced;
   }, [synced]);
 
-  // Span selection over transcript segments. `anchorIdx` is the first clicked
-  // row; `headIdx` is the far end (set by shift-click / "extend to here"). The
-  // covered range is [min,max] inclusive — `null` means no selection.
-  const [anchorIdx, setAnchorIdx] = useState<number | null>(null);
-  const [headIdx, setHeadIdx] = useState<number | null>(null);
+  // --- Text selection (Google-Docs style, sub-segment) --------------------
+  // The active text selection: a segment index + its char-anchor (charStart,
+  // charEnd, quoteText, prefix, suffix). `null` = nothing brushed. Set on
+  // `mouseup` within the transcript; cleared after a mutation or on empty.
+  const [textSel, setTextSel] = useState<{ segIdx: number; anchor: TextAnchor } | null>(null);
+
+  // Which rail tab is shown: own annotations or just the flagged quotes.
+  const [railTab, setRailTab] = useState<'codes' | 'quotes'>('codes');
+
+  // The rail row currently focused (e.g. after clicking a transcript highlight).
+  const [focusedAnnId, setFocusedAnnId] = useState<string | null>(null);
 
   // Coding form state. (No coder input — the coder is the signed-in user.)
   const [codeFilter, setCodeFilter] = useState('');
   const [selectedCodeId, setSelectedCodeId] = useState('');
   const [applying, setApplying] = useState(false);
+  const [flagging, setFlagging] = useState(false);
 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const handleTimeUpdate = useCallback(() => {
     const video = videoRef.current;
@@ -164,10 +226,6 @@ export default function SessionPlayer({
     setActiveIdx((prev) => (prev === idx ? prev : idx));
   }, [segments]);
 
-  // Scroll the active row into view when it changes — but only while SYNCED.
-  // Runs as an effect (post-render) so the row ref is populated. Reading
-  // `syncedRef` (not `synced`) keeps the effect keyed solely on `activeIdx`, so
-  // toggling sync mid-playback doesn't retroactively scroll.
   useEffect(() => {
     if (activeIdx < 0) return;
     if (!syncedRef.current) return;
@@ -181,75 +239,53 @@ export default function SessionPlayer({
     void video.play();
   }, []);
 
-  // --- Selection ----------------------------------------------------------
+  // --- Selection capture --------------------------------------------------
 
-  const selectionRange = useMemo<[number, number] | null>(() => {
-    if (anchorIdx === null) return null;
-    const head = headIdx ?? anchorIdx;
-    return [Math.min(anchorIdx, head), Math.max(anchorIdx, head)];
-  }, [anchorIdx, headIdx]);
-
-  // The selection's [minStart, maxEnd] span (recording clock) + the ANCHOR
-  // segment — the first covered row, which the annotation anchors to in SP-A
-  // (whole-segment granularity; SP-B subdivides the char range). Recomputed
-  // from the inclusive row range.
-  const selection = useMemo(() => {
-    if (!selectionRange) return null;
-    const [lo, hi] = selectionRange;
-    const anchorSeg = segments[lo];
-    if (!anchorSeg) return null;
-    let minStart = Infinity;
-    let maxEnd = -Infinity;
-    let count = 0;
-    for (let i = lo; i <= hi; i++) {
-      const seg = segments[i];
-      if (!seg) continue;
-      minStart = Math.min(minStart, seg.startMs);
-      maxEnd = Math.max(maxEnd, seg.endMs);
-      count += 1;
-    }
-    if (!Number.isFinite(minStart) || !Number.isFinite(maxEnd)) return null;
-    return {
-      startMs: minStart,
-      endMs: maxEnd,
-      anchorSegmentId: anchorSeg.id,
-      anchorTextLength: anchorSeg.text.length,
-      count,
-      rowLo: lo,
-      rowHi: hi,
-    };
-  }, [selectionRange, segments]);
-
-  const selectRow = useCallback((i: number, extend: boolean) => {
-    if (extend && anchorIdx !== null) {
-      setHeadIdx(i);
-    } else {
-      setAnchorIdx(i);
-      setHeadIdx(i);
-    }
-  }, [anchorIdx]);
+  // On mouseup anywhere in the transcript, read the browser selection and
+  // resolve it to a single-segment char anchor. A click (collapsed selection)
+  // clears the brush.
+  const handleTranscriptMouseUp = useCallback(() => {
+    const resolved = resolveSelection(transcriptRef.current);
+    setTextSel(resolved);
+  }, []);
 
   const clearSelection = useCallback(() => {
-    setAnchorIdx(null);
-    setHeadIdx(null);
+    setTextSel(null);
+    window.getSelection()?.removeAllRanges();
   }, []);
+
+  // The anchor segment + the char range to persist. With a brushed text
+  // selection we use its char offsets; with NO sub-selection there is nothing to
+  // code (the toolbar prompts the coder to select text first).
+  const pending = useMemo(() => {
+    if (!textSel) return null;
+    const seg = segments[textSel.segIdx];
+    if (!seg) return null;
+    return {
+      segment: seg,
+      anchor: textSel.anchor,
+    };
+  }, [textSel, segments]);
 
   // --- Mutations ----------------------------------------------------------
 
   const handleApplyCode = useCallback(async () => {
-    if (!selection || !selectedCodeId || !versionId) return;
+    if (!pending || !selectedCodeId || !versionId) return;
     setApplying(true);
     setError(null);
     try {
+      const { segment, anchor } = pending;
       await addAnnotation({
         sessionId: id,
         versionId,
-        // SP-A anchors the whole annotation to the FIRST selected segment.
-        segmentId: selection.anchorSegmentId,
-        charStart: 0,
-        charEnd: selection.anchorTextLength,
-        tStartMs: selection.startMs,
-        tEndMs: selection.endMs,
+        segmentId: segment.id,
+        charStart: anchor.charStart,
+        charEnd: anchor.charEnd,
+        quoteText: anchor.quoteText,
+        prefix: anchor.prefix,
+        suffix: anchor.suffix,
+        tStartMs: segment.startMs,
+        tEndMs: segment.endMs,
         kind: 'code',
         codeIds: [selectedCodeId],
       });
@@ -261,7 +297,37 @@ export default function SessionPlayer({
     } finally {
       setApplying(false);
     }
-  }, [selection, selectedCodeId, versionId, id, clearSelection, router]);
+  }, [pending, selectedCodeId, versionId, id, clearSelection, router]);
+
+  const handleFlagQuote = useCallback(async () => {
+    if (!pending || !versionId) return;
+    setFlagging(true);
+    setError(null);
+    try {
+      const { segment, anchor } = pending;
+      await addAnnotation({
+        sessionId: id,
+        versionId,
+        segmentId: segment.id,
+        charStart: anchor.charStart,
+        charEnd: anchor.charEnd,
+        quoteText: anchor.quoteText,
+        prefix: anchor.prefix,
+        suffix: anchor.suffix,
+        tStartMs: segment.startMs,
+        tEndMs: segment.endMs,
+        kind: 'quote',
+        codeIds: [],
+      });
+      clearSelection();
+      setRailTab('quotes');
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to flag quote.');
+    } finally {
+      setFlagging(false);
+    }
+  }, [pending, versionId, id, clearSelection, router]);
 
   const handleDeleteAnnotation = useCallback(async (annotationId: string) => {
     setBusyId(annotationId);
@@ -276,6 +342,31 @@ export default function SessionPlayer({
     }
   }, [router]);
 
+  const handleCopyQuote = useCallback(async (annotationId: string, quoteText: string) => {
+    try {
+      await navigator.clipboard.writeText(quoteText);
+      setCopiedId(annotationId);
+      setTimeout(() => setCopiedId((c) => (c === annotationId ? null : c)), 1500);
+    } catch {
+      setError('Copy failed — clipboard not available.');
+    }
+  }, []);
+
+  // Focus a rail annotation (e.g. from clicking its transcript highlight):
+  // switch to the right tab and flag it focused. The actual scroll-into-view is
+  // an EFFECT keyed on `focusedAnnId` (below), NOT an imperative ref read here —
+  // keeping ref access out of any render-reachable callback (react-hooks/refs).
+  const focusAnnotation = useCallback((ann: MyAnnotationView) => {
+    setRailTab(ann.kind === 'quote' ? 'quotes' : 'codes');
+    setFocusedAnnId(ann.id);
+  }, []);
+
+  // Scroll the focused rail row into view after the tab switch has rendered it.
+  useEffect(() => {
+    if (!focusedAnnId) return;
+    railRowRefs.current[focusedAnnId]?.scrollIntoView({ block: 'nearest' });
+  }, [focusedAnnId, railTab]);
+
   // --- Derived view helpers ----------------------------------------------
 
   const filteredCodes = useMemo(() => {
@@ -287,16 +378,41 @@ export default function SessionPlayer({
     );
   }, [codes, codeFilter]);
 
-  // Which transcript segment ids carry at least one of the signed-in coder's
-  // annotations (for a small edge marker on the row). Own-coding only.
-  const annotatedSegmentIds = useMemo(() => {
-    const set = new Set<string>();
-    for (const a of myAnnotations) set.add(a.segmentId);
-    return set;
+  // Annotations grouped by segment id → the highlights to render over each
+  // segment's text. Only own annotations (own-coding isolation).
+  const highlightsBySegment = useMemo(() => {
+    const m = new Map<string, Highlight[]>();
+    for (const a of myAnnotations) {
+      const list = m.get(a.segmentId) ?? [];
+      list.push({
+        annotationId: a.id,
+        charStart: a.charStart,
+        charEnd: a.charEnd,
+        kind: a.kind,
+      });
+      m.set(a.segmentId, list);
+    }
+    return m;
   }, [myAnnotations]);
 
-  const canApply =
-    !!selection && !!selectedCodeId && !!versionId && !applying;
+  // Annotation lookup by id (for resolving a clicked highlight → rail focus).
+  const annById = useMemo(() => {
+    const m = new Map<string, MyAnnotationView>();
+    for (const a of myAnnotations) m.set(a.id, a);
+    return m;
+  }, [myAnnotations]);
+
+  const quotes = useMemo(
+    () => myAnnotations.filter((a) => a.kind === 'quote'),
+    [myAnnotations],
+  );
+  const codeAnnotations = useMemo(
+    () => myAnnotations.filter((a) => a.kind !== 'quote'),
+    [myAnnotations],
+  );
+
+  const canApply = !!pending && !!selectedCodeId && !!versionId && !applying;
+  const canFlag = !!pending && !!versionId && !flagging;
 
   return (
     <main className="px-6 py-6">
@@ -353,17 +469,19 @@ export default function SessionPlayer({
             <>
               {/* Coding toolbar */}
               <section className="rounded border border-foreground/15 p-3">
-                <h2 className="mb-2 text-sm font-semibold">Apply code</h2>
-                {selection ? (
+                <h2 className="mb-2 text-sm font-semibold">Code or quote a selection</h2>
+                {pending ? (
                   <p className="mb-2 text-sm">
-                    Selection{' '}
-                    <span className="font-mono">
-                      {formatSpan(selection.startMs, selection.endMs)}
+                    <span className="rounded bg-foreground/10 px-1 font-mono text-xs">
+                      [{pending.anchor.charStart}–{pending.anchor.charEnd}]
                     </span>{' '}
-                    <span className="text-foreground/50">
-                      ({selection.count} segment
-                      {selection.count === 1 ? '' : 's'})
-                    </span>{' '}
+                    “
+                    <span className="italic text-foreground/80">
+                      {pending.anchor.quoteText.length > 80
+                        ? pending.anchor.quoteText.slice(0, 80) + '…'
+                        : pending.anchor.quoteText}
+                    </span>
+                    ”{' '}
                     <button
                       type="button"
                       onClick={clearSelection}
@@ -374,7 +492,8 @@ export default function SessionPlayer({
                   </p>
                 ) : (
                   <p className="mb-2 text-sm text-foreground/50">
-                    Click a transcript row to select; shift-click to extend.
+                    Select text in a transcript segment to code it or flag it as a
+                    quote.
                   </p>
                 )}
 
@@ -410,52 +529,153 @@ export default function SessionPlayer({
                   >
                     {applying ? 'Applying…' : 'Apply code'}
                   </button>
+                  <button
+                    type="button"
+                    onClick={handleFlagQuote}
+                    disabled={!canFlag}
+                    title="Flag the selected text as a paper quote (no code)"
+                    className="rounded border border-amber-500/60 px-3 py-1 text-sm text-amber-700 hover:bg-amber-500/10 disabled:opacity-40 dark:text-amber-300"
+                  >
+                    {flagging ? 'Flagging…' : 'Flag quote ❝'}
+                  </button>
                 </div>
               </section>
 
-              {/* Own-coding rail: ONLY the signed-in coder's annotations. */}
+              {/* Own-coding rail: ONLY the signed-in coder's annotations, with a
+                  Codes / Quotes tab. */}
               <section className="rounded border border-foreground/15 p-3">
-                <h2 className="mb-2 text-sm font-semibold">
-                  My annotations{' '}
-                  <span className="font-normal text-foreground/50">
-                    ({myAnnotations.length})
-                  </span>
-                </h2>
-                {myAnnotations.length === 0 ? (
-                  <p className="text-sm text-foreground/50">No annotations yet.</p>
+                <div className="mb-2 flex items-center gap-2">
+                  <h2 className="text-sm font-semibold">My annotations</h2>
+                  <div className="ml-auto flex gap-1 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setRailTab('codes')}
+                      aria-pressed={railTab === 'codes'}
+                      className={`rounded px-2 py-0.5 ${
+                        railTab === 'codes'
+                          ? 'bg-foreground text-background'
+                          : 'border border-foreground/30 text-foreground/70 hover:text-foreground'
+                      }`}
+                    >
+                      Codes ({codeAnnotations.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRailTab('quotes')}
+                      aria-pressed={railTab === 'quotes'}
+                      className={`rounded px-2 py-0.5 ${
+                        railTab === 'quotes'
+                          ? 'bg-amber-500 text-background'
+                          : 'border border-foreground/30 text-foreground/70 hover:text-foreground'
+                      }`}
+                    >
+                      Quotes ({quotes.length})
+                    </button>
+                  </div>
+                </div>
+
+                {railTab === 'codes' ? (
+                  codeAnnotations.length === 0 ? (
+                    <p className="text-sm text-foreground/50">No coded spans yet.</p>
+                  ) : (
+                    <ul className="divide-y divide-foreground/10">
+                      {codeAnnotations.map((a) => {
+                        const codeLabel =
+                          a.codes.map((c) => c.mnemonic).join(', ') || '—';
+                        return (
+                          <li
+                            key={a.id}
+                            ref={(el) => {
+                              railRowRefs.current[a.id] = el;
+                            }}
+                            className={`flex items-center gap-2 py-1.5 text-sm ${
+                              focusedAnnId === a.id ? 'bg-emerald-500/10' : ''
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => seekTo(a.tStartMs)}
+                              className="flex-1 text-left hover:underline"
+                              title={a.quoteText ?? codeLabel}
+                            >
+                              <span className="font-mono text-xs text-foreground/50">
+                                {formatSpan(a.tStartMs, a.tEndMs)}
+                              </span>{' '}
+                              <span className="font-semibold">{codeLabel}</span>
+                              {a.quoteText && (
+                                <span className="ml-1 text-foreground/50">
+                                  “{a.quoteText.length > 48
+                                    ? a.quoteText.slice(0, 48) + '…'
+                                    : a.quoteText}”
+                                </span>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteAnnotation(a.id)}
+                              disabled={busyId === a.id}
+                              aria-label="Delete annotation"
+                              className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
+                            >
+                              {'✕'}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )
+                ) : quotes.length === 0 ? (
+                  <p className="text-sm text-foreground/50">
+                    No flagged quotes. Select transcript text and click “Flag
+                    quote ❝”.
+                  </p>
                 ) : (
                   <ul className="divide-y divide-foreground/10">
-                    {myAnnotations.map((a) => {
-                      const codeLabel =
-                        a.codes.map((c) => c.mnemonic).join(', ') || '—';
-                      return (
-                        <li
-                          key={a.id}
-                          className="flex items-center gap-2 py-1.5 text-sm"
+                    {quotes.map((a) => (
+                      <li
+                        key={a.id}
+                        ref={(el) => {
+                          railRowRefs.current[a.id] = el;
+                        }}
+                        className={`flex items-start gap-2 py-1.5 text-sm ${
+                          focusedAnnId === a.id ? 'bg-amber-500/10' : ''
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => seekTo(a.tStartMs)}
+                          className="flex-1 text-left"
+                          title="Seek to here"
                         >
-                          <button
-                            type="button"
-                            onClick={() => seekTo(a.tStartMs)}
-                            className="flex-1 text-left hover:underline"
-                            title={codeLabel}
-                          >
-                            <span className="font-mono text-xs text-foreground/50">
-                              {formatSpan(a.tStartMs, a.tEndMs)}
-                            </span>{' '}
-                            <span className="font-semibold">{codeLabel}</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteAnnotation(a.id)}
-                            disabled={busyId === a.id}
-                            aria-label="Delete annotation"
-                            className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
-                          >
-                            {'✕'}
-                          </button>
-                        </li>
-                      );
-                    })}
+                          <span className="font-mono text-xs text-amber-700 dark:text-amber-300">
+                            [{formatTime(a.tStartMs)}]
+                          </span>{' '}
+                          <span className="text-foreground/80">
+                            “{a.quoteText ?? '(no text)'}”
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleCopyQuote(a.id, a.quoteText ?? '')
+                          }
+                          disabled={!a.quoteText}
+                          aria-label="Copy quote to clipboard"
+                          className="shrink-0 text-foreground/50 hover:text-foreground disabled:opacity-40"
+                        >
+                          {copiedId === a.id ? '✓' : '⧉'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteAnnotation(a.id)}
+                          disabled={busyId === a.id}
+                          aria-label="Delete quote"
+                          className="shrink-0 text-foreground/40 hover:text-red-500 disabled:opacity-40"
+                        >
+                          {'✕'}
+                        </button>
+                      </li>
+                    ))}
                   </ul>
                 )}
               </section>
@@ -463,9 +683,8 @@ export default function SessionPlayer({
           )}
         </div>
 
-        {/* Right (1/3): scrollable, click-to-seek, brushable transcript */}
+        {/* Right (1/3): scrollable, click-to-seek, text-selectable transcript */}
         <div className="lg:col-span-1">
-          {/* Transcript header: Sync/Unsync toggle (follow video on play + seek) */}
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-semibold">Transcript</h2>
             <button
@@ -488,6 +707,7 @@ export default function SessionPlayer({
           </div>
           <div
             ref={transcriptRef}
+            onMouseUp={codingEnabled ? handleTranscriptMouseUp : undefined}
             className="h-[70vh] overflow-y-auto border border-foreground/15 divide-y divide-foreground/10"
           >
             {segments.length === 0 ? (
@@ -495,10 +715,8 @@ export default function SessionPlayer({
             ) : (
               segments.map((seg, i) => {
                 const active = i === activeIdx;
-                const inSelection =
-                  !!selectionRange && i >= selectionRange[0] && i <= selectionRange[1];
-                const isAnnotated =
-                  codingEnabled && annotatedSegmentIds.has(seg.id);
+                const highlights = highlightsBySegment.get(seg.id) ?? [];
+                const isAnnotated = codingEnabled && highlights.length > 0;
                 return (
                   <div
                     key={seg.id}
@@ -507,11 +725,7 @@ export default function SessionPlayer({
                     }}
                     aria-current={active ? 'true' : undefined}
                     className={`flex items-start gap-1 px-2 py-2 text-sm transition ${
-                      inSelection
-                        ? 'bg-blue-500/15'
-                        : active
-                          ? 'bg-foreground/10'
-                          : 'hover:bg-foreground/[0.04]'
+                      active ? 'bg-foreground/10' : 'hover:bg-foreground/[0.04]'
                     } ${isAnnotated ? 'border-l-2 border-l-emerald-500' : 'border-l-2 border-l-transparent'}`}
                   >
                     {/* Timestamp = seek affordance */}
@@ -523,20 +737,27 @@ export default function SessionPlayer({
                     >
                       [{formatTime(seg.startMs)}]
                     </button>
-                    {/* Row body = select affordance: click starts/replaces the
-                        selection here; shift-click extends to the contiguous
-                        range between this row and the anchor. */}
-                    <button
-                      type="button"
-                      onClick={(e) => selectRow(i, e.shiftKey)}
-                      title="Click to select; shift-click to extend"
-                      className="flex-1 text-left"
-                    >
+                    {/* Row body: SELECTABLE text. The whole segment text lives in
+                        one `data-seg-idx` element so `resolveSelection` can map a
+                        browser Range to char offsets within it. */}
+                    <p className="flex-1 select-text text-left">
                       {seg.speaker && (
                         <span className="mr-1.5 font-semibold">{seg.speaker}:</span>
                       )}
-                      <span className="text-foreground/80">{seg.text}</span>
-                    </button>
+                      <span
+                        data-seg-idx={i}
+                        className="text-foreground/80"
+                      >
+                        {codingEnabled && highlights.length > 0
+                          ? renderHighlightedText(
+                              seg.text,
+                              highlights,
+                              annById,
+                              focusAnnotation,
+                            )
+                          : seg.text}
+                      </span>
+                    </p>
                   </div>
                 );
               })
@@ -546,4 +767,49 @@ export default function SessionPlayer({
       </div>
     </main>
   );
+}
+
+/**
+ * Render a segment's text with its annotation char-ranges marked. Splits the
+ * text at every highlight boundary (`splitIntoPieces`) and wraps each covered
+ * piece in a `<mark>`-style span — emerald for code annotations, amber for
+ * quotes. Overlapping ranges layer: a piece under both a code and a quote gets
+ * the quote tint (quotes are the rarer, paper-bound signal). Clicking a marked
+ * piece focuses its (first) annotation in the rail.
+ *
+ * Returned as a plain string when there are no highlights would be simpler, but
+ * the caller only invokes this when `highlights.length > 0`.
+ */
+function renderHighlightedText(
+  text: string,
+  highlights: Highlight[],
+  annById: Map<string, MyAnnotationView>,
+  onFocus: (ann: MyAnnotationView) => void,
+): React.ReactNode {
+  const pieces = splitIntoPieces(text, highlights);
+  return pieces.map((piece, idx) => {
+    if (piece.highlightIds.length === 0) {
+      return <span key={idx}>{piece.text}</span>;
+    }
+    const hasQuote = piece.kinds.includes('quote');
+    const firstId = piece.highlightIds[0];
+    const ann = annById.get(firstId);
+    return (
+      <mark
+        key={idx}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (ann) onFocus(ann);
+        }}
+        title={hasQuote ? 'Flagged quote — click to view in rail' : 'Coded — click to view in rail'}
+        className={`cursor-pointer rounded-sm px-px ${
+          hasQuote
+            ? 'bg-amber-300/50 text-foreground dark:bg-amber-400/30'
+            : 'bg-emerald-300/50 text-foreground dark:bg-emerald-400/30'
+        }`}
+      >
+        {piece.text}
+      </mark>
+    );
+  });
 }

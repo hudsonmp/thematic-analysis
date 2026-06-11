@@ -17,8 +17,11 @@ export type MyAnnotationView = {
   segmentId: string;
   charStart: number;
   charEnd: number;
+  /** The exact selected substring (sub-segment anchoring); null for whole-segment. */
+  quoteText: string | null;
   tStartMs: number;
   tEndMs: number;
+  /** 'code' (a coded span) or 'quote' (a flagged paper quote, no code). */
   kind: string;
   codes: { id: string; mnemonic: string }[];
   createdAt: string;
@@ -42,9 +45,14 @@ export type MyAnnotationView = {
  * junction cascades on the annotation's delete anyway) so we never leave a
  * code-less `kind:'code'` annotation behind. Returns the inserted annotation row.
  *
- * `kind` defaults to 'code'. SP-A anchors at whole-segment granularity, so the
- * caller passes `charStart:0, charEnd:<segment.text.length>`; SP-B adds
- * sub-segment char ranges. `quote_text/prefix/suffix` are optional anchor context.
+ * `kind` is 'code' (a coded span) or 'quote' (a flagged paper quote with NO code,
+ * so `codeIds` is empty). The char range is sub-segment (Google-Docs style): the
+ * caller passes the `[charStart,charEnd)` offsets of the selected TEXT within the
+ * segment, plus `quote_text` (the exact substring) and `prefix`/`suffix`
+ * (≤32 chars context) for re-anchoring. When no sub-selection is made the caller
+ * falls back to whole-segment (`charStart:0, charEnd:<segment.text.length>`).
+ * `t_start_ms`/`t_end_ms` materialize the whole segment's time in SP-A
+ * (sub-segment word-timing comes later).
  */
 export async function addAnnotation({
   sessionId,
@@ -140,7 +148,7 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
   const { data, error } = await sb
     .from('cb_annotations')
     .select(
-      'id, segment_id, char_start, char_end, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name))',
+      'id, segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name))',
     )
     .eq('session_id', sessionId)
     .eq('coder_id', user.id)
@@ -154,6 +162,7 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
     segment_id: string;
     char_start: number;
     char_end: number;
+    quote_text: string | null;
     t_start_ms: number;
     t_end_ms: number;
     kind: string;
@@ -169,6 +178,7 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
     segmentId: r.segment_id,
     charStart: r.char_start,
     charEnd: r.char_end,
+    quoteText: r.quote_text,
     tStartMs: r.t_start_ms,
     tEndMs: r.t_end_ms,
     kind: r.kind,
