@@ -1,6 +1,6 @@
-import { getSessionCloud } from '@/app/actions/sessions';
+import { getSessionCloud, getSessionVersions } from '@/app/actions/sessions';
 import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
-import { listMyAnnotations } from '@/app/actions/annotations';
+import { listMyAnnotationsForVersion } from '@/app/actions/annotations';
 import { listEpisodes, listSessionEpisodes } from '@/app/actions/episodes';
 import { getAuthUser } from '@/lib/auth/supabase-auth';
 import SessionPlayer from '@/components/sessions/SessionPlayer';
@@ -25,6 +25,14 @@ import SessionPlayer from '@/components/sessions/SessionPlayer';
  * coder's OWN rows — when they add/delete an annotation in another tab/device,
  * this page's rail updates live (a debounced `router.refresh()` re-runs this
  * server component and re-passes `myAnnotations` with joined codes).
+ *
+ * Transcript layers (feature #20): a session has an ORIGINAL (verbatim ASR)
+ * version and, once the researcher creates it, a CLEANED copy. The page opens on
+ * the ORIGINAL (the default `getSessionCloud(id)` loads) and passes the full
+ * version list so the player can render Original/Cleaned tabs. Annotations are
+ * version-scoped (`listMyAnnotationsForVersion`) — the original's own
+ * annotations are the initial server-rendered set; switching tabs re-loads the
+ * other version's segments + annotations client-side.
  */
 export default async function SessionPage({
   params,
@@ -33,13 +41,21 @@ export default async function SessionPage({
 }) {
   const { id } = await params;
 
-  const [session, codebook, myAnnotations, sessionEpisodes, user] = await Promise.all([
+  const [session, versions, codebook, sessionEpisodes, user] = await Promise.all([
     getSessionCloud(id),
+    getSessionVersions(id),
     getOrCreateCodebook(),
-    listMyAnnotations(id),
     listSessionEpisodes(id),
     getAuthUser(),
   ]);
+
+  // Initial (server-rendered) annotations are the ORIGINAL version's own
+  // annotations — version-scoped so highlights anchor to the loaded text. A
+  // session with no original version (pathological half-ingest) has no version
+  // to scope by, so the rail starts empty.
+  const myAnnotations = session.versionId
+    ? await listMyAnnotationsForVersion(id, session.versionId)
+    : [];
 
   // The codebook tree (for the code picker) and the codebook's preset episodes
   // (for the assign-during-coding control) both key off the resolved codebook id.
@@ -64,6 +80,7 @@ export default async function SessionPage({
       durationMs={session.durationMs ?? 0}
       codingEnabled
       versionId={session.versionId}
+      versions={versions}
       codes={codes}
       myAnnotations={myAnnotations}
       myUid={user?.id ?? null}

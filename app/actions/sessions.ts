@@ -240,27 +240,60 @@ export async function listSessionsCloud(): Promise<SessionListRow[]> {
  */
 export type CloudSegment = Segment & { id: string };
 
-/** A loaded cloud session: the row's display fields + its original segments. */
+/** A loaded cloud session: the row's display fields + its active-version segments. */
 export type SessionDetailCloud = {
   id: string;
   pidLabel: string;
   collection: string;
   durationMs: number | null;
   trackMode: string;
-  /** The original verbatim version id — annotations anchor to it (version_id). */
+  /** The loaded version id — annotations anchor to it (version_id). */
   versionId: string | null;
+  /** The loaded version's kind ('original' | 'cleaned'); null for an empty session. */
+  versionKind: 'original' | 'cleaned' | null;
+  /** Whether the loaded version is verbatim (the original is; cleaned is not). */
+  isVerbatim: boolean;
   segments: CloudSegment[];
 };
 
+/** Map a `cb_segments` select row into the `Segment`-shape the player consumes. */
+function toCloudSegment(r: {
+  id: string;
+  speaker: string | null;
+  t_start_ms: number;
+  t_end_ms: number;
+  text: string;
+  ordinal: number;
+}): CloudSegment {
+  return {
+    id: r.id,
+    idx: r.ordinal,
+    startMs: r.t_start_ms,
+    endMs: r.t_end_ms,
+    speaker: r.speaker,
+    text: r.text,
+  };
+}
+
 /**
- * Load one cloud session by id: the `cb_sessions` row plus its `cb_segments`
- * (the original `cb_transcript_versions`), ordered by `ordinal`, mapped into the
- * `Segment` shape `SessionPlayer` already consumes (t_start_ms→startMs, etc.).
+ * Load one cloud session by id and ONE of its transcript versions.
  *
- * `notFound()` (→ 404) if the session is absent. Reads through the user client;
- * the `authenticated` RLS read policies admit the selects.
+ * Without `versionId` it loads the ORIGINAL (verbatim ASR) version — the default
+ * the player opens on, and the behavior `getSessionCloud` had before the
+ * original/cleaned split. With an explicit `versionId` it loads THAT version's
+ * `cb_segments` instead (so the player can switch to the cleaned tab), after
+ * verifying the version belongs to this session.
+ *
+ * Segments come back ordered by `ordinal`, mapped into the `Segment` shape
+ * `SessionPlayer` consumes (t_start_ms→startMs, etc.), each carrying the real
+ * `cb_segments.id` (the annotation `segment_id` anchor). `notFound()` (→ 404) if
+ * the session is absent. Reads through the user client; the `authenticated` RLS
+ * read policies admit the selects.
  */
-export async function getSessionCloud(id: string): Promise<SessionDetailCloud> {
+export async function getSessionCloud(
+  id: string,
+  versionId?: string,
+): Promise<SessionDetailCloud> {
   await requireAuthUser();
   const sb = await createUserServerClient();
 
@@ -276,23 +309,42 @@ export async function getSessionCloud(id: string): Promise<SessionDetailCloud> {
     notFound();
   }
 
-  // The original verbatim version anchors the displayed transcript.
-  const { data: version, error: verErr } = await sb
-    .from('cb_transcript_versions')
-    .select('id')
-    .eq('session_id', id)
-    .eq('kind', 'original')
-    .maybeSingle();
-  if (verErr) {
-    throw new Error(
-      `getSessionCloud: cb_transcript_versions select failed: ${verErr.message}`,
-    );
+  // Resolve the version to load. An explicit `versionId` selects that version
+  // (verified to belong to THIS session, so a cross-session id can't be loaded);
+  // otherwise we fall back to the session's ORIGINAL verbatim version.
+  let version: { id: string; kind: string; is_verbatim: boolean } | null = null;
+  if (versionId) {
+    const { data, error } = await sb
+      .from('cb_transcript_versions')
+      .select('id, kind, is_verbatim')
+      .eq('session_id', id)
+      .eq('id', versionId)
+      .maybeSingle();
+    if (error) {
+      throw new Error(
+        `getSessionCloud: cb_transcript_versions select failed: ${error.message}`,
+      );
+    }
+    version = data ?? null;
+  } else {
+    const { data, error } = await sb
+      .from('cb_transcript_versions')
+      .select('id, kind, is_verbatim')
+      .eq('session_id', id)
+      .eq('kind', 'original')
+      .maybeSingle();
+    if (error) {
+      throw new Error(
+        `getSessionCloud: cb_transcript_versions select failed: ${error.message}`,
+      );
+    }
+    version = data ?? null;
   }
 
-  // Pull this version's segments in display order. No original version (a
-  // pathological half-ingested session) → an empty transcript, not a crash.
-  // We select the real `cb_segments.id` so each row carries the DB key that
-  // annotations anchor to (segment_id), not just the in-file `ordinal`.
+  // Pull this version's segments in display order. No version (a pathological
+  // half-ingested session, or an unknown versionId for this session) → an empty
+  // transcript, not a crash. We select the real `cb_segments.id` so each row
+  // carries the DB key annotations anchor to (segment_id), not just `ordinal`.
   let segments: CloudSegment[] = [];
   if (version) {
     const { data: rows, error: segErr } = await sb
@@ -303,14 +355,7 @@ export async function getSessionCloud(id: string): Promise<SessionDetailCloud> {
     if (segErr) {
       throw new Error(`getSessionCloud: cb_segments select failed: ${segErr.message}`);
     }
-    segments = (rows ?? []).map((r) => ({
-      id: r.id,
-      idx: r.ordinal,
-      startMs: r.t_start_ms,
-      endMs: r.t_end_ms,
-      speaker: r.speaker,
-      text: r.text,
-    }));
+    segments = (rows ?? []).map(toCloudSegment);
   }
 
   return {
@@ -320,6 +365,260 @@ export async function getSessionCloud(id: string): Promise<SessionDetailCloud> {
     durationMs: session.duration_ms,
     trackMode: session.track_mode,
     versionId: version?.id ?? null,
+    versionKind: (version?.kind as 'original' | 'cleaned' | undefined) ?? null,
+    isVerbatim: version?.is_verbatim ?? false,
     segments,
   };
+}
+
+/** One transcript version in the session's version list (for the player's tabs). */
+export type SessionVersion = {
+  id: string;
+  kind: 'original' | 'cleaned';
+  isVerbatim: boolean;
+};
+
+/**
+ * List a session's transcript versions (the player's tab set): `original` first,
+ * then `cleaned`. A session always has an `original`; the `cleaned` version
+ * exists only after `ensureCleanedVersion` has run. Reads through the user
+ * client; the `authenticated` RLS read policy admits the select.
+ */
+export async function getSessionVersions(
+  sessionId: string,
+): Promise<SessionVersion[]> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+
+  const { data, error } = await sb
+    .from('cb_transcript_versions')
+    .select('id, kind, is_verbatim')
+    .eq('session_id', sessionId);
+  if (error) {
+    throw new Error(`getSessionVersions: select failed: ${error.message}`);
+  }
+
+  // Stable tab order: original before cleaned.
+  const order = (k: string) => (k === 'original' ? 0 : 1);
+  return (data ?? [])
+    .map((r) => ({
+      id: r.id,
+      kind: r.kind as 'original' | 'cleaned',
+      isVerbatim: r.is_verbatim,
+    }))
+    .sort((a, b) => order(a.kind) - order(b.kind));
+}
+
+/**
+ * Load the segments for ONE version of a session (the player loads either the
+ * original or the cleaned version through this). The version is verified to
+ * belong to `sessionId` (so a cross-session id returns nothing rather than
+ * leaking another session's transcript). Segments come back in `ordinal` order
+ * in the `Segment` shape the player consumes, each carrying its real
+ * `cb_segments.id`. Reads through the user client.
+ */
+export async function getSessionSegments(
+  sessionId: string,
+  versionId: string,
+): Promise<CloudSegment[]> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+
+  // Verify the version belongs to this session before reading its segments.
+  const { data: version, error: verErr } = await sb
+    .from('cb_transcript_versions')
+    .select('id')
+    .eq('session_id', sessionId)
+    .eq('id', versionId)
+    .maybeSingle();
+  if (verErr) {
+    throw new Error(`getSessionSegments: version select failed: ${verErr.message}`);
+  }
+  if (!version) return [];
+
+  const { data: rows, error: segErr } = await sb
+    .from('cb_segments')
+    .select('id, speaker, t_start_ms, t_end_ms, text, ordinal')
+    .eq('version_id', versionId)
+    .order('ordinal', { ascending: true });
+  if (segErr) {
+    throw new Error(`getSessionSegments: cb_segments select failed: ${segErr.message}`);
+  }
+  return (rows ?? []).map(toCloudSegment);
+}
+
+/**
+ * Ensure the session has a CLEANED transcript version, creating it (and copying
+ * the original's segments into it) on first call. Idempotent.
+ *
+ * Methodology (Ericsson–Simon): the ORIGINAL is verbatim — disfluencies are
+ * data, never auto-edited. The CLEANED version is a readable, editable copy the
+ * researcher tidies for navigation and quoting; both are stored and time-aligned
+ * (the copy carries the original's `t_start_ms`/`t_end_ms`/`ordinal`/`speaker`).
+ *
+ * If a `kind='cleaned'` version already exists this returns its id without
+ * touching it (so re-running never duplicates the version or its segments). On
+ * first creation:
+ *   1. Resolve the session's `original` version (its id seeds
+ *      `derived_from_version_id`). A session with no original is a pathological
+ *      half-ingest — we refuse rather than derive a cleaned copy from nothing.
+ *   2. Insert the `cleaned` version (`is_verbatim:false`, derived from original).
+ *   3. Copy every original segment into the cleaned version (new `cb_segments`
+ *      rows, same speaker/time/ordinal, text copied; `source:'manual'` marks the
+ *      rows as a researcher-owned cleaning copy, not acoustic ASR output).
+ *
+ * On a failed segment copy we delete the just-created cleaned version (its
+ * segments cascade) so a partial run leaves no empty cleaned version behind.
+ * Writes through the user client; the `authenticated` RLS write policy admits them.
+ */
+export async function ensureCleanedVersion(sessionId: string): Promise<string> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+
+  // Idempotent: a cleaned version already exists → return it untouched.
+  const { data: existing, error: existErr } = await sb
+    .from('cb_transcript_versions')
+    .select('id')
+    .eq('session_id', sessionId)
+    .eq('kind', 'cleaned')
+    .maybeSingle();
+  if (existErr) {
+    throw new Error(
+      `ensureCleanedVersion: cleaned lookup failed: ${existErr.message}`,
+    );
+  }
+  if (existing) return existing.id;
+
+  // Resolve the original version — the cleaned copy derives from it.
+  const { data: original, error: origErr } = await sb
+    .from('cb_transcript_versions')
+    .select('id')
+    .eq('session_id', sessionId)
+    .eq('kind', 'original')
+    .maybeSingle();
+  if (origErr) {
+    throw new Error(
+      `ensureCleanedVersion: original lookup failed: ${origErr.message}`,
+    );
+  }
+  if (!original) {
+    throw new Error(
+      'ensureCleanedVersion: session has no original version to derive a cleaned copy from.',
+    );
+  }
+
+  // Create the cleaned version (non-verbatim, derived from the original).
+  const { data: created, error: createErr } = await sb
+    .from('cb_transcript_versions')
+    .insert({
+      session_id: sessionId,
+      kind: 'cleaned',
+      is_verbatim: false,
+      derived_from_version_id: original.id,
+    })
+    .select('id')
+    .single();
+  if (createErr || !created) {
+    throw new Error(
+      `ensureCleanedVersion: cleaned version insert failed: ${createErr?.message ?? 'no row returned'}`,
+    );
+  }
+  const cleanedId = created.id;
+
+  // Copy the original's segments into the cleaned version (time-aligned).
+  const { data: origSegs, error: readErr } = await sb
+    .from('cb_segments')
+    .select('speaker, t_start_ms, t_end_ms, text, ordinal')
+    .eq('version_id', original.id)
+    .order('ordinal', { ascending: true });
+  if (readErr) {
+    // Unwind the just-created cleaned version (no segments to cascade yet).
+    await sb.from('cb_transcript_versions').delete().eq('id', cleanedId);
+    throw new Error(
+      `ensureCleanedVersion: original segments read failed: ${readErr.message}`,
+    );
+  }
+
+  if ((origSegs ?? []).length > 0) {
+    const copyRows = (origSegs ?? []).map((s) => ({
+      session_id: sessionId,
+      version_id: cleanedId,
+      speaker: s.speaker,
+      t_start_ms: s.t_start_ms,
+      t_end_ms: s.t_end_ms,
+      text: s.text,
+      ordinal: s.ordinal,
+      // 'manual': a researcher-owned cleaning copy, not acoustic ASR output.
+      source: 'manual' as const,
+    }));
+    const copyRes = await sb.from('cb_segments').insert(copyRows);
+    if (copyRes.error) {
+      // Unwind: drop the cleaned version (its copied segments cascade) so a
+      // partial run never leaves a half-populated cleaned copy behind.
+      await sb.from('cb_transcript_versions').delete().eq('id', cleanedId);
+      throw new Error(
+        `ensureCleanedVersion: segment copy failed: ${copyRes.error.message}`,
+      );
+    }
+  }
+
+  return cleanedId;
+}
+
+/**
+ * Update one cleaned segment's text — the data-cleaning write.
+ *
+ * ONLY admitted on a segment whose version is `kind='cleaned'`. The ORIGINAL is
+ * verbatim (Ericsson–Simon: disfluencies are data) and must NEVER be edited, so
+ * we first read the segment's version and REJECT the write if it is not cleaned
+ * (a missing segment is also rejected). The researcher's exact cleaned text is
+ * stored as-is, but an all-whitespace edit that would blank the row is rejected
+ * (`cb_segments.text` is NOT NULL and a blank segment is never a useful cleaning).
+ *
+ * Writes through the user client; the `authenticated` RLS write policy admits it.
+ */
+export async function updateSegmentText(
+  segmentId: string,
+  text: string,
+): Promise<void> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+
+  if (typeof text !== 'string' || text.trim() === '') {
+    throw new Error('updateSegmentText: text must be a non-empty string.');
+  }
+
+  // Resolve the segment's version kind. The verbatim guard lives HERE (not in
+  // RLS, which is true/true on these tables): refuse any edit whose version is
+  // not 'cleaned'. Embed the version row to read its kind in one round-trip.
+  const { data: seg, error: segErr } = await sb
+    .from('cb_segments')
+    .select('id, version_id, cb_transcript_versions(kind, is_verbatim)')
+    .eq('id', segmentId)
+    .maybeSingle();
+  if (segErr) {
+    throw new Error(`updateSegmentText: segment lookup failed: ${segErr.message}`);
+  }
+  if (!seg) {
+    throw new Error('updateSegmentText: segment not found.');
+  }
+
+  const version = (
+    seg as {
+      cb_transcript_versions: { kind: string; is_verbatim: boolean } | null;
+    }
+  ).cb_transcript_versions;
+  if (!version || version.kind !== 'cleaned' || version.is_verbatim) {
+    throw new Error(
+      'updateSegmentText: refusing to edit a verbatim/original segment — only cleaned versions are editable.',
+    );
+  }
+
+  const { error: updErr } = await sb
+    .from('cb_segments')
+    .update({ text })
+    .eq('id', segmentId);
+  if (updErr) {
+    throw new Error(`updateSegmentText: update failed: ${updErr.message}`);
+  }
 }

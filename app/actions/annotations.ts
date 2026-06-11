@@ -193,6 +193,71 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
 }
 
 /**
+ * List the signed-in coder's OWN annotations for ONE transcript version of a
+ * session: `cb_annotations where session_id = ? and version_id = ? and coder_id
+ * = auth.uid()`. The version filter is the original/cleaned split — annotations
+ * are anchored to the version they were made on (their `char_start`/`char_end`
+ * offsets index THAT version's segment text), so the player must show only the
+ * active version's own annotations or highlights would mis-anchor against the
+ * other version's (differently-cleaned) text. Otherwise identical to
+ * `listMyAnnotations` (joins codes, orders by playback time).
+ */
+export async function listMyAnnotationsForVersion(
+  sessionId: string,
+  versionId: string,
+): Promise<MyAnnotationView[]> {
+  const user = await requireAuthUser();
+  const sb = await createUserServerClient();
+
+  const { data, error } = await sb
+    .from('cb_annotations')
+    .select(
+      'id, segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name))',
+    )
+    .eq('session_id', sessionId)
+    .eq('version_id', versionId)
+    .eq('coder_id', user.id)
+    .order('t_start_ms', { ascending: true });
+  if (error) {
+    throw new Error(
+      `listMyAnnotationsForVersion: cb_annotations select failed: ${error.message}`,
+    );
+  }
+
+  const rows = (data ?? []) as Array<{
+    id: string;
+    segment_id: string;
+    char_start: number;
+    char_end: number;
+    quote_text: string | null;
+    t_start_ms: number;
+    t_end_ms: number;
+    kind: string;
+    created_at: string;
+    cb_annotation_codes: Array<{
+      code_id: string;
+      cb_codes: { id: string; mnemonic: string; name: string } | null;
+    }> | null;
+  }>;
+
+  return rows.map((r) => ({
+    id: r.id,
+    segmentId: r.segment_id,
+    charStart: r.char_start,
+    charEnd: r.char_end,
+    quoteText: r.quote_text,
+    tStartMs: r.t_start_ms,
+    tEndMs: r.t_end_ms,
+    kind: r.kind,
+    codes: (r.cb_annotation_codes ?? []).map((link) => ({
+      id: link.cb_codes?.id ?? link.code_id,
+      mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
+    })),
+    createdAt: r.created_at,
+  }));
+}
+
+/**
  * Delete an annotation by id. RLS (`using (coder_id = auth.uid())`) admits only
  * the signed-in coder's OWN rows — a delete of another coder's annotation
  * matches zero rows and is a silent no-op, not an error. `cb_annotation_codes`

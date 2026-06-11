@@ -3,10 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import type { CloudSegment } from '@/app/actions/sessions';
+import {
+  ensureCleanedVersion,
+  getSessionSegments,
+  updateSegmentText,
+  type CloudSegment,
+  type SessionVersion,
+} from '@/app/actions/sessions';
 import {
   addAnnotation,
   deleteAnnotation,
+  listMyAnnotationsForVersion,
   type MyAnnotationView,
 } from '@/app/actions/annotations';
 import {
@@ -159,12 +166,13 @@ function charOffsetWithin(segEl: HTMLElement, container: Node, offset: number): 
 export default function SessionPlayer({
   id,
   pidLabel,
-  segments,
+  segments: initialSegments,
   durationMs,
   codingEnabled = false,
-  versionId = null,
+  versionId: originalVersionId = null,
+  versions = [],
   codes = [],
-  myAnnotations = [],
+  myAnnotations: initialAnnotations = [],
   myUid = null,
   episodes = [],
   sessionEpisodes = [],
@@ -172,14 +180,17 @@ export default function SessionPlayer({
 }: {
   id: string;
   pidLabel: string;
+  /** The ORIGINAL version's segments (the default tab the page renders). */
   segments: CloudSegment[];
   durationMs: number;
   /** Render the coding toolbar + own-coding rail. */
   codingEnabled?: boolean;
   /** The original transcript version id annotations anchor to (version_id). */
   versionId?: string | null;
+  /** All of the session's transcript versions (the Original/Cleaned tab set). */
+  versions?: SessionVersion[];
   codes?: CodeOption[];
-  /** The signed-in coder's OWN annotations for this session (own-coding view). */
+  /** The signed-in coder's OWN annotations for the ORIGINAL version (initial). */
   myAnnotations?: MyAnnotationView[];
   /** The signed-in coder's auth uid — used to scope realtime sync to own rows. */
   myUid?: string | null;
@@ -192,10 +203,73 @@ export default function SessionPlayer({
 }) {
   const router = useRouter();
 
+  // --- Transcript layers (feature #20): original (verbatim) vs cleaned --------
+  //
+  // The page renders the ORIGINAL version (its segments + own annotations) into
+  // the props above. The active version may then be switched to CLEANED, which
+  // loads that version's segments + annotations CLIENT-SIDE (so we don't reload
+  // the whole server tree, which is anchored to the original). `versionId` is the
+  // active version id annotations anchor to; `segments`/`myAnnotations` follow it.
+  const cleanedVersionFromList = versions.find((v) => v.kind === 'cleaned') ?? null;
+
+  // The active tab: 'original' (verbatim, read-only) or 'cleaned' (editable).
+  const [activeTab, setActiveTab] = useState<'original' | 'cleaned'>('original');
+
+  // The active version id annotations anchor to. Starts at the original; tracks
+  // the active tab (set to the cleaned id once that version is loaded/created).
+  const [versionId, setVersionId] = useState<string | null>(originalVersionId);
+  // The resolved cleaned version id once known (from the list, or after create).
+  const [cleanedVersionId, setCleanedVersionId] = useState<string | null>(
+    cleanedVersionFromList?.id ?? null,
+  );
+
+  // The segments + own annotations for the ACTIVE version. Initialized to the
+  // original's (the props), swapped when the active tab changes.
+  const [segments, setSegments] = useState<CloudSegment[]>(initialSegments);
+  const [myAnnotations, setMyAnnotations] =
+    useState<MyAnnotationView[]>(initialAnnotations);
+
+  // Cache the original version's loaded segments/annotations so switching BACK to
+  // the original tab is instant and never re-fetches (the original is immutable).
+  const originalSegmentsRef = useRef<CloudSegment[]>(initialSegments);
+
+  // Version-switch / cleaning in-flight + error surfaces.
+  const [versionBusy, setVersionBusy] = useState(false);
+  const [versionError, setVersionError] = useState<string | null>(null);
+
+  // Whether the cleaned tab is in edit (data-cleaning) mode. Original is NEVER
+  // editable — this only applies on the cleaned tab.
+  const [editing, setEditing] = useState(false);
+
+  const isCleanedActive = activeTab === 'cleaned';
+  const isVerbatim = activeTab === 'original';
+
+  // Realtime live-sync only makes sense for the ORIGINAL version (the server tree
+  // the page renders). On the cleaned tab a refresh would reload the original
+  // props and desync the displayed segments, so we re-fetch the active version's
+  // annotations in place instead.
+  const refreshActiveAnnotations = useCallback(async () => {
+    if (!versionId) return;
+    try {
+      const next = await listMyAnnotationsForVersion(id, versionId);
+      setMyAnnotations(next);
+    } catch (e) {
+      setVersionError(
+        e instanceof Error ? e.message : 'Failed to refresh annotations.',
+      );
+    }
+  }, [id, versionId]);
+
   useRealtimeAnnotations({
     sessionId: id,
     myUid,
-    onChange: () => router.refresh(),
+    onChange: () => {
+      // Original tab: re-run the server component (canonical path). Cleaned tab:
+      // re-fetch the active version's annotations in place (the server tree is
+      // anchored to the original, so a full refresh would desync the view).
+      if (activeTab === 'original') router.refresh();
+      else void refreshActiveAnnotations();
+    },
   });
   const videoRef = useRef<HTMLVideoElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -259,6 +333,145 @@ export default function SessionPlayer({
     void video.play();
   }, []);
 
+  // --- Version switching (Original / Cleaned tabs) ------------------------
+
+  // Load one version into the active view: its segments + the active coder's own
+  // annotations for THAT version (version-scoped, so highlights anchor to the
+  // loaded text). Clears any pending selection (its segment index would be stale
+  // against the newly loaded segments). On failure the active tab is left as the
+  // caller set it but the error is surfaced.
+  const loadVersion = useCallback(
+    async (targetVersionId: string) => {
+      setVersionBusy(true);
+      setVersionError(null);
+      try {
+        const [segs, anns] = await Promise.all([
+          getSessionSegments(id, targetVersionId),
+          listMyAnnotationsForVersion(id, targetVersionId),
+        ]);
+        setVersionId(targetVersionId);
+        setSegments(segs);
+        setMyAnnotations(anns);
+        setTextSel(null);
+        setActiveIdx(-1);
+      } catch (e) {
+        setVersionError(
+          e instanceof Error ? e.message : 'Failed to load transcript version.',
+        );
+      } finally {
+        setVersionBusy(false);
+      }
+    },
+    [id],
+  );
+
+  // Switch to the ORIGINAL (verbatim) tab. The original is immutable, so we
+  // restore its cached segments + re-scope annotations to it without re-reading
+  // the segments. Leaving edit mode is implicit (original is never editable).
+  const handleSelectOriginal = useCallback(async () => {
+    if (activeTab === 'original') return;
+    setActiveTab('original');
+    setEditing(false);
+    setVersionId(originalVersionId);
+    setSegments(originalSegmentsRef.current);
+    setTextSel(null);
+    setActiveIdx(-1);
+    if (originalVersionId) {
+      setVersionBusy(true);
+      setVersionError(null);
+      try {
+        const anns = await listMyAnnotationsForVersion(id, originalVersionId);
+        setMyAnnotations(anns);
+      } catch (e) {
+        setVersionError(
+          e instanceof Error ? e.message : 'Failed to load original annotations.',
+        );
+      } finally {
+        setVersionBusy(false);
+      }
+    } else {
+      setMyAnnotations([]);
+    }
+  }, [activeTab, id, originalVersionId]);
+
+  // Switch to the CLEANED tab. If a cleaned version already exists, load it;
+  // otherwise we render the "Create cleaned copy" affordance (no version yet).
+  const handleSelectCleaned = useCallback(async () => {
+    if (activeTab === 'cleaned') return;
+    setActiveTab('cleaned');
+    setEditing(false);
+    if (cleanedVersionId) {
+      await loadVersion(cleanedVersionId);
+    } else {
+      // No cleaned version yet: show the create affordance, empty transcript.
+      setVersionId(null);
+      setSegments([]);
+      setMyAnnotations([]);
+      setTextSel(null);
+      setActiveIdx(-1);
+    }
+  }, [activeTab, cleanedVersionId, loadVersion]);
+
+  // Create the cleaned copy (idempotent server-side) and load it. Called from the
+  // "Create cleaned copy" button on the cleaned tab when none exists yet.
+  const handleCreateCleaned = useCallback(async () => {
+    setVersionBusy(true);
+    setVersionError(null);
+    try {
+      const newId = await ensureCleanedVersion(id);
+      setCleanedVersionId(newId);
+      await loadVersion(newId);
+    } catch (e) {
+      setVersionError(
+        e instanceof Error ? e.message : 'Failed to create the cleaned copy.',
+      );
+      setVersionBusy(false);
+    }
+  }, [id, loadVersion]);
+
+  // --- Data cleaning: edit a cleaned segment's text ------------------------
+
+  // Commit a cleaned segment's edited text. Optimistic: update local state
+  // immediately, then persist (`updateSegmentText`, server-guarded to cleaned
+  // versions only). On failure surface the error and re-fetch the version's
+  // segments to undo the optimistic edit. No-op when the text is unchanged.
+  const handleSegmentTextCommit = useCallback(
+    async (segmentId: string, nextText: string) => {
+      const current = segments.find((s) => s.id === segmentId);
+      if (!current) return;
+      const trimmed = nextText;
+      if (trimmed === current.text) return;
+      if (trimmed.trim() === '') {
+        // Blanking a segment is never a valid cleaning; revert the field.
+        setSegments((prev) => prev.map((s) => ({ ...s })));
+        setVersionError('A cleaned segment cannot be blank.');
+        return;
+      }
+      // Optimistic local update.
+      setSegments((prev) =>
+        prev.map((s) => (s.id === segmentId ? { ...s, text: trimmed } : s)),
+      );
+      setVersionError(null);
+      try {
+        await updateSegmentText(segmentId, trimmed);
+      } catch (e) {
+        setVersionError(
+          e instanceof Error ? e.message : 'Failed to save the cleaned text.',
+        );
+        // Revert to the persisted segments for this version.
+        if (versionId) {
+          try {
+            const segs = await getSessionSegments(id, versionId);
+            setSegments(segs);
+          } catch {
+            // Leave the optimistic value if even the re-read fails.
+          }
+        }
+      }
+    },
+    [segments, id, versionId],
+  );
+
   // --- Selection capture --------------------------------------------------
 
   // On mouseup anywhere in the transcript, read the browser selection and
@@ -289,6 +502,19 @@ export default function SessionPlayer({
 
   // --- Mutations ----------------------------------------------------------
 
+  // After a coding mutation, re-load the OWN-annotations rail for the ACTIVE
+  // version. On the original tab the server tree IS the active view, so a
+  // `router.refresh()` is canonical; on the cleaned tab the server props are
+  // anchored to the original, so we re-fetch the active version's annotations in
+  // place to avoid desyncing the displayed (cleaned) segments.
+  const afterAnnotationMutation = useCallback(async () => {
+    if (activeTab === 'original') {
+      router.refresh();
+    } else {
+      await refreshActiveAnnotations();
+    }
+  }, [activeTab, router, refreshActiveAnnotations]);
+
   const handleApplyCode = useCallback(async () => {
     if (!pending || !selectedCodeId || !versionId) return;
     setApplying(true);
@@ -311,13 +537,13 @@ export default function SessionPlayer({
       });
       clearSelection();
       setSelectedCodeId('');
-      router.refresh();
+      await afterAnnotationMutation();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to apply code.');
     } finally {
       setApplying(false);
     }
-  }, [pending, selectedCodeId, versionId, id, clearSelection, router]);
+  }, [pending, selectedCodeId, versionId, id, clearSelection, afterAnnotationMutation]);
 
   const handleFlagQuote = useCallback(async () => {
     if (!pending || !versionId) return;
@@ -341,26 +567,26 @@ export default function SessionPlayer({
       });
       clearSelection();
       setRailTab('quotes');
-      router.refresh();
+      await afterAnnotationMutation();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to flag quote.');
     } finally {
       setFlagging(false);
     }
-  }, [pending, versionId, id, clearSelection, router]);
+  }, [pending, versionId, id, clearSelection, afterAnnotationMutation]);
 
   const handleDeleteAnnotation = useCallback(async (annotationId: string) => {
     setBusyId(annotationId);
     setError(null);
     try {
       await deleteAnnotation(annotationId);
-      router.refresh();
+      await afterAnnotationMutation();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to delete annotation.');
     } finally {
       setBusyId(null);
     }
-  }, [router]);
+  }, [afterAnnotationMutation]);
 
   const handleCopyQuote = useCallback(async (annotationId: string, quoteText: string) => {
     try {
@@ -821,89 +1047,255 @@ export default function SessionPlayer({
           )}
         </div>
 
-        {/* Right (1/3): scrollable, click-to-seek, text-selectable transcript */}
+        {/* Right (1/3): version tabs + scrollable, click-to-seek transcript */}
         <div className="lg:col-span-1">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Transcript</h2>
+          {/* Transcript-layer tabs (feature #20): Original (verbatim) is
+              read-only; Cleaned is an editable copy for navigation/quoting. */}
+          <div
+            role="tablist"
+            aria-label="Transcript version"
+            className="mb-2 flex gap-1 text-xs"
+          >
             <button
               type="button"
-              onClick={() => setSynced((s) => !s)}
-              aria-pressed={synced}
-              title={
-                synced
-                  ? 'Transcript follows the video (click to stop following)'
-                  : 'Transcript is not following the video (click to follow)'
-              }
-              className={`rounded border px-2 py-1 text-xs ${
-                synced
-                  ? 'border-foreground bg-foreground text-background'
-                  : 'border-foreground/30 text-foreground/70 hover:text-foreground'
+              role="tab"
+              aria-selected={activeTab === 'original'}
+              onClick={handleSelectOriginal}
+              disabled={versionBusy}
+              title="The verbatim ASR transcript (read-only — disfluencies are data)"
+              className={`rounded px-2 py-1 disabled:opacity-50 ${
+                activeTab === 'original'
+                  ? 'bg-foreground text-background'
+                  : 'border border-foreground/30 text-foreground/70 hover:text-foreground'
               }`}
             >
-              {synced ? 'Sync: on' : 'Sync: off'}
+              Original (verbatim)
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'cleaned'}
+              onClick={handleSelectCleaned}
+              disabled={versionBusy}
+              title="A readable copy you can edit for navigation and quoting"
+              className={`rounded px-2 py-1 disabled:opacity-50 ${
+                activeTab === 'cleaned'
+                  ? 'bg-foreground text-background'
+                  : 'border border-foreground/30 text-foreground/70 hover:text-foreground'
+              }`}
+            >
+              Cleaned
             </button>
           </div>
-          <div
-            ref={transcriptRef}
-            onMouseUp={codingEnabled ? handleTranscriptMouseUp : undefined}
-            className="h-[70vh] overflow-y-auto border border-foreground/15 divide-y divide-foreground/10"
-          >
-            {segments.length === 0 ? (
-              <p className="p-4 text-sm text-foreground/60">No transcript</p>
-            ) : (
-              segments.map((seg, i) => {
-                const active = i === activeIdx;
-                const highlights = highlightsBySegment.get(seg.id) ?? [];
-                const isAnnotated = codingEnabled && highlights.length > 0;
-                return (
-                  <div
-                    key={seg.id}
-                    ref={(el) => {
-                      rowRefs.current[i] = el;
-                    }}
-                    aria-current={active ? 'true' : undefined}
-                    className={`flex items-start gap-1 px-2 py-2 text-sm transition ${
-                      active ? 'bg-foreground/10' : 'hover:bg-foreground/[0.04]'
-                    } ${isAnnotated ? 'border-l-2 border-l-emerald-500' : 'border-l-2 border-l-transparent'}`}
-                  >
-                    {/* Timestamp = seek affordance */}
-                    <button
-                      type="button"
-                      onClick={() => seekTo(seg.startMs)}
-                      title="Seek to here"
-                      className="mt-px shrink-0 font-mono text-xs text-foreground/40 hover:text-foreground hover:underline"
-                    >
-                      [{formatTime(seg.startMs)}]
-                    </button>
-                    {/* Row body: SELECTABLE text. The whole segment text lives in
-                        one `data-seg-idx` element so `resolveSelection` can map a
-                        browser Range to char offsets within it. */}
-                    <p className="flex-1 select-text text-left">
-                      {seg.speaker && (
-                        <span className="mr-1.5 font-semibold">{seg.speaker}:</span>
-                      )}
-                      <span
-                        data-seg-idx={i}
-                        className="text-foreground/80"
-                      >
-                        {codingEnabled && highlights.length > 0
-                          ? renderHighlightedText(
-                              seg.text,
-                              highlights,
-                              annById,
-                              focusAnnotation,
-                            )
-                          : seg.text}
-                      </span>
-                    </p>
-                  </div>
-                );
-              })
-            )}
+
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold">
+              Transcript
+              {isVerbatim ? (
+                <span className="ml-1 font-normal text-foreground/40">
+                  · verbatim, read-only
+                </span>
+              ) : (
+                <span className="ml-1 font-normal text-foreground/40">· cleaned</span>
+              )}
+            </h2>
+            <div className="flex items-center gap-1">
+              {/* Edit toggle: ONLY on the cleaned tab with a loaded version.
+                  Original is verbatim and never editable. */}
+              {isCleanedActive && versionId && (
+                <button
+                  type="button"
+                  onClick={() => setEditing((e) => !e)}
+                  aria-pressed={editing}
+                  title={
+                    editing
+                      ? 'Stop editing the cleaned transcript'
+                      : 'Edit the cleaned transcript text'
+                  }
+                  className={`rounded border px-2 py-1 text-xs ${
+                    editing
+                      ? 'border-emerald-600 bg-emerald-600 text-background'
+                      : 'border-foreground/30 text-foreground/70 hover:text-foreground'
+                  }`}
+                >
+                  {editing ? 'Done' : 'Edit'}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setSynced((s) => !s)}
+                aria-pressed={synced}
+                title={
+                  synced
+                    ? 'Transcript follows the video (click to stop following)'
+                    : 'Transcript is not following the video (click to follow)'
+                }
+                className={`rounded border px-2 py-1 text-xs ${
+                  synced
+                    ? 'border-foreground bg-foreground text-background'
+                    : 'border-foreground/30 text-foreground/70 hover:text-foreground'
+                }`}
+              >
+                {synced ? 'Sync: on' : 'Sync: off'}
+              </button>
+            </div>
           </div>
+
+          {versionError && (
+            <p className="mb-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+              {versionError}
+            </p>
+          )}
+
+          {/* Cleaned tab with no cleaned version yet: offer to create one. */}
+          {isCleanedActive && !versionId ? (
+            <div className="rounded border border-foreground/15 p-4 text-sm text-foreground/70">
+              <p className="mb-3">
+                No cleaned copy exists yet. Create one to get a readable,
+                editable transcript for navigation and quoting. The original
+                verbatim transcript stays untouched.
+              </p>
+              <button
+                type="button"
+                onClick={handleCreateCleaned}
+                disabled={versionBusy}
+                className="rounded bg-foreground px-3 py-1.5 text-sm text-background disabled:opacity-50"
+              >
+                {versionBusy ? 'Creating…' : 'Create cleaned copy'}
+              </button>
+            </div>
+          ) : (
+            <div
+              ref={transcriptRef}
+              onMouseUp={
+                codingEnabled && !editing ? handleTranscriptMouseUp : undefined
+              }
+              className="h-[70vh] overflow-y-auto border border-foreground/15 divide-y divide-foreground/10"
+            >
+              {versionBusy ? (
+                <p className="p-4 text-sm text-foreground/60">Loading…</p>
+              ) : segments.length === 0 ? (
+                <p className="p-4 text-sm text-foreground/60">No transcript</p>
+              ) : (
+                segments.map((seg, i) => {
+                  const active = i === activeIdx;
+                  const highlights = highlightsBySegment.get(seg.id) ?? [];
+                  const isAnnotated = codingEnabled && highlights.length > 0;
+                  return (
+                    <div
+                      key={seg.id}
+                      ref={(el) => {
+                        rowRefs.current[i] = el;
+                      }}
+                      aria-current={active ? 'true' : undefined}
+                      className={`flex items-start gap-1 px-2 py-2 text-sm transition ${
+                        active ? 'bg-foreground/10' : 'hover:bg-foreground/[0.04]'
+                      } ${isAnnotated ? 'border-l-2 border-l-emerald-500' : 'border-l-2 border-l-transparent'}`}
+                    >
+                      {/* Timestamp = seek affordance */}
+                      <button
+                        type="button"
+                        onClick={() => seekTo(seg.startMs)}
+                        title="Seek to here"
+                        className="mt-px shrink-0 font-mono text-xs text-foreground/40 hover:text-foreground hover:underline"
+                      >
+                        [{formatTime(seg.startMs)}]
+                      </button>
+                      {/* Row body. In CLEANING mode (cleaned tab + Edit on) each
+                          segment is a textarea committed on blur; otherwise the
+                          text is selectable for coding (one `data-seg-idx`
+                          element so `resolveSelection` maps a Range to offsets). */}
+                      {isCleanedActive && editing ? (
+                        <div className="flex-1">
+                          {seg.speaker && (
+                            <span className="mb-0.5 block text-xs font-semibold text-foreground/60">
+                              {seg.speaker}:
+                            </span>
+                          )}
+                          <SegmentTextEditor
+                            // Key on the persisted text so an external change
+                            // (revert / reload) REMOUNTS the editor with the new
+                            // value, re-seeding the draft without a setState-in-
+                            // effect (banned by react-hooks/set-state-in-effect).
+                            key={`${seg.id}:${seg.text}`}
+                            initialText={seg.text}
+                            onCommit={(t) => handleSegmentTextCommit(seg.id, t)}
+                          />
+                        </div>
+                      ) : (
+                        <p className="flex-1 select-text text-left">
+                          {seg.speaker && (
+                            <span className="mr-1.5 font-semibold">
+                              {seg.speaker}:
+                            </span>
+                          )}
+                          <span data-seg-idx={i} className="text-foreground/80">
+                            {codingEnabled && highlights.length > 0
+                              ? renderHighlightedText(
+                                  seg.text,
+                                  highlights,
+                                  annById,
+                                  focusAnnotation,
+                                )
+                              : seg.text}
+                          </span>
+                        </p>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
         </div>
       </div>
     </main>
+  );
+}
+
+/**
+ * A per-segment inline text editor for the CLEANED transcript (feature #20).
+ *
+ * Holds its own draft text (seeded from `initialText`) so keystrokes don't churn
+ * the parent's segment list, and commits on BLUR — the natural "I'm done with
+ * this segment" boundary, which debounces persistence to one write per edited
+ * segment rather than per keystroke. The parent's `onCommit` no-ops when the text
+ * is unchanged. The caller KEYS this component on the persisted text, so an
+ * external change (a reverted edit, a version reload) REMOUNTS it with the new
+ * `initialText` — re-seeding the draft without a setState-in-effect. Auto-grows
+ * to its content height.
+ */
+function SegmentTextEditor({
+  initialText,
+  onCommit,
+}: {
+  initialText: string;
+  onCommit: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState(initialText);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-size to content so long cleaned segments aren't clipped.
+  const autoSize = useCallback(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, []);
+  useEffect(() => {
+    autoSize();
+  }, [draft, autoSize]);
+
+  return (
+    <textarea
+      ref={taRef}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => onCommit(draft)}
+      aria-label="Edit cleaned transcript segment"
+      rows={1}
+      className="w-full resize-none rounded border border-foreground/20 bg-transparent px-1.5 py-1 text-sm text-foreground/90 focus:border-emerald-500 focus:outline-none"
+    />
   );
 }
 
