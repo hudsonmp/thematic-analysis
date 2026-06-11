@@ -649,6 +649,153 @@ export type Database = {
           },
         ]
       }
+      cb_segments: {
+        Row: {
+          created_at: string
+          id: string
+          ordinal: number
+          session_id: string
+          source: string
+          speaker: string | null
+          t_end_ms: number
+          t_start_ms: number
+          text: string
+          track_index: number | null
+          version_id: string
+          words: Json | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          ordinal: number
+          session_id: string
+          source?: string
+          speaker?: string | null
+          t_end_ms: number
+          t_start_ms: number
+          text: string
+          track_index?: number | null
+          version_id: string
+          words?: Json | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          ordinal?: number
+          session_id?: string
+          source?: string
+          speaker?: string | null
+          t_end_ms?: number
+          t_start_ms?: number
+          text?: string
+          track_index?: number | null
+          version_id?: string
+          words?: Json | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_segments_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_segments_version_id_fkey"
+            columns: ["version_id"]
+            isOneToOne: false
+            referencedRelation: "cb_transcript_versions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_sessions: {
+        Row: {
+          audio_path: string | null
+          collection: string
+          created_at: string
+          created_by: string | null
+          duration_ms: number | null
+          id: string
+          pid_label: string
+          recording_started_at: string | null
+          srt_path: string | null
+          track_mode: string
+          video_path: string | null
+        }
+        Insert: {
+          audio_path?: string | null
+          collection?: string
+          created_at?: string
+          created_by?: string | null
+          duration_ms?: number | null
+          id?: string
+          pid_label: string
+          recording_started_at?: string | null
+          srt_path?: string | null
+          track_mode?: string
+          video_path?: string | null
+        }
+        Update: {
+          audio_path?: string | null
+          collection?: string
+          created_at?: string
+          created_by?: string | null
+          duration_ms?: number | null
+          id?: string
+          pid_label?: string
+          recording_started_at?: string | null
+          srt_path?: string | null
+          track_mode?: string
+          video_path?: string | null
+        }
+        Relationships: []
+      }
+      cb_transcript_versions: {
+        Row: {
+          asr_engine: string | null
+          created_at: string
+          derived_from_version_id: string | null
+          id: string
+          is_verbatim: boolean
+          kind: string
+          session_id: string
+        }
+        Insert: {
+          asr_engine?: string | null
+          created_at?: string
+          derived_from_version_id?: string | null
+          id?: string
+          is_verbatim?: boolean
+          kind: string
+          session_id: string
+        }
+        Update: {
+          asr_engine?: string | null
+          created_at?: string
+          derived_from_version_id?: string | null
+          id?: string
+          is_verbatim?: boolean
+          kind?: string
+          session_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_transcript_versions_derived_from_version_id_fkey"
+            columns: ["derived_from_version_id"]
+            isOneToOne: false
+            referencedRelation: "cb_transcript_versions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_transcript_versions_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       onboarding_fields: {
         Row: {
           created_at: string
