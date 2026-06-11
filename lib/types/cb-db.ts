@@ -44,6 +44,41 @@ export type Database = {
           },
         ]
       }
+      cb_annotation_comments: {
+        Row: {
+          annotation_id: string
+          author_id: string
+          body: string
+          created_at: string
+          id: string
+          resolved: boolean
+        }
+        Insert: {
+          annotation_id: string
+          author_id: string
+          body: string
+          created_at?: string
+          id?: string
+          resolved?: boolean
+        }
+        Update: {
+          annotation_id?: string
+          author_id?: string
+          body?: string
+          created_at?: string
+          id?: string
+          resolved?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_annotation_comments_annotation_id_fkey"
+            columns: ["annotation_id"]
+            isOneToOne: false
+            referencedRelation: "cb_annotations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_annotations: {
         Row: {
           anchor_status: string

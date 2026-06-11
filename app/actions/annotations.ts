@@ -24,6 +24,24 @@ export type MyAnnotationView = {
   /** 'code' (a coded span) or 'quote' (a flagged paper quote, no code). */
   kind: string;
   codes: { id: string; mnemonic: string }[];
+  /** How many comments are threaded on this annotation (#17/#18 indicator). */
+  commentCount: number;
+  createdAt: string;
+};
+
+/**
+ * One comment in an annotation's thread, as the player renders it: the
+ * `cb_annotation_comments` row plus the author's display name (joined from
+ * `cb_profiles`). `author_id` references `auth.users`, not `cb_profiles`, so the
+ * name is resolved by a separate profiles read (see `listAnnotationComments`).
+ */
+export type AnnotationCommentView = {
+  id: string;
+  annotationId: string;
+  authorId: string;
+  authorName: string;
+  body: string;
+  resolved: boolean;
   createdAt: string;
 };
 
@@ -148,7 +166,7 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
   const { data, error } = await sb
     .from('cb_annotations')
     .select(
-      'id, segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name))',
+      'id, segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name)), cb_annotation_comments(id)',
     )
     .eq('session_id', sessionId)
     .eq('coder_id', user.id)
@@ -171,6 +189,7 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
       code_id: string;
       cb_codes: { id: string; mnemonic: string; name: string } | null;
     }> | null;
+    cb_annotation_comments: Array<{ id: string }> | null;
   }>;
 
   return rows.map((r) => ({
@@ -188,6 +207,9 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
       id: link.cb_codes?.id ?? link.code_id,
       mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
     })),
+    // Embedded comment rows counted client-side (read-all RLS admits the embed;
+    // the player only needs the count to render a thread indicator on the mark).
+    commentCount: (r.cb_annotation_comments ?? []).length,
     createdAt: r.created_at,
   }));
 }
@@ -212,7 +234,7 @@ export async function listMyAnnotationsForVersion(
   const { data, error } = await sb
     .from('cb_annotations')
     .select(
-      'id, segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name))',
+      'id, segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name)), cb_annotation_comments(id)',
     )
     .eq('session_id', sessionId)
     .eq('version_id', versionId)
@@ -238,6 +260,7 @@ export async function listMyAnnotationsForVersion(
       code_id: string;
       cb_codes: { id: string; mnemonic: string; name: string } | null;
     }> | null;
+    cb_annotation_comments: Array<{ id: string }> | null;
   }>;
 
   return rows.map((r) => ({
@@ -253,6 +276,7 @@ export async function listMyAnnotationsForVersion(
       id: link.cb_codes?.id ?? link.code_id,
       mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
     })),
+    commentCount: (r.cb_annotation_comments ?? []).length,
     createdAt: r.created_at,
   }));
 }
@@ -599,4 +623,170 @@ export async function removeCanonical(
     .eq('segment_id', segmentId)
     .eq('is_canonical', true);
   if (error) throw new Error(`removeCanonical failed: ${error.message}`);
+}
+
+/* ───────────────────── per-excerpt comments (#17/#18) ─────────────────────────
+ *
+ * Google-Docs-style commenting: a comment is anchored to ONE annotation — a
+ * coder's highlighted transcript excerpt (`cb_annotations`, char-anchored). The
+ * player opens a comment thread when a highlight `<mark>` is clicked. Commenting
+ * on arbitrary not-yet-coded text is a two-step compose in the player: create a
+ * `kind:'quote'` annotation (the anchor, via `addAnnotation`) then the first
+ * comment on it (via `addAnnotationComment`).
+ *
+ * Ownership mirrors annotations' read-all / write-own asymmetry, keyed on
+ * `author_id = auth.uid()` (the `cb_annotation_comments` RLS policies):
+ *   * SELECT is read-all — a comment thread is shared context, like a Docs
+ *     comment everyone in the doc can see (so reconcilers see each other's notes).
+ *   * INSERT/UPDATE/DELETE are own-only — a coder may only add/resolve/delete
+ *     their OWN comments. `author_id` is set EXPLICITLY to the caller's uid; the
+ *     `with check (author_id = auth.uid())` policy admits only that value, so a
+ *     forged author_id is rejected by RLS.
+ *
+ * All four route through `createUserServerClient()` (the anon key bound to the
+ * signed-in user's JWT), NOT `cbFrom()` — the service-role client bypasses RLS,
+ * which would both defeat the own-write guarantee and leave `auth.uid()` null
+ * (failing the WITH CHECK). The user client is the only client that makes these
+ * policies meaningful.
+ */
+
+/**
+ * Add a comment to an annotation's thread. `author_id` is the signed-in user
+ * (RLS `with check (author_id = auth.uid())` admits only that). `body` must be a
+ * non-empty string — an empty comment is never useful. Returns the inserted row.
+ */
+export async function addAnnotationComment(
+  annotationId: string,
+  body: string,
+): Promise<Tables<'cb_annotation_comments'>> {
+  const user = await requireAuthUser();
+  if (typeof body !== 'string' || body.trim() === '') {
+    throw new Error('addAnnotationComment: body must be a non-empty string.');
+  }
+  const sb = await createUserServerClient();
+  const { data, error } = await sb
+    .from('cb_annotation_comments')
+    .insert({
+      annotation_id: annotationId,
+      // Set explicitly to the caller's uid: RLS `with check (author_id =
+      // auth.uid())` admits only the signed-in user's own id.
+      author_id: user.id,
+      body: body.trim(),
+    })
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(
+      `addAnnotationComment failed: ${error?.message ?? 'no row returned'}`,
+    );
+  }
+  return data;
+}
+
+/**
+ * List comments for a set of annotations, grouped by annotation id, so the
+ * player can load every comment for the session's visible annotations in ONE
+ * call. Each comment carries its author's `display_name` (joined from
+ * `cb_profiles`).
+ *
+ * Two reads, joined in JS — the same shape as `listAllAnnotations`:
+ *   1. `cb_annotation_comments where annotation_id in (...)`, oldest-first
+ *      (thread order). The read-all RLS policy admits every coder's comments.
+ *   2. `cb_profiles(user_id, display_name)` for the distinct author ids.
+ *      `author_id` references `auth.users`, NOT `cb_profiles`, so PostgREST
+ *      cannot embed the profile in the comment select — we resolve names by the
+ *      distinct author ids and join in memory. An author with no profile row
+ *      falls back to a short uid slice so the comment is still attributed.
+ *
+ * Returns a `Record<annotationId, AnnotationCommentView[]>` (only annotations
+ * with ≥1 comment appear). An empty `annotationIds` short-circuits to `{}`.
+ */
+export async function listAnnotationComments(
+  annotationIds: string[],
+): Promise<Record<string, AnnotationCommentView[]>> {
+  await requireAuthUser();
+  const ids = [...new Set(annotationIds)];
+  if (ids.length === 0) return {};
+
+  const sb = await createUserServerClient();
+  const { data, error } = await sb
+    .from('cb_annotation_comments')
+    .select('id, annotation_id, author_id, body, resolved, created_at')
+    .in('annotation_id', ids)
+    .order('created_at', { ascending: true });
+  if (error) {
+    throw new Error(`listAnnotationComments select failed: ${error.message}`);
+  }
+
+  const rows = data ?? [];
+
+  // Resolve author display names. Separate read because author_id references
+  // auth.users (no PostgREST embed to cb_profiles).
+  const authorIds = [...new Set(rows.map((r) => r.author_id))];
+  const nameById = new Map<string, string>();
+  if (authorIds.length > 0) {
+    const { data: profiles, error: profErr } = await sb
+      .from('cb_profiles')
+      .select('user_id, display_name')
+      .in('user_id', authorIds);
+    if (profErr) {
+      throw new Error(
+        `listAnnotationComments: cb_profiles select failed: ${profErr.message}`,
+      );
+    }
+    for (const p of profiles ?? []) {
+      if (p.display_name) nameById.set(p.user_id, p.display_name);
+    }
+  }
+  const nameFor = (authorId: string) =>
+    nameById.get(authorId) ?? `coder-${authorId.slice(0, 8)}`;
+
+  const grouped: Record<string, AnnotationCommentView[]> = {};
+  for (const r of rows) {
+    const view: AnnotationCommentView = {
+      id: r.id,
+      annotationId: r.annotation_id,
+      authorId: r.author_id,
+      authorName: nameFor(r.author_id),
+      body: r.body,
+      resolved: r.resolved,
+      createdAt: r.created_at,
+    };
+    (grouped[r.annotation_id] ??= []).push(view);
+  }
+  return grouped;
+}
+
+/**
+ * Flip a comment's `resolved` flag (resolve / re-open). RLS
+ * (`using (author_id = auth.uid())`) admits only the author's OWN comment — a
+ * resolve of another coder's comment matches zero rows (silent no-op).
+ */
+export async function resolveAnnotationComment(
+  id: string,
+  resolved: boolean,
+): Promise<void> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+  const { error } = await sb
+    .from('cb_annotation_comments')
+    .update({ resolved })
+    .eq('id', id);
+  if (error) throw new Error(`resolveAnnotationComment failed: ${error.message}`);
+}
+
+/**
+ * Delete a comment by id. RLS (`using (author_id = auth.uid())`) admits only the
+ * author's OWN comment — a delete of another coder's comment matches zero rows
+ * (silent no-op, not an error). Does NOT delete the anchor annotation: a
+ * commented excerpt can lose its thread and still be a coded/quoted span.
+ */
+export async function deleteAnnotationComment(id: string): Promise<void> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+  const { error } = await sb
+    .from('cb_annotation_comments')
+    .delete()
+    .eq('id', id);
+  if (error) throw new Error(`deleteAnnotationComment failed: ${error.message}`);
 }

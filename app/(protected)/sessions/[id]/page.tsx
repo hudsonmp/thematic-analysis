@@ -1,6 +1,9 @@
 import { getSessionCloud, getSessionVersions } from '@/app/actions/sessions';
 import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
-import { listMyAnnotationsForVersion } from '@/app/actions/annotations';
+import {
+  listMyAnnotationsForVersion,
+  listAnnotationComments,
+} from '@/app/actions/annotations';
 import { listEpisodes, listSessionEpisodes } from '@/app/actions/episodes';
 import { getAuthUser } from '@/lib/auth/supabase-auth';
 import SessionPlayer from '@/components/sessions/SessionPlayer';
@@ -57,6 +60,15 @@ export default async function SessionPage({
     ? await listMyAnnotationsForVersion(id, session.versionId)
     : [];
 
+  // Per-excerpt comment threads (#17/#18) for the ORIGINAL version's visible
+  // annotations, loaded in ONE call and grouped by annotation id. The player
+  // opens a thread when its highlight is clicked; switching tabs re-loads the
+  // other version's threads client-side.
+  const comments =
+    myAnnotations.length > 0
+      ? await listAnnotationComments(myAnnotations.map((a) => a.id))
+      : {};
+
   // The codebook tree (for the code picker) and the codebook's preset episodes
   // (for the assign-during-coding control) both key off the resolved codebook id.
   const [tree, episodes] = await Promise.all([
@@ -83,6 +95,7 @@ export default async function SessionPage({
       versions={versions}
       codes={codes}
       myAnnotations={myAnnotations}
+      comments={comments}
       myUid={user?.id ?? null}
       episodes={episodes.map((e) => ({ id: e.id, name: e.name }))}
       sessionEpisodes={sessionEpisodes}

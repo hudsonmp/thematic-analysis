@@ -14,7 +14,12 @@ import {
   addAnnotation,
   deleteAnnotation,
   listMyAnnotationsForVersion,
+  addAnnotationComment,
+  listAnnotationComments,
+  resolveAnnotationComment,
+  deleteAnnotationComment,
   type MyAnnotationView,
+  type AnnotationCommentView,
 } from '@/app/actions/annotations';
 import {
   markSessionEpisode,
@@ -46,6 +51,22 @@ function formatTime(ms: number): string {
 /** Render a span as `mm:ss–mm:ss`. */
 function formatSpan(startMs: number, endMs: number): string {
   return `${formatTime(startMs)}–${formatTime(endMs)}`;
+}
+
+/**
+ * Format a comment's ISO `created_at` as a short, locale-aware `MMM d, HH:mm`.
+ * Falls back to the raw string if it can't be parsed (defensive — the value
+ * comes from the DB, but a bad value should never throw in render).
+ */
+function formatCommentTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 /**
@@ -173,6 +194,7 @@ export default function SessionPlayer({
   versions = [],
   codes = [],
   myAnnotations: initialAnnotations = [],
+  comments: initialComments = {},
   myUid = null,
   episodes = [],
   sessionEpisodes = [],
@@ -192,6 +214,13 @@ export default function SessionPlayer({
   codes?: CodeOption[];
   /** The signed-in coder's OWN annotations for the ORIGINAL version (initial). */
   myAnnotations?: MyAnnotationView[];
+  /**
+   * Per-excerpt comment threads, grouped by annotation id (#17/#18). The page
+   * loads every visible annotation's comments in one call; the player opens the
+   * thread when its highlight is clicked. Tracks the active version's
+   * annotations (re-fetched client-side on a comment mutation / version switch).
+   */
+  comments?: Record<string, AnnotationCommentView[]>;
   /** The signed-in coder's auth uid — used to scope realtime sync to own rows. */
   myUid?: string | null;
   /** The codebook's preset episodes the coder can mark at a timecode. */
@@ -229,6 +258,12 @@ export default function SessionPlayer({
   const [myAnnotations, setMyAnnotations] =
     useState<MyAnnotationView[]>(initialAnnotations);
 
+  // Per-excerpt comment threads for the ACTIVE version's annotations (#17/#18),
+  // grouped by annotation id. Seeded from the server (the original's threads),
+  // re-fetched client-side after a comment mutation or a version switch.
+  const [comments, setComments] =
+    useState<Record<string, AnnotationCommentView[]>>(initialComments);
+
   // Cache the original version's loaded segments/annotations so switching BACK to
   // the original tab is instant and never re-fetches (the original is immutable).
   const originalSegmentsRef = useRef<CloudSegment[]>(initialSegments);
@@ -244,21 +279,37 @@ export default function SessionPlayer({
   const isCleanedActive = activeTab === 'cleaned';
   const isVerbatim = activeTab === 'original';
 
+  // Reload the comment threads for a set of annotation ids (the active version's
+  // visible annotations) in ONE call. Used after a comment mutation and whenever
+  // the active version's annotations are re-fetched. Tolerant of an empty id set
+  // (clears the map). Surfaces failures into the comment-panel error, not the
+  // global one.
+  const reloadComments = useCallback(async (annotationIds: string[]) => {
+    if (annotationIds.length === 0) {
+      setComments({});
+      return;
+    }
+    const next = await listAnnotationComments(annotationIds);
+    setComments(next);
+  }, []);
+
   // Realtime live-sync only makes sense for the ORIGINAL version (the server tree
   // the page renders). On the cleaned tab a refresh would reload the original
   // props and desync the displayed segments, so we re-fetch the active version's
-  // annotations in place instead.
+  // annotations in place instead. We also re-pull the comment threads for the
+  // re-fetched annotations so per-excerpt threads stay in sync.
   const refreshActiveAnnotations = useCallback(async () => {
     if (!versionId) return;
     try {
       const next = await listMyAnnotationsForVersion(id, versionId);
       setMyAnnotations(next);
+      await reloadComments(next.map((a) => a.id));
     } catch (e) {
       setVersionError(
         e instanceof Error ? e.message : 'Failed to refresh annotations.',
       );
     }
-  }, [id, versionId]);
+  }, [id, versionId, reloadComments]);
 
   useRealtimeAnnotations({
     sessionId: id,
@@ -295,6 +346,23 @@ export default function SessionPlayer({
 
   // The rail row currently focused (e.g. after clicking a transcript highlight).
   const [focusedAnnId, setFocusedAnnId] = useState<string | null>(null);
+
+  // --- Per-excerpt comments (Google-Docs style, #17/#18) ------------------
+  // The annotation whose comment thread is OPEN (clicking its highlight opens
+  // it). `null` = no thread open. The popover renders the excerpt + codes +
+  // thread + an add-comment input for THIS annotation.
+  const [openCommentAnnId, setOpenCommentAnnId] = useState<string | null>(null);
+  // The add-comment draft for the OPEN thread (existing annotation).
+  const [commentDraft, setCommentDraft] = useState('');
+  // The comment draft for a FRESH selection (the coding-toolbar "Comment"
+  // affordance), kept separate so the two inputs never share text.
+  const [selectionCommentDraft, setSelectionCommentDraft] = useState('');
+  // Comment mutation in-flight (disables the compose controls).
+  const [commentBusy, setCommentBusy] = useState(false);
+  // A comment being resolved/deleted (per-row busy state in the thread).
+  const [commentRowBusyId, setCommentRowBusyId] = useState<string | null>(null);
+  // Comment-panel-scoped error (kept separate from the global coding error).
+  const [commentError, setCommentError] = useState<string | null>(null);
 
   // Coding form state. (No coder input — the coder is the signed-in user.)
   const [codeFilter, setCodeFilter] = useState('');
@@ -354,6 +422,10 @@ export default function SessionPlayer({
         setMyAnnotations(anns);
         setTextSel(null);
         setActiveIdx(-1);
+        // Load this version's annotations' comment threads; close any open one
+        // (its annotation belongs to the version we just left).
+        setOpenCommentAnnId(null);
+        await reloadComments(anns.map((a) => a.id));
       } catch (e) {
         setVersionError(
           e instanceof Error ? e.message : 'Failed to load transcript version.',
@@ -362,7 +434,7 @@ export default function SessionPlayer({
         setVersionBusy(false);
       }
     },
-    [id],
+    [id, reloadComments],
   );
 
   // Switch to the ORIGINAL (verbatim) tab. The original is immutable, so we
@@ -376,12 +448,14 @@ export default function SessionPlayer({
     setSegments(originalSegmentsRef.current);
     setTextSel(null);
     setActiveIdx(-1);
+    setOpenCommentAnnId(null);
     if (originalVersionId) {
       setVersionBusy(true);
       setVersionError(null);
       try {
         const anns = await listMyAnnotationsForVersion(id, originalVersionId);
         setMyAnnotations(anns);
+        await reloadComments(anns.map((a) => a.id));
       } catch (e) {
         setVersionError(
           e instanceof Error ? e.message : 'Failed to load original annotations.',
@@ -391,8 +465,9 @@ export default function SessionPlayer({
       }
     } else {
       setMyAnnotations([]);
+      setComments({});
     }
-  }, [activeTab, id, originalVersionId]);
+  }, [activeTab, id, originalVersionId, reloadComments]);
 
   // Switch to the CLEANED tab. If a cleaned version already exists, load it;
   // otherwise we render the "Create cleaned copy" affordance (no version yet).
@@ -407,6 +482,8 @@ export default function SessionPlayer({
       setVersionId(null);
       setSegments([]);
       setMyAnnotations([]);
+      setComments({});
+      setOpenCommentAnnId(null);
       setTextSel(null);
       setActiveIdx(-1);
     }
@@ -580,6 +657,9 @@ export default function SessionPlayer({
     setError(null);
     try {
       await deleteAnnotation(annotationId);
+      // Close the comment thread if it belonged to the deleted excerpt (its
+      // comments cascade away with the annotation).
+      setOpenCommentAnnId((cur) => (cur === annotationId ? null : cur));
       await afterAnnotationMutation();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to delete annotation.');
@@ -597,6 +677,151 @@ export default function SessionPlayer({
       setError('Copy failed — clipboard not available.');
     }
   }, []);
+
+  // --- Per-excerpt comments (#17/#18) -------------------------------------
+
+  // Open (or re-open) the comment thread for an annotation. Resets the draft and
+  // any prior comment error so the popover opens clean. Refreshes the thread for
+  // this annotation so it reflects others' comments since the last load.
+  const openCommentThread = useCallback(
+    async (annotationId: string) => {
+      setOpenCommentAnnId(annotationId);
+      setCommentDraft('');
+      setCommentError(null);
+      try {
+        const grouped = await listAnnotationComments([annotationId]);
+        setComments((prev) => ({ ...prev, [annotationId]: grouped[annotationId] ?? [] }));
+      } catch (e) {
+        setCommentError(
+          e instanceof Error ? e.message : 'Failed to load comments.',
+        );
+      }
+    },
+    [],
+  );
+
+  // Add a comment to the OPEN thread (an existing annotation). Re-pulls that
+  // annotation's thread on success so the new comment (with the server-resolved
+  // author name + time) appears. Also re-runs the annotation refresh so the
+  // mark's comment-count indicator updates.
+  const handleAddComment = useCallback(async () => {
+    if (!openCommentAnnId || commentDraft.trim() === '') return;
+    setCommentBusy(true);
+    setCommentError(null);
+    try {
+      await addAnnotationComment(openCommentAnnId, commentDraft.trim());
+      setCommentDraft('');
+      const grouped = await listAnnotationComments([openCommentAnnId]);
+      setComments((prev) => ({
+        ...prev,
+        [openCommentAnnId]: grouped[openCommentAnnId] ?? [],
+      }));
+      // Refresh annotations so the comment-count indicator on the mark updates.
+      await afterAnnotationMutation();
+    } catch (e) {
+      setCommentError(e instanceof Error ? e.message : 'Failed to add comment.');
+    } finally {
+      setCommentBusy(false);
+    }
+  }, [openCommentAnnId, commentDraft, afterAnnotationMutation]);
+
+  // Comment on a FRESH selection that isn't yet an annotation: create a
+  // kind:'quote' annotation as the ANCHOR, then post the first comment on it,
+  // then open its thread. This makes "comment on arbitrary text" work without
+  // first coding it (Google-Docs comment-on-selection). Reuses addAnnotation +
+  // addAnnotationComment so the anchor is an ordinary highlight.
+  const handleCommentOnSelection = useCallback(async () => {
+    if (!pending || !versionId || selectionCommentDraft.trim() === '') return;
+    setCommentBusy(true);
+    setCommentError(null);
+    try {
+      const { segment, anchor } = pending;
+      const ann = await addAnnotation({
+        sessionId: id,
+        versionId,
+        segmentId: segment.id,
+        charStart: anchor.charStart,
+        charEnd: anchor.charEnd,
+        quoteText: anchor.quoteText,
+        prefix: anchor.prefix,
+        suffix: anchor.suffix,
+        tStartMs: segment.startMs,
+        tEndMs: segment.endMs,
+        kind: 'quote',
+        codeIds: [],
+      });
+      await addAnnotationComment(ann.id, selectionCommentDraft.trim());
+      setSelectionCommentDraft('');
+      clearSelection();
+      // Reload the active version's annotations (so the new anchor + its
+      // comment-count appear), then open the new thread.
+      await afterAnnotationMutation();
+      await openCommentThread(ann.id);
+    } catch (e) {
+      setCommentError(
+        e instanceof Error ? e.message : 'Failed to comment on selection.',
+      );
+    } finally {
+      setCommentBusy(false);
+    }
+  }, [
+    pending,
+    versionId,
+    selectionCommentDraft,
+    id,
+    clearSelection,
+    afterAnnotationMutation,
+    openCommentThread,
+  ]);
+
+  // Resolve / re-open a comment in the open thread, then re-pull the thread.
+  const handleResolveComment = useCallback(
+    async (commentId: string, resolved: boolean) => {
+      if (!openCommentAnnId) return;
+      setCommentRowBusyId(commentId);
+      setCommentError(null);
+      try {
+        await resolveAnnotationComment(commentId, resolved);
+        const grouped = await listAnnotationComments([openCommentAnnId]);
+        setComments((prev) => ({
+          ...prev,
+          [openCommentAnnId]: grouped[openCommentAnnId] ?? [],
+        }));
+      } catch (e) {
+        setCommentError(
+          e instanceof Error ? e.message : 'Failed to update comment.',
+        );
+      } finally {
+        setCommentRowBusyId(null);
+      }
+    },
+    [openCommentAnnId],
+  );
+
+  // Delete a comment from the open thread, then re-pull + refresh the count.
+  const handleDeleteComment = useCallback(
+    async (commentId: string) => {
+      if (!openCommentAnnId) return;
+      setCommentRowBusyId(commentId);
+      setCommentError(null);
+      try {
+        await deleteAnnotationComment(commentId);
+        const grouped = await listAnnotationComments([openCommentAnnId]);
+        setComments((prev) => ({
+          ...prev,
+          [openCommentAnnId]: grouped[openCommentAnnId] ?? [],
+        }));
+        await afterAnnotationMutation();
+      } catch (e) {
+        setCommentError(
+          e instanceof Error ? e.message : 'Failed to delete comment.',
+        );
+      } finally {
+        setCommentRowBusyId(null);
+      }
+    },
+    [openCommentAnnId, afterAnnotationMutation],
+  );
 
   // --- Episode marks -------------------------------------------------------
 
@@ -633,14 +858,20 @@ export default function SessionPlayer({
     }
   }, [router]);
 
-  // Focus a rail annotation (e.g. from clicking its transcript highlight):
-  // switch to the right tab and flag it focused. The actual scroll-into-view is
-  // an EFFECT keyed on `focusedAnnId` (below), NOT an imperative ref read here —
+  // Clicking a transcript highlight (a `<mark>`) is the Google-Docs
+  // "click-the-highlight-to-comment" affordance: it OPENS the excerpt's comment
+  // thread AND focuses its rail row. Opening the thread re-pulls this
+  // annotation's comments (see openCommentThread). The scroll-into-view is an
+  // EFFECT keyed on `focusedAnnId` (below), NOT an imperative ref read here —
   // keeping ref access out of any render-reachable callback (react-hooks/refs).
-  const focusAnnotation = useCallback((ann: MyAnnotationView) => {
-    setRailTab(ann.kind === 'quote' ? 'quotes' : 'codes');
-    setFocusedAnnId(ann.id);
-  }, []);
+  const focusAnnotation = useCallback(
+    (ann: MyAnnotationView) => {
+      setRailTab(ann.kind === 'quote' ? 'quotes' : 'codes');
+      setFocusedAnnId(ann.id);
+      void openCommentThread(ann.id);
+    },
+    [openCommentThread],
+  );
 
   // Scroll the focused rail row into view after the tab switch has rendered it.
   useEffect(() => {
@@ -692,8 +923,31 @@ export default function SessionPlayer({
     [myAnnotations],
   );
 
+  // Annotation ids that carry ≥1 comment → render a thread indicator on their
+  // mark. Derived from BOTH the loaded thread map (freshest) and the
+  // annotation's own `commentCount` (server-rendered), so the dot shows even
+  // before a thread has been individually loaded.
+  const commentedAnnIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const a of myAnnotations) if (a.commentCount > 0) s.add(a.id);
+    for (const [annId, list] of Object.entries(comments)) {
+      if (list.length > 0) s.add(annId);
+      else s.delete(annId); // a thread emptied by deletes drops its dot
+    }
+    return s;
+  }, [myAnnotations, comments]);
+
+  // The annotation whose comment thread is open + its loaded comments, for the
+  // popover. `null` when nothing is open or the annotation is no longer present
+  // (e.g. deleted / version switched out from under the open thread).
+  const openCommentAnn = openCommentAnnId ? annById.get(openCommentAnnId) ?? null : null;
+  const openThread = openCommentAnnId ? comments[openCommentAnnId] ?? [] : [];
+
   const canApply = !!pending && !!selectedCodeId && !!versionId && !applying;
   const canFlag = !!pending && !!versionId && !flagging;
+  // "Comment" on a fresh selection needs a brushed selection + a draft.
+  const canCommentOnSelection =
+    !!pending && !!versionId && selectionCommentDraft.trim() !== '' && !commentBusy;
 
   return (
     <main className="px-6 py-6">
@@ -903,7 +1157,174 @@ export default function SessionPlayer({
                     {flagging ? 'Flagging…' : 'Flag quote ❝'}
                   </button>
                 </div>
+
+                {/* Comment on a fresh selection (Google-Docs "comment on
+                    selection"): creates a quote anchor + the first comment, then
+                    opens its thread. Works on arbitrary text without coding it.
+                    Only meaningful once text is brushed. */}
+                {pending && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-foreground/10 pt-2">
+                    <input
+                      type="text"
+                      value={selectionCommentDraft}
+                      onChange={(e) => setSelectionCommentDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey && canCommentOnSelection) {
+                          e.preventDefault();
+                          void handleCommentOnSelection();
+                        }
+                      }}
+                      placeholder="Comment on this selection…"
+                      className="min-w-48 flex-1 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
+                      aria-label="Comment on selection"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleCommentOnSelection}
+                      disabled={!canCommentOnSelection}
+                      title="Comment on the selected text (creates a commentable excerpt)"
+                      className="rounded border border-sky-500/60 px-3 py-1 text-sm text-sky-700 hover:bg-sky-500/10 disabled:opacity-40 dark:text-sky-300"
+                    >
+                      {commentBusy ? 'Commenting…' : 'Comment 💬'}
+                    </button>
+                  </div>
+                )}
               </section>
+
+              {/* Per-excerpt comment thread (Google-Docs style, #17/#18): opens
+                  when a highlight is clicked. Shows the quoted excerpt + its
+                  code(s) + the comment thread + an add-comment input. */}
+              {openCommentAnn && (
+                <section className="rounded border border-sky-500/40 bg-sky-500/[0.03] p-3">
+                  <div className="mb-2 flex items-start gap-2">
+                    <h2 className="text-sm font-semibold">
+                      Comments
+                      <span className="ml-1 font-normal text-foreground/40">
+                        on excerpt
+                      </span>
+                    </h2>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenCommentAnnId(null);
+                        setCommentError(null);
+                        setCommentDraft('');
+                      }}
+                      aria-label="Close comments"
+                      className="ml-auto text-foreground/40 hover:text-foreground"
+                    >
+                      {'✕'}
+                    </button>
+                  </div>
+
+                  {/* The anchored excerpt + its codes (the "what you're
+                      commenting on" context, like a Docs comment card header). */}
+                  <div className="mb-2 rounded border border-foreground/10 bg-background/40 px-2 py-1.5 text-sm">
+                    <button
+                      type="button"
+                      onClick={() => seekTo(openCommentAnn.tStartMs)}
+                      className="font-mono text-xs text-foreground/50 hover:underline"
+                      title="Seek to here"
+                    >
+                      [{formatTime(openCommentAnn.tStartMs)}]
+                    </button>{' '}
+                    <span className="italic text-foreground/80">
+                      “{openCommentAnn.quoteText ?? '(whole segment)'}”
+                    </span>
+                    {openCommentAnn.codes.length > 0 && (
+                      <span className="ml-1 text-xs text-emerald-700 dark:text-emerald-300">
+                        · {openCommentAnn.codes.map((c) => c.mnemonic).join(', ')}
+                      </span>
+                    )}
+                  </div>
+
+                  {commentError && (
+                    <p className="mb-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+                      {commentError}
+                    </p>
+                  )}
+
+                  {/* The thread. */}
+                  {openThread.length === 0 ? (
+                    <p className="mb-2 text-sm text-foreground/50">
+                      No comments yet. Start the thread below.
+                    </p>
+                  ) : (
+                    <ul className="mb-2 divide-y divide-foreground/10">
+                      {openThread.map((c) => (
+                        <li key={c.id} className="py-1.5 text-sm">
+                          <div className="flex items-baseline gap-2">
+                            <span className="font-semibold">{c.authorName}</span>
+                            <span className="font-mono text-xs text-foreground/40">
+                              {formatCommentTime(c.createdAt)}
+                            </span>
+                            {c.resolved && (
+                              <span className="rounded bg-emerald-500/15 px-1 text-xs text-emerald-700 dark:text-emerald-300">
+                                resolved
+                              </span>
+                            )}
+                            <span className="ml-auto flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleResolveComment(c.id, !c.resolved)}
+                                disabled={commentRowBusyId === c.id}
+                                className="text-xs text-foreground/50 underline hover:text-foreground disabled:opacity-40"
+                                title={c.resolved ? 'Re-open this comment' : 'Mark resolved'}
+                              >
+                                {c.resolved ? 'Re-open' : 'Resolve'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteComment(c.id)}
+                                disabled={commentRowBusyId === c.id}
+                                aria-label="Delete comment"
+                                className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
+                              >
+                                {'✕'}
+                              </button>
+                            </span>
+                          </div>
+                          <p
+                            className={`mt-0.5 whitespace-pre-wrap text-foreground/80 ${
+                              c.resolved ? 'line-through opacity-60' : ''
+                            }`}
+                          >
+                            {c.body}
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {/* Add a comment to this thread. */}
+                  <div className="flex items-start gap-2">
+                    <textarea
+                      value={commentDraft}
+                      onChange={(e) => setCommentDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                          e.preventDefault();
+                          if (commentDraft.trim() !== '' && !commentBusy) {
+                            void handleAddComment();
+                          }
+                        }
+                      }}
+                      placeholder="Add a comment… (⌘/Ctrl+Enter to send)"
+                      rows={2}
+                      className="flex-1 resize-none rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
+                      aria-label="Add a comment"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddComment}
+                      disabled={commentDraft.trim() === '' || commentBusy}
+                      className="rounded bg-sky-600 px-3 py-1 text-sm text-white disabled:opacity-40"
+                    >
+                      {commentBusy ? 'Saving…' : 'Comment'}
+                    </button>
+                  </div>
+                </section>
+              )}
 
               {/* Own-coding rail: ONLY the signed-in coder's annotations, with a
                   Codes / Quotes tab. */}
@@ -1236,6 +1657,8 @@ export default function SessionPlayer({
                                   highlights,
                                   annById,
                                   focusAnnotation,
+                                  commentedAnnIds,
+                                  openCommentAnnId,
                                 )
                               : seg.text}
                           </span>
@@ -1304,8 +1727,18 @@ function SegmentTextEditor({
  * text at every highlight boundary (`splitIntoPieces`) and wraps each covered
  * piece in a `<mark>`-style span — emerald for code annotations, amber for
  * quotes. Overlapping ranges layer: a piece under both a code and a quote gets
- * the quote tint (quotes are the rarer, paper-bound signal). Clicking a marked
- * piece focuses its (first) annotation in the rail.
+ * the quote tint (quotes are the rarer, paper-bound signal).
+ *
+ * Clicking a marked piece OPENS its (first) annotation's comment thread and
+ * focuses its rail row (the Google-Docs "click the highlight to comment" feel).
+ *
+ * Comment indicator: a piece whose annotation has a comment thread is given a
+ * dotted sky UNDERLINE (a box-shadow, not extra text), and the currently-open
+ * thread's mark gets a sky ring so it reads as "selected". Crucially the
+ * indicator adds NO characters to the segment's rendered text — the selection
+ * anchoring (`charOffsetWithin`) measures rendered-text length, so injecting a
+ * glyph (e.g. a 💬) inside the mark would shift char offsets for selections made
+ * later in the same segment and corrupt new anchors. Styling-only avoids that.
  *
  * Returned as a plain string when there are no highlights would be simpler, but
  * the caller only invokes this when `highlights.length > 0`.
@@ -1315,6 +1748,8 @@ function renderHighlightedText(
   highlights: Highlight[],
   annById: Map<string, MyAnnotationView>,
   onFocus: (ann: MyAnnotationView) => void,
+  commentedAnnIds: Set<string>,
+  openCommentAnnId: string | null,
 ): React.ReactNode {
   const pieces = splitIntoPieces(text, highlights);
   return pieces.map((piece, idx) => {
@@ -1324,6 +1759,15 @@ function renderHighlightedText(
     const hasQuote = piece.kinds.includes('quote');
     const firstId = piece.highlightIds[0];
     const ann = annById.get(firstId);
+    // Does any annotation covering this piece carry a comment thread / is open?
+    const hasComment = piece.highlightIds.some((hid) => commentedAnnIds.has(hid));
+    const isOpen =
+      openCommentAnnId !== null && piece.highlightIds.includes(openCommentAnnId);
+    const title = hasComment
+      ? 'Has comments — click to open the thread'
+      : hasQuote
+        ? 'Flagged quote — click to comment'
+        : 'Coded — click to comment';
     return (
       <mark
         key={idx}
@@ -1331,11 +1775,15 @@ function renderHighlightedText(
           e.stopPropagation();
           if (ann) onFocus(ann);
         }}
-        title={hasQuote ? 'Flagged quote — click to view in rail' : 'Coded — click to view in rail'}
+        title={title}
+        // `decoration-dotted` sky underline = "has comments" (text-only, so it
+        // never shifts char offsets); a sky ring = the currently-open thread.
         className={`cursor-pointer rounded-sm px-px ${
           hasQuote
             ? 'bg-amber-300/50 text-foreground dark:bg-amber-400/30'
             : 'bg-emerald-300/50 text-foreground dark:bg-emerald-400/30'
+        } ${hasComment ? 'underline decoration-sky-500 decoration-dotted decoration-2 underline-offset-2' : ''} ${
+          isOpen ? 'ring-2 ring-sky-500' : ''
         }`}
       >
         {piece.text}
