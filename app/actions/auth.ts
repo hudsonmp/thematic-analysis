@@ -2,6 +2,7 @@
 
 import { redirect } from 'next/navigation';
 import { createUserServerClient } from '@/lib/supabase/user-server';
+import { createServiceRoleClient } from '@/lib/supabase/service';
 
 export type AuthFormState = {
   error?: string;
@@ -76,15 +77,28 @@ export async function registerAction(
     return { error: 'Invalid access code.' };
   }
 
-  const sb = await createUserServerClient();
-  const { data, error } = await sb.auth.signUp({ email, password });
-  if (error) {
-    return { error: error.message };
+  // Create the account PRE-CONFIRMED via the service-role admin API. This sends
+  // NO confirmation email (so the provider's email rate limit is never hit) and
+  // the user is immediately active. Email verification is redundant here: every
+  // registration is already gated by the access code above.
+  const admin = createServiceRoleClient();
+  const { error: createErr } = await admin.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+  });
+  // A duplicate email means the account already exists — fall through to sign-in
+  // (idempotent re-register, or a previously-stuck unconfirmed account) rather
+  // than failing.
+  if (createErr && !/already|exists|registered|been registered/i.test(createErr.message)) {
+    return { error: createErr.message };
   }
 
-  // Email confirmation ON => no session yet. Don't redirect into the gate.
-  if (!data.session) {
-    return { checkEmail: true };
+  // Establish the cookie-bound session so we can enter the gated app.
+  const sb = await createUserServerClient();
+  const { error: signInErr } = await sb.auth.signInWithPassword({ email, password });
+  if (signInErr) {
+    return { error: signInErr.message };
   }
 
   await ensureProfile();
