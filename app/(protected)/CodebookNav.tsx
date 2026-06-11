@@ -10,6 +10,7 @@ const LINKS: NavLink[] = [
   { href: '/', label: 'Scheme' },
   { href: '/sessions', label: 'Sessions' },
   { href: '/episodes', label: 'Episodes' },
+  { href: '/flag-types', label: 'Flags' },
   { href: '/citations', label: 'Citations' },
   { href: '/reliability', label: 'Reliability' },
   { href: '/export', label: 'Export' },

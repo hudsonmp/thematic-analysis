@@ -652,6 +652,41 @@ export type Database = {
           },
         ]
       }
+      cb_flag_types: {
+        Row: {
+          codebook_id: string
+          color: string | null
+          created_at: string
+          id: string
+          label: string
+          position: number
+        }
+        Insert: {
+          codebook_id: string
+          color?: string | null
+          created_at?: string
+          id?: string
+          label: string
+          position?: number
+        }
+        Update: {
+          codebook_id?: string
+          color?: string | null
+          created_at?: string
+          id?: string
+          label?: string
+          position?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_flag_types_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_memos: {
         Row: {
           author: string | null
