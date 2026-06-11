@@ -2,9 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Segment } from '@/lib/transcript/srt';
-import { addCoding, deleteCoding, type CodingView } from '@/app/actions/codings';
-import { addMemo, deleteMemo, type MemoView } from '@/app/actions/memos';
+import type { CloudSegment } from '@/app/actions/sessions';
+import {
+  addAnnotation,
+  deleteAnnotation,
+  type MyAnnotationView,
+} from '@/app/actions/annotations';
 
 /** Minimal code shape the picker needs (flattened from the codebook tree). */
 type CodeOption = { id: string; mnemonic: string; name: string };
@@ -30,7 +33,7 @@ function formatSpan(startMs: number, endMs: number): string {
  * there. At a few hundred segments and the browser's `timeupdate` cadence
  * (~4 Hz) this is free. The first containing segment wins on overlap.
  */
-function findActiveIndex(segments: Segment[], tMs: number): number {
+function findActiveIndex(segments: CloudSegment[], tMs: number): number {
   for (let i = 0; i < segments.length; i++) {
     if (tMs >= segments[i].startMs && tMs < segments[i].endMs) return i;
   }
@@ -40,7 +43,7 @@ function findActiveIndex(segments: Segment[], tMs: number): number {
 /**
  * Two-pane participant-session player: a 2/3-width video on the left and a
  * 1/3-width synchronized, click-to-seek, brushable transcript on the right,
- * plus (when coding is enabled) a coding rail and an analytic-comment panel.
+ * plus (when coding is enabled) a coding rail.
  *
  * Sync (video → transcript): when SYNC is on (default), the video's `timeupdate`
  * — which fires on play AND on seek/scrub/fast-forward — recomputes the active
@@ -54,19 +57,22 @@ function findActiveIndex(segments: Segment[], tMs: number): number {
  * selection at that segment; shift-clicking another row extends the selection to
  * the contiguous range [min, max] of the two clicked rows.
  *
- * Coding: with a selection, pick a code + coder and "Apply code" → `addCoding`
- * writes a `cb_codings` row anchored to `[startMs,endMs]` on the recording clock
- * with the brushed segment idxs. Comments: free-text analytic notes (stored via
- * the `cb_memos` table / `addMemo` action), optionally pinned to the current
- * selection. Every mutation calls `router.refresh()` so the page re-loads
- * codings/comments server-side; no Server Action runs during client render.
+ * Coding (Task 9, cb_annotations): with a selection, pick a code → "Apply code"
+ * → `addAnnotation` writes a `cb_annotations` row owned by the SIGNED-IN coder
+ * (coder_id = auth.uid(), enforced server-side; there is NO coder input). SP-A
+ * anchors at whole-segment granularity: the annotation's `segment_id` is the
+ * FIRST selected segment's real `cb_segments.id` and the char range is the whole
+ * segment text (`charStart:0, charEnd:text.length`); the recording-clock span
+ * `[tStartMs,tEndMs]` is the brushed selection's [minStart,maxEnd]. SP-B will add
+ * sub-segment char ranges. The rail shows ONLY the signed-in coder's OWN
+ * annotations (own-coding isolation): click a rail row → seek to its `tStartMs`;
+ * ✕ → `deleteAnnotation`. Every mutation calls `router.refresh()` so the page
+ * re-loads `myAnnotations` server-side; no Server Action runs during client
+ * render.
  *
- * NOTE (Task 7): coding + comments are written against the OLD `cb_codings` /
- * `cb_memos` tables, which are being replaced by `cb_annotations` in Task 9. To
- * avoid a half-broken UI during the cloud-sessions migration, that whole surface
- * is gated behind `codingEnabled` (default false) — the code is intact but not
- * rendered. When `codingEnabled` is false the coding props are unused, so they
- * are optional with inert defaults. Task 9 re-enables it on the new schema.
+ * NOTE: the comments panel (`cb_memos`) is intentionally NOT re-enabled here —
+ * it awaits its own migration. The coding surface is gated behind `codingEnabled`
+ * so a session viewed without codebook context still renders the player.
  */
 export default function SessionPlayer({
   id,
@@ -74,25 +80,21 @@ export default function SessionPlayer({
   segments,
   durationMs,
   codingEnabled = false,
-  userId = null,
-  studyId = null,
-  codebookId = '',
+  versionId = null,
   codes = [],
-  codings = [],
-  memos = [],
+  myAnnotations = [],
 }: {
   id: string;
   pidLabel: string;
-  segments: Segment[];
+  segments: CloudSegment[];
   durationMs: number;
-  /** Render the coding toolbar/rail + comments panel. Hidden until Task 9. */
+  /** Render the coding toolbar + own-coding rail. */
   codingEnabled?: boolean;
-  userId?: string | null;
-  studyId?: string | null;
-  codebookId?: string;
+  /** The original transcript version id annotations anchor to (version_id). */
+  versionId?: string | null;
   codes?: CodeOption[];
-  codings?: CodingView[];
-  memos?: MemoView[];
+  /** The signed-in coder's OWN annotations for this session (own-coding view). */
+  myAnnotations?: MyAnnotationView[];
 }) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -118,16 +120,10 @@ export default function SessionPlayer({
   const [anchorIdx, setAnchorIdx] = useState<number | null>(null);
   const [headIdx, setHeadIdx] = useState<number | null>(null);
 
-  // Coding form state.
-  const [coder, setCoder] = useState('R1');
+  // Coding form state. (No coder input — the coder is the signed-in user.)
   const [codeFilter, setCodeFilter] = useState('');
   const [selectedCodeId, setSelectedCodeId] = useState('');
   const [applying, setApplying] = useState(false);
-
-  // Memo form state.
-  const [memoBody, setMemoBody] = useState('');
-  const [memoPinned, setMemoPinned] = useState(true);
-  const [savingMemo, setSavingMemo] = useState(false);
 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -165,23 +161,35 @@ export default function SessionPlayer({
     return [Math.min(anchorIdx, head), Math.max(anchorIdx, head)];
   }, [anchorIdx, headIdx]);
 
-  // Covered segment idxs (transcript `seg.idx`, not array positions) + the
-  // [minStart, maxEnd] span in ms. Recomputed from the inclusive row range.
+  // The selection's [minStart, maxEnd] span (recording clock) + the ANCHOR
+  // segment — the first covered row, which the annotation anchors to in SP-A
+  // (whole-segment granularity; SP-B subdivides the char range). Recomputed
+  // from the inclusive row range.
   const selection = useMemo(() => {
     if (!selectionRange) return null;
     const [lo, hi] = selectionRange;
+    const anchorSeg = segments[lo];
+    if (!anchorSeg) return null;
     let minStart = Infinity;
     let maxEnd = -Infinity;
-    const segmentIdxs: number[] = [];
+    let count = 0;
     for (let i = lo; i <= hi; i++) {
       const seg = segments[i];
       if (!seg) continue;
       minStart = Math.min(minStart, seg.startMs);
       maxEnd = Math.max(maxEnd, seg.endMs);
-      segmentIdxs.push(seg.idx);
+      count += 1;
     }
     if (!Number.isFinite(minStart) || !Number.isFinite(maxEnd)) return null;
-    return { startMs: minStart, endMs: maxEnd, segmentIdxs, rowLo: lo, rowHi: hi };
+    return {
+      startMs: minStart,
+      endMs: maxEnd,
+      anchorSegmentId: anchorSeg.id,
+      anchorTextLength: anchorSeg.text.length,
+      count,
+      rowLo: lo,
+      rowHi: hi,
+    };
   }, [selectionRange, segments]);
 
   const selectRow = useCallback((i: number, extend: boolean) => {
@@ -201,21 +209,21 @@ export default function SessionPlayer({
   // --- Mutations ----------------------------------------------------------
 
   const handleApplyCode = useCallback(async () => {
-    if (!selection || !selectedCodeId) return;
+    if (!selection || !selectedCodeId || !versionId) return;
     setApplying(true);
     setError(null);
     try {
-      await addCoding({
-        codeId: selectedCodeId,
-        coder,
-        ref: {
-          kind: 'recording',
-          user_id: userId,
-          study_id: studyId,
-          pid: pidLabel,
-          span: [selection.startMs, selection.endMs],
-          segment_idxs: selection.segmentIdxs,
-        },
+      await addAnnotation({
+        sessionId: id,
+        versionId,
+        // SP-A anchors the whole annotation to the FIRST selected segment.
+        segmentId: selection.anchorSegmentId,
+        charStart: 0,
+        charEnd: selection.anchorTextLength,
+        tStartMs: selection.startMs,
+        tEndMs: selection.endMs,
+        kind: 'code',
+        codeIds: [selectedCodeId],
       });
       clearSelection();
       setSelectedCodeId('');
@@ -225,50 +233,16 @@ export default function SessionPlayer({
     } finally {
       setApplying(false);
     }
-  }, [selection, selectedCodeId, coder, userId, studyId, pidLabel, clearSelection, router]);
+  }, [selection, selectedCodeId, versionId, id, clearSelection, router]);
 
-  const handleDeleteCoding = useCallback(async (id: string) => {
-    setBusyId(id);
+  const handleDeleteAnnotation = useCallback(async (annotationId: string) => {
+    setBusyId(annotationId);
     setError(null);
     try {
-      await deleteCoding(id);
+      await deleteAnnotation(annotationId);
       router.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete coding.');
-    } finally {
-      setBusyId(null);
-    }
-  }, [router]);
-
-  const handleAddMemo = useCallback(async () => {
-    if (memoBody.trim() === '') return;
-    setSavingMemo(true);
-    setError(null);
-    try {
-      await addMemo({
-        codebookId,
-        pid: pidLabel,
-        body: memoBody,
-        author: coder,
-        span: memoPinned && selection ? [selection.startMs, selection.endMs] : null,
-      });
-      setMemoBody('');
-      router.refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to add memo.');
-    } finally {
-      setSavingMemo(false);
-    }
-  }, [memoBody, codebookId, pidLabel, coder, memoPinned, selection, router]);
-
-  const handleDeleteMemo = useCallback(async (id: string) => {
-    setBusyId(id);
-    setError(null);
-    try {
-      await deleteMemo(id);
-      router.refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete memo.');
+      setError(e instanceof Error ? e.message : 'Failed to delete annotation.');
     } finally {
       setBusyId(null);
     }
@@ -285,15 +259,16 @@ export default function SessionPlayer({
     );
   }, [codes, codeFilter]);
 
-  // Which transcript array-positions are covered by at least one coding (for a
-  // small edge marker on the row). Keyed by array position via seg.idx match.
-  const codedSegIdxs = useMemo(() => {
-    const set = new Set<number>();
-    for (const c of codings) for (const s of c.segment_idxs) set.add(s);
+  // Which transcript segment ids carry at least one of the signed-in coder's
+  // annotations (for a small edge marker on the row). Own-coding only.
+  const annotatedSegmentIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of myAnnotations) set.add(a.segmentId);
     return set;
-  }, [codings]);
+  }, [myAnnotations]);
 
-  const canApply = !!selection && !!selectedCodeId && coder.trim() !== '' && !applying;
+  const canApply =
+    !!selection && !!selectedCodeId && !!versionId && !applying;
 
   return (
     <main className="px-6 py-6">
@@ -310,7 +285,8 @@ export default function SessionPlayer({
           {codingEnabled && (
             <>
               {' · '}
-              {codings.length} coding{codings.length === 1 ? '' : 's'}
+              {myAnnotations.length} annotation
+              {myAnnotations.length === 1 ? '' : 's'}
             </>
           )}
         </p>
@@ -323,7 +299,7 @@ export default function SessionPlayer({
       )}
 
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* Left (2/3): video + (when enabled) coding toolbar + rail + comments */}
+        {/* Left (2/3): video + (when enabled) coding toolbar + own-coding rail */}
         <div className="space-y-4 lg:col-span-2">
           <video
             ref={videoRef}
@@ -334,196 +310,116 @@ export default function SessionPlayer({
             className="w-full bg-black"
           />
 
-          {/* Coding toolbar + rail + comments — hidden until Task 9 re-enables
-              them on cb_annotations. Code intact; not rendered. */}
           {codingEnabled && (
             <>
-          {/* Coding toolbar */}
-          <section className="rounded border border-foreground/15 p-3">
-            <h2 className="mb-2 text-sm font-semibold">Apply code</h2>
-            {selection ? (
-              <p className="mb-2 text-sm">
-                Selection{' '}
-                <span className="font-mono">
-                  {formatSpan(selection.startMs, selection.endMs)}
-                </span>{' '}
-                <span className="text-foreground/50">
-                  ({selection.segmentIdxs.length} segment
-                  {selection.segmentIdxs.length === 1 ? '' : 's'})
-                </span>{' '}
-                <button
-                  type="button"
-                  onClick={clearSelection}
-                  className="ml-1 text-xs text-foreground/60 underline hover:text-foreground"
-                >
-                  Clear
-                </button>
-              </p>
-            ) : (
-              <p className="mb-2 text-sm text-foreground/50">
-                Click a transcript row to select; shift-click to extend.
-              </p>
-            )}
-
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                type="text"
-                value={codeFilter}
-                onChange={(e) => setCodeFilter(e.target.value)}
-                placeholder="Filter codes…"
-                className="w-32 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
-                aria-label="Filter codes"
-              />
-              <select
-                value={selectedCodeId}
-                onChange={(e) => setSelectedCodeId(e.target.value)}
-                className="min-w-40 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
-                aria-label="Code"
-              >
-                <option value="">
-                  {filteredCodes.length ? 'Select a code…' : 'No codes'}
-                </option>
-                {filteredCodes.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.mnemonic} — {c.name}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="text"
-                value={coder}
-                onChange={(e) => setCoder(e.target.value)}
-                placeholder="Coder"
-                className="w-16 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm font-mono"
-                aria-label="Coder"
-              />
-              <button
-                type="button"
-                onClick={handleApplyCode}
-                disabled={!canApply}
-                className="rounded bg-foreground px-3 py-1 text-sm text-background disabled:opacity-40"
-              >
-                {applying ? 'Applying…' : 'Apply code'}
-              </button>
-            </div>
-          </section>
-
-          {/* Coding rail */}
-          <section className="rounded border border-foreground/15 p-3">
-            <h2 className="mb-2 text-sm font-semibold">
-              Codings <span className="font-normal text-foreground/50">({codings.length})</span>
-            </h2>
-            {codings.length === 0 ? (
-              <p className="text-sm text-foreground/50">No codings yet.</p>
-            ) : (
-              <ul className="divide-y divide-foreground/10">
-                {codings.map((c) => (
-                  <li
-                    key={c.id}
-                    className="flex items-center gap-2 py-1.5 text-sm"
-                  >
+              {/* Coding toolbar */}
+              <section className="rounded border border-foreground/15 p-3">
+                <h2 className="mb-2 text-sm font-semibold">Apply code</h2>
+                {selection ? (
+                  <p className="mb-2 text-sm">
+                    Selection{' '}
+                    <span className="font-mono">
+                      {formatSpan(selection.startMs, selection.endMs)}
+                    </span>{' '}
+                    <span className="text-foreground/50">
+                      ({selection.count} segment
+                      {selection.count === 1 ? '' : 's'})
+                    </span>{' '}
                     <button
                       type="button"
-                      onClick={() => seekTo(c.span[0])}
-                      className="flex-1 text-left hover:underline"
-                      title={c.name}
+                      onClick={clearSelection}
+                      className="ml-1 text-xs text-foreground/60 underline hover:text-foreground"
                     >
-                      <span className="font-mono text-xs text-foreground/50">
-                        {formatSpan(c.span[0], c.span[1])}
-                      </span>{' '}
-                      <span className="font-semibold">{c.mnemonic}</span>
-                      {c.coder && (
-                        <span className="ml-1 text-foreground/50">· {c.coder}</span>
-                      )}
+                      Clear
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteCoding(c.id)}
-                      disabled={busyId === c.id}
-                      aria-label="Delete coding"
-                      className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
-                    >
-                      {'✕'}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          {/* Comments */}
-          <section className="rounded border border-foreground/15 p-3">
-            <h2 className="mb-2 text-sm font-semibold">
-              Comments <span className="font-normal text-foreground/50">({memos.length})</span>
-            </h2>
-            <textarea
-              value={memoBody}
-              onChange={(e) => setMemoBody(e.target.value)}
-              placeholder="Add a comment…"
-              rows={3}
-              className="w-full rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
-              aria-label="Comment body"
-            />
-            <div className="mt-1 flex items-center justify-between">
-              <label className="flex items-center gap-1.5 text-xs text-foreground/60">
-                <input
-                  type="checkbox"
-                  checked={memoPinned}
-                  onChange={(e) => setMemoPinned(e.target.checked)}
-                />
-                Pin to selection
-                {selection && (
-                  <span className="font-mono">
-                    {' '}
-                    {formatSpan(selection.startMs, selection.endMs)}
-                  </span>
+                  </p>
+                ) : (
+                  <p className="mb-2 text-sm text-foreground/50">
+                    Click a transcript row to select; shift-click to extend.
+                  </p>
                 )}
-              </label>
-              <button
-                type="button"
-                onClick={handleAddMemo}
-                disabled={savingMemo || memoBody.trim() === ''}
-                className="rounded bg-foreground px-3 py-1 text-sm text-background disabled:opacity-40"
-              >
-                {savingMemo ? 'Saving…' : 'Add comment'}
-              </button>
-            </div>
 
-            {memos.length > 0 && (
-              <ul className="mt-3 divide-y divide-foreground/10">
-                {memos.map((m) => (
-                  <li key={m.id} className="flex items-start gap-2 py-2 text-sm">
-                    <div className="flex-1">
-                      {m.span && (
-                        <button
-                          type="button"
-                          onClick={() => seekTo(m.span![0])}
-                          className="mr-1 font-mono text-xs text-foreground/50 hover:underline"
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={codeFilter}
+                    onChange={(e) => setCodeFilter(e.target.value)}
+                    placeholder="Filter codes…"
+                    className="w-32 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
+                    aria-label="Filter codes"
+                  />
+                  <select
+                    value={selectedCodeId}
+                    onChange={(e) => setSelectedCodeId(e.target.value)}
+                    className="min-w-40 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
+                    aria-label="Code"
+                  >
+                    <option value="">
+                      {filteredCodes.length ? 'Select a code…' : 'No codes'}
+                    </option>
+                    {filteredCodes.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.mnemonic} — {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleApplyCode}
+                    disabled={!canApply}
+                    className="rounded bg-foreground px-3 py-1 text-sm text-background disabled:opacity-40"
+                  >
+                    {applying ? 'Applying…' : 'Apply code'}
+                  </button>
+                </div>
+              </section>
+
+              {/* Own-coding rail: ONLY the signed-in coder's annotations. */}
+              <section className="rounded border border-foreground/15 p-3">
+                <h2 className="mb-2 text-sm font-semibold">
+                  My annotations{' '}
+                  <span className="font-normal text-foreground/50">
+                    ({myAnnotations.length})
+                  </span>
+                </h2>
+                {myAnnotations.length === 0 ? (
+                  <p className="text-sm text-foreground/50">No annotations yet.</p>
+                ) : (
+                  <ul className="divide-y divide-foreground/10">
+                    {myAnnotations.map((a) => {
+                      const codeLabel =
+                        a.codes.map((c) => c.mnemonic).join(', ') || '—';
+                      return (
+                        <li
+                          key={a.id}
+                          className="flex items-center gap-2 py-1.5 text-sm"
                         >
-                          {formatSpan(m.span[0], m.span[1])}
-                        </button>
-                      )}
-                      {m.author && (
-                        <span className="mr-1 text-xs font-semibold text-foreground/60">
-                          {m.author}:
-                        </span>
-                      )}
-                      <span className="text-foreground/80">{m.body}</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteMemo(m.id)}
-                      disabled={busyId === m.id}
-                      aria-label="Delete comment"
-                      className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
-                    >
-                      {'✕'}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+                          <button
+                            type="button"
+                            onClick={() => seekTo(a.tStartMs)}
+                            className="flex-1 text-left hover:underline"
+                            title={codeLabel}
+                          >
+                            <span className="font-mono text-xs text-foreground/50">
+                              {formatSpan(a.tStartMs, a.tEndMs)}
+                            </span>{' '}
+                            <span className="font-semibold">{codeLabel}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteAnnotation(a.id)}
+                            disabled={busyId === a.id}
+                            aria-label="Delete annotation"
+                            className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
+                          >
+                            {'✕'}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
             </>
           )}
         </div>
@@ -551,61 +447,62 @@ export default function SessionPlayer({
               {synced ? 'Sync: on' : 'Sync: off'}
             </button>
           </div>
-        <div
-          ref={transcriptRef}
-          className="h-[70vh] overflow-y-auto border border-foreground/15 divide-y divide-foreground/10"
-        >
-          {segments.length === 0 ? (
-            <p className="p-4 text-sm text-foreground/60">No transcript</p>
-          ) : (
-            segments.map((seg, i) => {
-              const active = i === activeIdx;
-              const inSelection =
-                !!selectionRange && i >= selectionRange[0] && i <= selectionRange[1];
-              const isCoded = codedSegIdxs.has(seg.idx);
-              return (
-                <div
-                  key={`${seg.idx}-${i}`}
-                  ref={(el) => {
-                    rowRefs.current[i] = el;
-                  }}
-                  aria-current={active ? 'true' : undefined}
-                  className={`flex items-start gap-1 px-2 py-2 text-sm transition ${
-                    inSelection
-                      ? 'bg-blue-500/15'
-                      : active
-                        ? 'bg-foreground/10'
-                        : 'hover:bg-foreground/[0.04]'
-                  } ${isCoded ? 'border-l-2 border-l-emerald-500' : 'border-l-2 border-l-transparent'}`}
-                >
-                  {/* Timestamp = seek affordance */}
-                  <button
-                    type="button"
-                    onClick={() => seekTo(seg.startMs)}
-                    title="Seek to here"
-                    className="mt-px shrink-0 font-mono text-xs text-foreground/40 hover:text-foreground hover:underline"
+          <div
+            ref={transcriptRef}
+            className="h-[70vh] overflow-y-auto border border-foreground/15 divide-y divide-foreground/10"
+          >
+            {segments.length === 0 ? (
+              <p className="p-4 text-sm text-foreground/60">No transcript</p>
+            ) : (
+              segments.map((seg, i) => {
+                const active = i === activeIdx;
+                const inSelection =
+                  !!selectionRange && i >= selectionRange[0] && i <= selectionRange[1];
+                const isAnnotated =
+                  codingEnabled && annotatedSegmentIds.has(seg.id);
+                return (
+                  <div
+                    key={seg.id}
+                    ref={(el) => {
+                      rowRefs.current[i] = el;
+                    }}
+                    aria-current={active ? 'true' : undefined}
+                    className={`flex items-start gap-1 px-2 py-2 text-sm transition ${
+                      inSelection
+                        ? 'bg-blue-500/15'
+                        : active
+                          ? 'bg-foreground/10'
+                          : 'hover:bg-foreground/[0.04]'
+                    } ${isAnnotated ? 'border-l-2 border-l-emerald-500' : 'border-l-2 border-l-transparent'}`}
                   >
-                    [{formatTime(seg.startMs)}]
-                  </button>
-                  {/* Row body = select affordance: click starts/replaces the
-                      selection here; shift-click extends to the contiguous
-                      range between this row and the anchor. */}
-                  <button
-                    type="button"
-                    onClick={(e) => selectRow(i, e.shiftKey)}
-                    title="Click to select; shift-click to extend"
-                    className="flex-1 text-left"
-                  >
-                    {seg.speaker && (
-                      <span className="mr-1.5 font-semibold">{seg.speaker}:</span>
-                    )}
-                    <span className="text-foreground/80">{seg.text}</span>
-                  </button>
-                </div>
-              );
-            })
-          )}
-        </div>
+                    {/* Timestamp = seek affordance */}
+                    <button
+                      type="button"
+                      onClick={() => seekTo(seg.startMs)}
+                      title="Seek to here"
+                      className="mt-px shrink-0 font-mono text-xs text-foreground/40 hover:text-foreground hover:underline"
+                    >
+                      [{formatTime(seg.startMs)}]
+                    </button>
+                    {/* Row body = select affordance: click starts/replaces the
+                        selection here; shift-click extends to the contiguous
+                        range between this row and the anchor. */}
+                    <button
+                      type="button"
+                      onClick={(e) => selectRow(i, e.shiftKey)}
+                      title="Click to select; shift-click to extend"
+                      className="flex-1 text-left"
+                    >
+                      {seg.speaker && (
+                        <span className="mr-1.5 font-semibold">{seg.speaker}:</span>
+                      )}
+                      <span className="text-foreground/80">{seg.text}</span>
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
       </div>
     </main>
