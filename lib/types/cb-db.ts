@@ -271,6 +271,42 @@ export type Database = {
           },
         ]
       }
+      cb_code_facet_fields: {
+        Row: {
+          bool_value: boolean | null
+          code_id: string
+          facet_id: string
+          text_value: string | null
+        }
+        Insert: {
+          bool_value?: boolean | null
+          code_id: string
+          facet_id: string
+          text_value?: string | null
+        }
+        Update: {
+          bool_value?: boolean | null
+          code_id?: string
+          facet_id?: string
+          text_value?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_code_facet_fields_code_id_fkey"
+            columns: ["code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_code_facet_fields_facet_id_fkey"
+            columns: ["facet_id"]
+            isOneToOne: false
+            referencedRelation: "cb_facets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_code_facet_values: {
         Row: {
           code_id: string
@@ -651,6 +687,7 @@ export type Database = {
           key: string
           label: string
           position: number
+          type: string
         }
         Insert: {
           cardinality?: string
@@ -661,6 +698,7 @@ export type Database = {
           key: string
           label: string
           position?: number
+          type?: string
         }
         Update: {
           cardinality?: string
@@ -671,6 +709,7 @@ export type Database = {
           key?: string
           label?: string
           position?: number
+          type?: string
         }
         Relationships: [
           {

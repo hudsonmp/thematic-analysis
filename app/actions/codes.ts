@@ -191,6 +191,59 @@ export async function setCodeFacetValues(codeId: string, facetValueIds: string[]
   }
 }
 
+/**
+ * Set (or clear) a code's per-facet FIELD value for a valueless facet type
+ * (boolean / open_text), stored in cb_code_facet_fields keyed on
+ * (code_id, facet_id). This is the analogue of `setCodeFacetValues` for the
+ * NON-enum facet kinds (migration 22):
+ *   - boolean   → `bool_value` (true / false)
+ *   - open_text → `text_value` (a free-text note)
+ *
+ * Semantics: a row exists iff the code carries a value on that facet. Clearing
+ * the field — `bool_value: null` for a boolean (back to "unset"), or an empty /
+ * whitespace-only / null `text_value` for open_text — DELETES the row rather than
+ * persisting a null-bearing row, so "no row" is the single canonical "unset".
+ * Otherwise we upsert the (code_id, facet_id) row with the new value.
+ *
+ * Only one of `bool_value` / `text_value` is meaningful per facet (its type
+ * decides which); the caller passes the field for the facet's type. A call that
+ * passes neither is treated as a clear.
+ */
+export async function setCodeFacetField(
+  codeId: string,
+  facetId: string,
+  { bool_value, text_value }: { bool_value?: boolean | null; text_value?: string | null },
+): Promise<void> {
+  const trimmedText =
+    text_value === undefined || text_value === null ? null : text_value.trim() || null;
+  const boolGiven = bool_value !== undefined && bool_value !== null;
+  const isClear = !boolGiven && trimmedText === null;
+
+  if (isClear) {
+    const del = await cbFrom('cb_code_facet_fields')
+      .delete()
+      .eq('code_id', codeId)
+      .eq('facet_id', facetId);
+    if (del.error) {
+      throw new Error(`setCodeFacetField (clear) failed: ${del.error.message}`);
+    }
+    return;
+  }
+
+  const { error } = await cbFrom('cb_code_facet_fields').upsert(
+    {
+      code_id: codeId,
+      facet_id: facetId,
+      bool_value: boolGiven ? bool_value! : null,
+      text_value: trimmedText,
+    },
+    { onConflict: 'code_id,facet_id' },
+  );
+  if (error) {
+    throw new Error(`setCodeFacetField (upsert) failed: ${error.message}`);
+  }
+}
+
 /** Set (or clear, with null) a code's parent in the code hierarchy. */
 export async function setCodeParent(codeId: string, parentCodeId: string | null): Promise<void> {
   const { error } = await cbFrom('cb_codes')

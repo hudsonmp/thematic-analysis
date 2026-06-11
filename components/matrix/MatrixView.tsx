@@ -5,6 +5,7 @@ import Link from 'next/link';
 import type { CodebookTree, CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { createCodeAction, type NewCodeState } from '@/app/(protected)/actions';
 import { filterCodes } from '@/lib/codebook/filter';
+import { facetHasValues, coerceFacetType } from '@/lib/codebook/facet-types';
 import type { Tables } from '@/lib/types/cb-db';
 import FacetEditor from './FacetEditor';
 
@@ -297,8 +298,17 @@ export default function MatrixView({
 }) {
   const { codebook, facets, codes, episodes, labels, citations } = tree;
 
-  const [rowFacetId, setRowFacetId] = useState<string>(facets[0]?.id ?? NONE);
-  const [colFacetId, setColFacetId] = useState<string>(facets[1]?.id ?? NONE);
+  // Only ENUM facets are pivotable (they bear values). boolean / open_text facets
+  // carry a per-code field, not a value axis, so they are excluded from the row /
+  // column selectors (they still classify codes on the code card). The full
+  // `facets` list still drives the scheme editor + facetById resolution.
+  const pivotFacets = useMemo(
+    () => facets.filter((f) => facetHasValues(coerceFacetType(f.type))),
+    [facets],
+  );
+
+  const [rowFacetId, setRowFacetId] = useState<string>(pivotFacets[0]?.id ?? NONE);
+  const [colFacetId, setColFacetId] = useState<string>(pivotFacets[1]?.id ?? NONE);
 
   const facetById = useMemo(() => {
     const m = new Map<string, FacetWithValues>();
@@ -533,7 +543,7 @@ export default function MatrixView({
                 className="border border-foreground/15 px-2 py-1 bg-background"
               >
                 <option value={NONE}>none</option>
-                {facets.map((f) => (
+                {pivotFacets.map((f) => (
                   <option key={f.id} value={f.id}>
                     {f.label}
                   </option>
@@ -548,7 +558,7 @@ export default function MatrixView({
                 className="border border-foreground/15 px-2 py-1 bg-background"
               >
                 <option value={NONE}>none</option>
-                {facets.map((f) => (
+                {pivotFacets.map((f) => (
                   <option key={f.id} value={f.id}>
                     {f.label}
                   </option>

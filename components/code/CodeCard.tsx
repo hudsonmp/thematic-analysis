@@ -180,6 +180,7 @@ export default function CodeCard({
             codeId={code.id}
             facets={facets}
             selectedValueIds={code.facetValueIds}
+            facetFields={code.facetFields}
             citations={citations}
             linkedCitationIds={code.citationIds}
           />

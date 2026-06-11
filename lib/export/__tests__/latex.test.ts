@@ -35,6 +35,7 @@ function singleCode(): CodebookTree {
         label: 'Modality',
         description: null,
         cardinality: 'single',
+        type: 'enum',
         position: 0,
         created_at: NOW,
         values: [
@@ -90,6 +91,7 @@ function singleCode(): CodebookTree {
           created_by: null,
         },
         facetValueIds: ['fv-A1'],
+        facetFields: [],
         citationIds: ['cit-1'],
         episodeIds: [],
         labelIds: [],

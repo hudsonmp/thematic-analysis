@@ -19,11 +19,26 @@ type Label = Tables<'cb_labels'>;
 
 export type ShownStudy = { id: string; name: string; authored_data: Json };
 
+/** A facet plus its (enum-only) values. `type` rides along on the Facet row
+ *  (migration 22); for boolean / open_text facets `values` is empty and the
+ *  per-code datum is carried in `CodeWithRefs.facetFields` instead. */
 export type FacetWithValues = Facet & { values: FacetValue[] };
+
+/** The boolean / open_text datum a code carries on ONE valueless facet
+ *  (cb_code_facet_fields). Present in `facetFields` iff the code has a row for
+ *  that facet; absent means "unset". */
+export type CodeFacetField = {
+  facetId: string;
+  boolValue: boolean | null;
+  textValue: string | null;
+};
 
 export type CodeWithRefs = Code & {
   current: CodeVersion | null;
   facetValueIds: string[];
+  /** Per-facet boolean / open_text fields (valueless facet types), keyed by
+   *  facetId. Parallel to `facetValueIds`, which covers enum facets. */
+  facetFields: CodeFacetField[];
   citationIds: string[];
   episodeIds: string[];
   labelIds: string[];
@@ -203,6 +218,7 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
     valuesRes,
     versionsRes,
     codeFacetValuesRes,
+    codeFacetFieldsRes,
     codeCitationsRes,
     codeEpisodesRes,
     codeLabelsRes,
@@ -221,6 +237,9 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
       ? supabase.from('cb_code_facet_values').select('*').in('code_id', codeIdList)
       : null,
     codeIdList.length
+      ? supabase.from('cb_code_facet_fields').select('*').in('code_id', codeIdList)
+      : null,
+    codeIdList.length
       ? supabase.from('cb_code_citations').select('*').in('code_id', codeIdList)
       : null,
     codeIdList.length
@@ -235,6 +254,7 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
     valuesRes?.error ||
     versionsRes?.error ||
     codeFacetValuesRes?.error ||
+    codeFacetFieldsRes?.error ||
     codeCitationsRes?.error ||
     codeEpisodesRes?.error ||
     codeLabelsRes?.error;
@@ -245,6 +265,7 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
   const valueRows = valuesRes?.data ?? [];
   const versionRows = versionsRes?.data ?? [];
   const codeFacetValueRows = codeFacetValuesRes?.data ?? [];
+  const codeFacetFieldRows = codeFacetFieldsRes?.data ?? [];
   const codeCitationRows = codeCitationsRes?.data ?? [];
   const codeEpisodeRows = codeEpisodesRes?.data ?? [];
   const codeLabelRows = codeLabelsRes?.data ?? [];
@@ -266,6 +287,13 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
     const list = facetValueIdsByCode.get(link.code_id) ?? [];
     list.push(link.facet_value_id);
     facetValueIdsByCode.set(link.code_id, list);
+  }
+
+  const facetFieldsByCode = new Map<string, CodeFacetField[]>();
+  for (const row of codeFacetFieldRows) {
+    const list = facetFieldsByCode.get(row.code_id) ?? [];
+    list.push({ facetId: row.facet_id, boolValue: row.bool_value, textValue: row.text_value });
+    facetFieldsByCode.set(row.code_id, list);
   }
 
   const citationIdsByCode = new Map<string, string[]>();
@@ -298,6 +326,7 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
     ...c,
     current: c.current_version_id ? versionById.get(c.current_version_id) ?? null : null,
     facetValueIds: facetValueIdsByCode.get(c.id) ?? [],
+    facetFields: facetFieldsByCode.get(c.id) ?? [],
     citationIds: citationIdsByCode.get(c.id) ?? [],
     episodeIds: episodeIdsByCode.get(c.id) ?? [],
     labelIds: labelIdsByCode.get(c.id) ?? [],

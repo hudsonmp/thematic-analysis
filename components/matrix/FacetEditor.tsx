@@ -12,6 +12,7 @@ import {
   type Cardinality,
 } from '@/app/actions/facets';
 import type { FacetWithValues } from '@/app/actions/codebook';
+import { type FacetType, coerceFacetType, facetHasValues } from '@/lib/codebook/facet-types';
 
 /**
  * Collapsible "Edit scheme" panel. Calls the facets Server Actions from event
@@ -36,6 +37,7 @@ export default function FacetEditor({
   const [fKey, setFKey] = useState('');
   const [fLabel, setFLabel] = useState('');
   const [fCard, setFCard] = useState<Cardinality>('single');
+  const [fType, setFType] = useState<FacetType>('enum');
 
   // per-facet new-value drafts, keyed by facet id
   const [valueDrafts, setValueDrafts] = useState<
@@ -81,7 +83,10 @@ export default function FacetEditor({
           {error && <p className="text-sm text-red-600">{error}</p>}
 
           {/* Existing facets */}
-          {facets.map((facet) => (
+          {facets.map((facet) => {
+            const facetType = coerceFacetType(facet.type);
+            const showValues = facetHasValues(facetType);
+            return (
             <div key={facet.id} className="border border-foreground/10 p-3 space-y-3">
               <div className="flex items-center gap-2 flex-wrap">
                 <input
@@ -97,7 +102,10 @@ export default function FacetEditor({
                   aria-label={`Rename facet ${facet.label}`}
                 />
                 <span className="text-xs text-foreground/40 font-mono">{facet.key}</span>
-                <span className="text-xs text-foreground/40">({facet.cardinality})</span>
+                <span className="text-xs text-foreground/40">
+                  ({facetType === 'open_text' ? 'open response' : facetType}
+                  {showValues ? ` · ${facet.cardinality}` : ''})
+                </span>
                 <button
                   type="button"
                   disabled={isPending}
@@ -112,6 +120,17 @@ export default function FacetEditor({
                 </button>
               </div>
 
+              {/* Values + add-value are ENUM-only: boolean / open_text facets are
+                  valueless (their per-code datum lives in cb_code_facet_fields). */}
+              {!showValues && (
+                <p className="pl-2 text-xs text-foreground/40">
+                  {facetType === 'boolean'
+                    ? 'Yes/no facet — no values. Each code gets a yes/no on its card.'
+                    : 'Open-response facet — no values. Each code gets a free-text note on its card.'}
+                </p>
+              )}
+
+              {showValues && (<>
               {/* Values */}
               <ul className="space-y-1.5 pl-2">
                 {facet.values.map((value) => (
@@ -209,8 +228,10 @@ export default function FacetEditor({
                   Add value
                 </button>
               </div>
+              </>)}
             </div>
-          ))}
+            );
+          })}
 
           {/* Add facet */}
           <div className="border-t border-foreground/10 pt-4">
@@ -253,21 +274,41 @@ export default function FacetEditor({
               </label>
               <label className="flex flex-col gap-1">
                 <span className="text-[11px] text-foreground/50">
-                  cardinality{' '}
-                  <span className="text-foreground/35">— values per code</span>
+                  type{' '}
+                  <span className="text-foreground/35">— how codes carry it</span>
                 </span>
                 <select
-                  value={fCard}
-                  onChange={(e) => setFCard(e.target.value as Cardinality)}
+                  value={fType}
+                  onChange={(e) => setFType(e.target.value as FacetType)}
                   disabled={isPending}
-                  title="single = a code gets at most ONE value on this facet (radio). multi = a code can carry SEVERAL values (checkboxes)."
+                  title="enum = pick from a list of values. yes/no = a boolean per code. open response = a free-text note per code."
                   className="border border-foreground/15 px-2 py-1 text-sm bg-background"
-                  aria-label="New facet cardinality"
+                  aria-label="New facet type"
                 >
-                  <option value="single">single — at most one value (radio)</option>
-                  <option value="multi">multi — several values (checkboxes)</option>
+                  <option value="enum">enum — pick from values</option>
+                  <option value="boolean">yes/no — a boolean per code</option>
+                  <option value="open_text">open response — free text per code</option>
                 </select>
               </label>
+              {fType === 'enum' && (
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] text-foreground/50">
+                    cardinality{' '}
+                    <span className="text-foreground/35">— values per code</span>
+                  </span>
+                  <select
+                    value={fCard}
+                    onChange={(e) => setFCard(e.target.value as Cardinality)}
+                    disabled={isPending}
+                    title="single = a code gets at most ONE value on this facet (radio). multi = a code can carry SEVERAL values (checkboxes)."
+                    className="border border-foreground/15 px-2 py-1 text-sm bg-background"
+                    aria-label="New facet cardinality"
+                  >
+                    <option value="single">single — at most one value (radio)</option>
+                    <option value="multi">multi — several values (checkboxes)</option>
+                  </select>
+                </label>
+              )}
               <button
                 type="button"
                 disabled={isPending}
@@ -279,10 +320,16 @@ export default function FacetEditor({
                     return;
                   }
                   run(async () => {
-                    await createFacet(codebookId, { key, label, cardinality: fCard });
+                    await createFacet(codebookId, {
+                      key,
+                      label,
+                      cardinality: fCard,
+                      type: fType,
+                    });
                     setFKey('');
                     setFLabel('');
                     setFCard('single');
+                    setFType('enum');
                   });
                 }}
                 className="border border-foreground px-3 py-1 text-sm hover:bg-foreground hover:text-background transition disabled:opacity-50"

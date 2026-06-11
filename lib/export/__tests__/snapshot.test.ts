@@ -32,6 +32,7 @@ function fixture(): CodebookTree {
         label: 'Modality',
         description: null,
         cardinality: 'single',
+        type: 'enum',
         position: 0,
         created_at: '2026-01-01T00:00:00Z',
         values: [
@@ -64,6 +65,7 @@ function fixture(): CodebookTree {
         label: 'Valence',
         description: null,
         cardinality: 'multi',
+        type: 'enum',
         position: 1,
         created_at: '2026-01-01T00:00:00Z',
         values: [
@@ -108,6 +110,7 @@ function fixture(): CodebookTree {
           created_by: null,
         },
         facetValueIds: ['fv-A1', 'fv-B1'],
+        facetFields: [],
         citationIds: ['cit-1'],
         episodeIds: [],
         labelIds: [],
@@ -125,6 +128,7 @@ function fixture(): CodebookTree {
         retired_at: null,
         current: null,
         facetValueIds: [],
+        facetFields: [],
         citationIds: [],
         episodeIds: [],
         labelIds: [],

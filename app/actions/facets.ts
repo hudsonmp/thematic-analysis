@@ -1,6 +1,7 @@
 'use server';
 
 import { cbFrom } from '@/lib/supabase/guard';
+import { type FacetType, DEFAULT_FACET_TYPE } from '@/lib/codebook/facet-types';
 import type { Tables } from '@/lib/types/cb-db';
 
 type Facet = Tables<'cb_facets'>;
@@ -14,16 +15,24 @@ export type Cardinality = 'single' | 'multi';
 
 /**
  * Create a facet under a codebook. `position` is appended after the current max
- * so new facets land at the end of the ordered list. Cardinality defaults to
- * 'single'. Returns the inserted row.
+ * so new facets land at the end of the ordered list. `type` defaults to 'enum'
+ * (value-bearing); `boolean` / `open_text` are valueless and carry their datum
+ * per code in cb_code_facet_fields, so the caller need not (and should not) add
+ * values for them. `cardinality` only matters for enum but is stored regardless
+ * (harmless default for the valueless kinds). Returns the inserted row.
  */
 export async function createFacet(
   codebookId: string,
-  { key, label, cardinality = 'single' as Cardinality }: { key: string; label: string; cardinality?: Cardinality },
+  {
+    key,
+    label,
+    cardinality = 'single' as Cardinality,
+    type = DEFAULT_FACET_TYPE,
+  }: { key: string; label: string; cardinality?: Cardinality; type?: FacetType },
 ): Promise<Facet> {
   const position = await nextPosition('cb_facets', codebookId);
   const { data, error } = await cbFrom('cb_facets')
-    .insert({ codebook_id: codebookId, key, label, cardinality, position })
+    .insert({ codebook_id: codebookId, key, label, cardinality, type, position })
     .select('*')
     .single();
   if (error || !data) {
