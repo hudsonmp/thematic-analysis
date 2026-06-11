@@ -2,7 +2,7 @@ import 'server-only';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { getResearcherSession } from '@/lib/auth/researcher';
+import { getAuthUser } from '@/lib/auth/supabase-auth';
 import { getSession } from '@/lib/sessions/discover';
 
 // Stream a session's video/audio to an authenticated researcher.
@@ -35,8 +35,8 @@ export async function GET(
   req: Request,
   ctx: { params: Promise<{ pid: string; kind: string }> },
 ): Promise<Response> {
-  const s = await getResearcherSession();
-  if (!s.ok) return new Response('unauthorized', { status: 401 });
+  const user = await getAuthUser();
+  if (!user) return new Response('unauthorized', { status: 401 });
 
   const { pid, kind } = await ctx.params;
   if (!isKind(kind)) {
