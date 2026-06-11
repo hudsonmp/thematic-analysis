@@ -17,6 +17,15 @@ import { exportCodebookJsonAction } from '@/app/(protected)/actions';
  * Downloads build a Blob, click a transient anchor, then revoke. No Server
  * Action is invoked during render — the JSON action fires only from the click
  * handler.
+ *
+ * CANONICAL CODINGS (Task 12) — scope note: this export is CODEBOOK-level (one
+ * row per code: definition, rules, exemplars), NOT session-level. The negotiated
+ * `is_canonical` annotations produced on the Compare tab are the AUTHORITATIVE
+ * per-segment coding for a session — the unit of analysis for downstream
+ * reliability/quantitative work — but they do NOT change the codebook table here.
+ * Surfacing/exporting the canonical session codings (e.g. a per-session coded
+ * transcript, or feeding them into reliability) is deliberately OUT OF SCOPE for
+ * this codebook export and is owned by SP-C / SP-3.
  */
 export default function ExportView({
   codebookId,
