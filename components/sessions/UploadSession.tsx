@@ -4,10 +4,7 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { createBrowser } from '@/lib/supabase/browser';
 import { resumableUpload, FileTooLargeError } from '@/lib/storage/resumable-upload';
-import {
-  createSessionFromUpload,
-  startDriveVideoUpload,
-} from '@/app/actions/sessions';
+import { createSessionFromUpload } from '@/app/actions/sessions';
 
 // ---------------------------------------------------------------------------
 // Zoom-folder upload UI.
@@ -35,33 +32,47 @@ import {
  * session; Drive replies `200`/`201` with the file JSON (`{ id, … }`). Progress
  * is reported via the XHR upload progress event.
  */
-function putToDriveResumable(
-  uploadUrl: string,
+// Upload the video to OUR server (same origin → no CORS); the server PUTs it to
+// Drive (server→Google → no CORS). Replaces the old browser-direct PUT to the
+// Drive resumable URL, which was CORS-blocked from the app origin. Progress here
+// is the browser→server leg, which is the whole transfer the researcher waits on.
+function uploadVideoViaServer(
   file: File,
   onProgress: (uploaded: number, total: number) => void,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('PUT', uploadUrl, true);
+    xhr.open('POST', '/api/drive-upload', true);
     xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
+    xhr.setRequestHeader('x-content-type', file.type || 'video/mp4');
+    xhr.setRequestHeader('x-filename', file.name);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress(e.loaded, e.total);
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
-          const json = JSON.parse(xhr.responseText) as { id?: string };
-          if (json.id) resolve(json.id);
-          else reject(new Error('Drive upload returned no file id'));
+          const json = JSON.parse(xhr.responseText) as {
+            driveFileId?: string;
+            error?: string;
+          };
+          if (json.driveFileId) resolve(json.driveFileId);
+          else reject(new Error(json.error || 'Drive upload returned no file id'));
         } catch {
           reject(new Error('Drive upload returned an unparseable response'));
         }
       } else {
-        reject(new Error(`Drive upload failed (${xhr.status})`));
+        let msg = `Drive upload failed (${xhr.status})`;
+        try {
+          const j = JSON.parse(xhr.responseText) as { error?: string };
+          if (j.error) msg = j.error;
+        } catch {
+          /* keep the status message */
+        }
+        reject(new Error(msg));
       }
     };
-    xhr.onerror = () =>
-      reject(new Error('Drive upload network error (possible CORS block)'));
+    xhr.onerror = () => reject(new Error('Drive upload network error'));
     xhr.send(file);
   });
 }
@@ -164,8 +175,7 @@ export default function UploadSession() {
       // VIDEO → Google Drive (off-server, bypasses Supabase's 50MB cap). Open a
       // resumable session server-side, then PUT the bytes browser-direct.
       if (video) {
-        const { uploadUrl } = await startDriveVideoUpload({ filename: video.name });
-        driveFileId = await putToDriveResumable(uploadUrl, video, (u, t) =>
+        driveFileId = await uploadVideoViaServer(video, (u, t) =>
           setPct(pid, 'video', Math.round((u / t) * 100)),
         );
         videoSource = 'drive';
