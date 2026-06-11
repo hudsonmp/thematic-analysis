@@ -725,6 +725,51 @@ export type Database = {
           },
         ]
       }
+      cb_observations: {
+        Row: {
+          body: string | null
+          created_at: string
+          created_by: string | null
+          flag_type_id: string | null
+          id: string
+          pid: string
+          session_id: string | null
+        }
+        Insert: {
+          body?: string | null
+          created_at?: string
+          created_by?: string | null
+          flag_type_id?: string | null
+          id?: string
+          pid: string
+          session_id?: string | null
+        }
+        Update: {
+          body?: string | null
+          created_at?: string
+          created_by?: string | null
+          flag_type_id?: string | null
+          id?: string
+          pid?: string
+          session_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_observations_flag_type_id_fkey"
+            columns: ["flag_type_id"]
+            isOneToOne: false
+            referencedRelation: "cb_flag_types"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_observations_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_profiles: {
         Row: {
           created_at: string
