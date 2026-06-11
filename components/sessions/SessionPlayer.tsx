@@ -8,6 +8,7 @@ import {
   deleteAnnotation,
   type MyAnnotationView,
 } from '@/app/actions/annotations';
+import { useRealtimeAnnotations } from './useRealtimeAnnotations';
 
 /** Minimal code shape the picker needs (flattened from the codebook tree). */
 type CodeOption = { id: string; mnemonic: string; name: string };
@@ -70,6 +71,15 @@ function findActiveIndex(segments: CloudSegment[], tMs: number): number {
  * re-loads `myAnnotations` server-side; no Server Action runs during client
  * render.
  *
+ * Realtime (Task 10): `useRealtimeAnnotations` subscribes (via the authenticated
+ * browser client) to this session's `cb_annotations` changes and, when the
+ * signed-in coder's OWN rows change in ANOTHER tab/device (#16: laptop transcript
+ * + monitor video, same user), calls `router.refresh()` (debounced). That re-runs
+ * the page server-side and re-passes `myAnnotations` WITH joined codes, so the
+ * rail — which renders from that prop — reflects a sibling tab's insert/delete
+ * live. Other coders' in-progress work never surfaces (own-coding isolation is
+ * enforced in the hook by gating on `coder_id`).
+ *
  * NOTE: the comments panel (`cb_memos`) is intentionally NOT re-enabled here —
  * it awaits its own migration. The coding surface is gated behind `codingEnabled`
  * so a session viewed without codebook context still renders the player.
@@ -83,6 +93,7 @@ export default function SessionPlayer({
   versionId = null,
   codes = [],
   myAnnotations = [],
+  myUid = null,
 }: {
   id: string;
   pidLabel: string;
@@ -95,8 +106,21 @@ export default function SessionPlayer({
   codes?: CodeOption[];
   /** The signed-in coder's OWN annotations for this session (own-coding view). */
   myAnnotations?: MyAnnotationView[];
+  /** The signed-in coder's auth uid — used to scope realtime sync to own rows. */
+  myUid?: string | null;
 }) {
   const router = useRouter();
+
+  // Live-sync the coder's OWN annotations across their tabs/devices (Task 10).
+  // The hook holds no state; on a relevant own-row change in another tab it calls
+  // onChange (debounced), which re-runs the page and re-passes `myAnnotations`
+  // (with joined codes) — so the rail below, rendered from that prop, reflects a
+  // sibling tab's add/delete live.
+  useRealtimeAnnotations({
+    sessionId: id,
+    myUid,
+    onChange: () => router.refresh(),
+  });
   const videoRef = useRef<HTMLVideoElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef<(HTMLDivElement | null)[]>([]);

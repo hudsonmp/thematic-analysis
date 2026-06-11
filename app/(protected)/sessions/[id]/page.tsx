@@ -1,6 +1,7 @@
 import { getSessionCloud } from '@/app/actions/sessions';
 import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
 import { listMyAnnotations } from '@/app/actions/annotations';
+import { getAuthUser } from '@/lib/auth/supabase-auth';
 import SessionPlayer from '@/components/sessions/SessionPlayer';
 
 /**
@@ -17,6 +18,12 @@ import SessionPlayer from '@/components/sessions/SessionPlayer';
  * implicit — every annotation is owned by `auth.uid()`, so there is no coder
  * input in the UI. Comments (`cb_memos`) remain hidden pending their own
  * migration.
+ *
+ * Realtime (Task 10): we also pass the signed-in coder's `auth.uid()` (`myUid`)
+ * so the player's `useRealtimeAnnotations` hook can scope live sync to the
+ * coder's OWN rows — when they add/delete an annotation in another tab/device,
+ * this page's rail updates live (a debounced `router.refresh()` re-runs this
+ * server component and re-passes `myAnnotations` with joined codes).
  */
 export default async function SessionPage({
   params,
@@ -25,10 +32,11 @@ export default async function SessionPage({
 }) {
   const { id } = await params;
 
-  const [session, codebook, myAnnotations] = await Promise.all([
+  const [session, codebook, myAnnotations, user] = await Promise.all([
     getSessionCloud(id),
     getOrCreateCodebook(),
     listMyAnnotations(id),
+    getAuthUser(),
   ]);
 
   // Flatten the codebook tree to the minimal `{id, mnemonic, name}` the code
@@ -50,6 +58,7 @@ export default async function SessionPage({
       versionId={session.versionId}
       codes={codes}
       myAnnotations={myAnnotations}
+      myUid={user?.id ?? null}
     />
   );
 }
