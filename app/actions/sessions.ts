@@ -8,6 +8,8 @@ import {
   ensureRecordingsFolder,
   createDriveResumableUpload,
 } from '@/lib/google/drive';
+import { taskStartForPid } from '@/app/actions/live';
+import { computeAnchorMs } from '@/lib/live/anchor';
 
 /**
  * Begin a browser-direct video upload to Google Drive.
@@ -621,4 +623,96 @@ export async function updateSegmentText(
   if (updErr) {
     throw new Error(`updateSegmentText: update failed: ${updErr.message}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-anchor (recording_started_at) — Task 4 of the live co-observation feature.
+//
+// When a recording is linked to a session (the upload flow has set the session's
+// `pid_label`), we set `recording_started_at` AUTOMATICALLY from the participant
+// event stream rather than asking the researcher for a manual landmark. The
+// anchor is the participant's task `module_start` time + `ANCHOR_CORRECTION_MS`
+// (the +2 s record-start correction). With the anchor set, every absolute-time
+// marker (analyst observations, auto-derived episodes) projects onto the
+// recording's relative clock by subtraction.
+//
+// READ-ONLY on study tables: the task-start time comes from
+// `live.ts:taskStartForPid` (a `.select()` on `users`/`studies`/`study_events`
+// only). The single WRITE here is `cb_sessions.recording_started_at` (a cb_ table)
+// through the user client — `auth.uid()` is the researcher and the cb_ RLS write
+// policy admits it.
+// ---------------------------------------------------------------------------
+
+/** The result of an auto-anchor attempt. Discriminated on `anchored` so callers
+ *  (the link/upload path, the verification harness) branch cleanly: on success,
+ *  the persisted anchor (ISO); on failure, a human-readable `reason` and the
+ *  session left with `recording_started_at` null (manual fallback, out of MVP). */
+export type AutoAnchorResult =
+  | { anchored: true; recordingStartedAt: string; pidLabel: string }
+  | { anchored: false; reason: string };
+
+/**
+ * Set `cb_sessions.recording_started_at` for a session from its participant's
+ * task `module_start`, applying the +`ANCHOR_CORRECTION_MS` correction.
+ *
+ * Steps (study reads are READ-ONLY, via `taskStartForPid`):
+ *   1. Load the session's `pid_label` (a cb_ read). Missing session → not anchored.
+ *   2. `taskStartForPid(pidLabel)` → the earliest task `module_start` time (ISO),
+ *      resolving `users.pid → user_id` and the `type:'task'` module id from the
+ *      shown study's `authored_data`. Null when the study has no task module, the
+ *      PID is unknown, or the participant has not reached the task yet.
+ *   3. `recording_started_at = computeAnchorMs(taskStart)` (epoch-ms → ISO),
+ *      persisted to the session.
+ *
+ * If there is no task `module_start`, `recording_started_at` is LEFT NULL and the
+ * function returns `{anchored:false, reason}` (the manual-anchor fallback is out
+ * of MVP scope). Idempotent: re-running recomputes the same anchor and overwrites
+ * the same value.
+ */
+export async function autoAnchorSession(
+  sessionId: string,
+): Promise<AutoAnchorResult> {
+  await requireAuthUser();
+  const id = (sessionId ?? '').trim();
+  if (!id) return { anchored: false, reason: 'sessionId is required.' };
+
+  const sb = await createUserServerClient();
+
+  // 1. Resolve the session's PID (cb_ read).
+  const { data: session, error: sessErr } = await sb
+    .from('cb_sessions')
+    .select('id, pid_label')
+    .eq('id', id)
+    .maybeSingle();
+  if (sessErr) {
+    throw new Error(`autoAnchorSession: cb_sessions select failed: ${sessErr.message}`);
+  }
+  if (!session) return { anchored: false, reason: `session ${id} not found.` };
+
+  const pidLabel = (session.pid_label ?? '').trim();
+  if (!pidLabel) {
+    return { anchored: false, reason: 'session has no pid_label to resolve a participant.' };
+  }
+
+  // 2. The participant's task module_start (READ-ONLY study read via live.ts).
+  const taskStartIso = await taskStartForPid(pidLabel);
+  if (!taskStartIso) {
+    // No task module_start for this PID → leave recording_started_at null.
+    return {
+      anchored: false,
+      reason: `no task module_start for pid ${pidLabel} (anchor unset — set manually).`,
+    };
+  }
+
+  // 3. Anchor = task module_start + ANCHOR_CORRECTION_MS; persist as ISO.
+  const recordingStartedAt = new Date(computeAnchorMs(taskStartIso)).toISOString();
+  const { error: updErr } = await sb
+    .from('cb_sessions')
+    .update({ recording_started_at: recordingStartedAt })
+    .eq('id', id);
+  if (updErr) {
+    throw new Error(`autoAnchorSession: recording_started_at update failed: ${updErr.message}`);
+  }
+
+  return { anchored: true, recordingStartedAt, pidLabel };
 }

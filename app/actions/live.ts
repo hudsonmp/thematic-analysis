@@ -144,6 +144,54 @@ export async function taskStartForPid(pid: string): Promise<string | null> {
   return data?.created_at ?? null;
 }
 
+/** A task-module boundary event as the auto-episode derivation consumes it: the
+ *  raw fields `deriveEpisodeMarks` reads (`eventType`, `payload`, `createdAt`).
+ *  Only `module_start`/`step_advance` rows on the task module are returned. */
+export type TaskBoundaryEvent = {
+  eventType: string;
+  payload: Json;
+  createdAt: string;
+};
+
+/**
+ * The participant's ordered task-module boundary events — the input to the
+ * auto-episode derivation (Task 4). READ-ONLY: resolves the `type:'task'` module
+ * id (shown study `authored_data`) and `user_id` (`users.pid`), then SELECTs that
+ * user's `module_start`/`step_advance` rows on the task module, ordered by
+ * `created_at` ascending (chronological, the order `deriveEpisodeMarks` expects).
+ * Returns [] when the study has no task module, the PID is unknown, or the
+ * participant has logged no task boundaries. Every query is a `.select()`.
+ */
+export async function taskBoundaryEventsForPid(
+  pid: string,
+): Promise<TaskBoundaryEvent[]> {
+  await requireAuthUser();
+  const trimmed = (pid ?? '').trim();
+  if (!trimmed) return [];
+
+  const taskModuleId = await resolveTaskModuleId();
+  if (!taskModuleId) return [];
+
+  const sb = createServiceRoleClient();
+  const userId = await resolveUserId(sb, trimmed);
+  if (!userId) return [];
+
+  const { data, error } = await sb
+    .from('study_events')
+    .select('event_type, payload, created_at')
+    .eq('user_id', userId)
+    .eq('module_id', taskModuleId)
+    .in('event_type', ['module_start', 'step_advance'])
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`taskBoundaryEventsForPid failed: ${error.message}`);
+
+  return (data ?? []).map((e) => ({
+    eventType: e.event_type,
+    payload: e.payload,
+    createdAt: e.created_at,
+  }));
+}
+
 /** The active study's authored modules, for the humanizer's `module_start`
  *  → title resolution. READ-ONLY (derived from `getShownStudy`). */
 export type LiveModuleMeta = { id: string; type: string; title: string };

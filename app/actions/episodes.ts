@@ -3,6 +3,12 @@
 import { cbFrom } from '@/lib/supabase/guard';
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
+import { getOrCreateCodebook } from '@/app/actions/codebook';
+import { taskBoundaryEventsForPid } from '@/app/actions/live';
+import {
+  deriveEpisodeMarks,
+  type CanonicalStep,
+} from '@/lib/live/episodes-from-events';
 import type { Tables } from '@/lib/types/cb-db';
 
 type Episode = Tables<'cb_episodes'>;
@@ -224,8 +230,193 @@ export async function deleteSessionEpisode(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-materialized episodes (from the participant event stream) — Task 4 of the
+// live co-observation feature.
+//
+// At recording-link time, the participant's task `study_events` boundaries
+// (module_start / step_advance) are derived into canonical phases and
+// MATERIALIZED as `cb_session_episodes` marks, so the read→ponder→revise structure
+// sits on the recording timeline beside the researcher's own marks — with no hand
+// scrubbing. The researcher OWNS episodes: each canonical phase is mapped onto an
+// EXISTING `cb_episodes` preset by a CASE-INSENSITIVE name match; a preset is
+// auto-created ONLY when none matches (the researcher may then rename/merge it).
+//
+// READ-ONLY on study tables: events come from `live.ts:taskBoundaryEventsForPid`
+// (selects on users/studies/study_events). The WRITES are cb_ only — cb_episodes
+// (auto-create) via `cbFrom`, cb_session_episodes (the marks) via the user client.
+// ---------------------------------------------------------------------------
+
+/** The display name an auto-created `cb_episodes` preset gets for each canonical
+ *  phase. Chosen so the case-insensitive match reuses a researcher preset named,
+ *  e.g., "Read" or "read" rather than creating a duplicate. */
+const CANONICAL_EPISODE_NAME: Record<CanonicalStep, string> = {
+  intro: 'Intro',
+  'initial-spec': 'Initial spec',
+  read: 'Read',
+  ponder: 'Ponder',
+  revise: 'Revise',
+  retrospective: 'Retrospective',
+};
+
+/**
+ * Derive the participant's task episodes from `study_events` and materialize them
+ * as `cb_session_episodes` marks for the session.
+ *
+ * Requires the session's `recording_started_at` to be set (run `autoAnchorSession`
+ * first); without the anchor there is no relative clock to project marks onto, so
+ * this throws. Steps:
+ *   1. Load the session (`pid_label`, `recording_started_at`). Anchor unset → throw.
+ *   2. `taskBoundaryEventsForPid(pid)` (READ-ONLY) → ordered boundary events.
+ *   3. `deriveEpisodeMarks(events, anchorMs)` → canonical marks (clamped/deduped).
+ *   4. Resolve the bound codebook (`getOrCreateCodebook`) and its existing episode
+ *      presets; map each mark's `stepLabel` → `episode_id` by case-insensitive
+ *      NAME match, auto-creating a preset only when none matches.
+ *   5. Insert each mark — IDEMPOTENTLY: keyed on `(session_id, episode_id,
+ *      t_start_ms)`, an existing identical triple is skipped, so re-running never
+ *      duplicates a mark (and never disturbs a researcher's manual mark at another
+ *      timestamp). Auto-created presets are deduped within this run too, so a
+ *      phase that recurs maps to one preset, not many.
+ *
+ * Returns the marks that now exist for the session's auto-derived phases (the
+ * full derived set, whether freshly inserted or already present).
+ */
+export async function materializeAutoEpisodes(
+  sessionId: string,
+): Promise<SessionEpisodeView[]> {
+  const user = await requireAuthUser();
+  const id = (sessionId ?? '').trim();
+  if (!id) throw new Error('materializeAutoEpisodes: sessionId is required.');
+
+  const sb = await createUserServerClient();
+
+  // 1. Session: need the PID and the anchor.
+  const { data: session, error: sessErr } = await sb
+    .from('cb_sessions')
+    .select('id, pid_label, recording_started_at')
+    .eq('id', id)
+    .maybeSingle();
+  if (sessErr) {
+    throw new Error(`materializeAutoEpisodes: cb_sessions select failed: ${sessErr.message}`);
+  }
+  if (!session) throw new Error(`materializeAutoEpisodes: session ${id} not found.`);
+
+  const pidLabel = (session.pid_label ?? '').trim();
+  if (!pidLabel) {
+    throw new Error('materializeAutoEpisodes: session has no pid_label.');
+  }
+  if (!session.recording_started_at) {
+    throw new Error(
+      'materializeAutoEpisodes: recording_started_at is unset — run autoAnchorSession first.',
+    );
+  }
+  const anchorMs = Date.parse(session.recording_started_at);
+  if (Number.isNaN(anchorMs)) {
+    throw new Error(
+      `materializeAutoEpisodes: unparseable recording_started_at: ${session.recording_started_at}`,
+    );
+  }
+
+  // 2-3. READ-ONLY study reads → derive canonical marks.
+  const events = await taskBoundaryEventsForPid(pidLabel);
+  const marks = deriveEpisodeMarks(
+    events.map((e) => ({
+      eventType: e.eventType,
+      payload: e.payload,
+      createdAt: e.createdAt,
+    })),
+    anchorMs,
+  );
+  if (marks.length === 0) return [];
+
+  // 4. Codebook + its existing presets → step→episode_id resolver.
+  const codebook = await getOrCreateCodebook();
+  const resolveEpisodeId = await buildEpisodeResolver(codebook.id);
+
+  // 5. Existing marks for this session (idempotency key set) — read once.
+  const { data: existingRows, error: existErr } = await sb
+    .from('cb_session_episodes')
+    .select('episode_id, t_start_ms')
+    .eq('session_id', id);
+  if (existErr) {
+    throw new Error(
+      `materializeAutoEpisodes: existing marks select failed: ${existErr.message}`,
+    );
+  }
+  const existingKeys = new Set(
+    (existingRows ?? []).map((r) => markKey(r.episode_id, r.t_start_ms)),
+  );
+
+  // Insert each derived mark that does not already exist (by triple). Episode-id
+  // resolution caches/creates per canonical phase, so a phase that recurs across
+  // scenarios maps to ONE preset.
+  for (const mark of marks) {
+    const episodeId = await resolveEpisodeId(mark.stepLabel);
+    const key = markKey(episodeId, mark.tStartMs);
+    if (existingKeys.has(key)) continue; // idempotent: skip an identical triple
+    existingKeys.add(key);
+
+    const { error: insErr } = await sb.from('cb_session_episodes').insert({
+      session_id: id,
+      episode_id: episodeId,
+      t_start_ms: mark.tStartMs,
+      marked_by: user.id,
+    });
+    if (insErr) {
+      throw new Error(
+        `materializeAutoEpisodes: cb_session_episodes insert failed: ${insErr.message}`,
+      );
+    }
+  }
+
+  // Return the session's marks for the derived phases (joined to episode names).
+  return listSessionEpisodes(id);
+}
+
+// ---------------------------------------------------------------------------
 // Internal
 // ---------------------------------------------------------------------------
+
+/** The idempotency key for an auto-mark: `(episode_id, t_start_ms)` within a
+ *  session. Re-running materialization skips any triple already present. */
+function markKey(episodeId: string, tStartMs: number): string {
+  return `${episodeId}::${tStartMs}`;
+}
+
+/**
+ * Build a `stepLabel → episode_id` resolver for a codebook: case-insensitively
+ * matches a canonical phase's display name against the codebook's EXISTING
+ * `cb_episodes` presets, and auto-creates a preset (once) when none matches. The
+ * returned closure caches resolutions so repeated phases reuse the same id and a
+ * single auto-create happens per phase within a run.
+ */
+async function buildEpisodeResolver(
+  codebookId: string,
+): Promise<(step: CanonicalStep) => Promise<string>> {
+  const presets = await listEpisodes(codebookId);
+  // Case-insensitive name → id index of existing presets.
+  const byName = new Map<string, string>();
+  for (const p of presets) byName.set(p.name.trim().toLowerCase(), p.id);
+  // Per-run cache (also absorbs just-auto-created presets).
+  const cache = new Map<CanonicalStep, string>();
+
+  return async (step: CanonicalStep): Promise<string> => {
+    const cached = cache.get(step);
+    if (cached) return cached;
+
+    const name = CANONICAL_EPISODE_NAME[step];
+    const matchId = byName.get(name.trim().toLowerCase());
+    if (matchId) {
+      cache.set(step, matchId);
+      return matchId;
+    }
+
+    // No matching preset → auto-create one (the researcher may rename/merge it).
+    const created = await createEpisode(codebookId, { name });
+    byName.set(name.trim().toLowerCase(), created.id);
+    cache.set(step, created.id);
+    return created.id;
+  };
+}
 
 /**
  * Compute the next append position for a preset episode: (max existing position
