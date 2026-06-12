@@ -5,6 +5,7 @@ import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getOrCreateCodebook } from '@/app/actions/codebook';
 import { taskBoundaryEventsForPid } from '@/app/actions/live';
+import { listObservationsForPid } from '@/app/actions/observations';
 import {
   deriveEpisodeMarks,
   type CanonicalStep,
@@ -368,8 +369,67 @@ export async function materializeAutoEpisodes(
     }
   }
 
-  // Return the session's marks for the derived phases (joined to episode names).
+  // 6. MANUAL event-marks: observations the researcher tapped live carrying an
+  //    episode_id materialize into cb_session_episodes too, at the SAME relative
+  //    clock (created_at − recording_started_at). So a live phase-mark lands on
+  //    the review timeline beside the auto-derived ones (the two coexist; we do
+  //    NOT dedupe a manual mark against an auto mark at a different timestamp).
+  //    Idempotent against the SAME (episode_id, t_start_ms) triple — the existing
+  //    key set already absorbs prior runs (auto + manual).
+  await materializeManualMarks(sb, id, pidLabel, anchorMs, existingKeys, user.id);
+
+  // Return the session's marks (auto-derived + manual, joined to episode names).
   return listSessionEpisodes(id);
+}
+
+/**
+ * Project a participant's MANUAL live event-marks (observations carrying an
+ * `episode_id`) onto a session's relative clock as `cb_session_episodes` marks.
+ *
+ * Each such observation pins a preset episode at an ABSOLUTE moment
+ * (`created_at`); its session offset is `created_at − recording_started_at`
+ * (clamped at 0). Inserts each at that `t_start_ms` for the existing `episode_id`,
+ * IDEMPOTENTLY: keyed on `(session_id, episode_id, t_start_ms)` via `existingKeys`
+ * (shared with the auto path), so re-running never duplicates a mark and an
+ * identical auto+manual triple collapses to one. `existingKeys` is mutated so a
+ * later call in the same run also sees these.
+ *
+ * Marks route through the user client (`marked_by = auth.uid()`); cb_ writes only.
+ */
+async function materializeManualMarks(
+  sb: Awaited<ReturnType<typeof createUserServerClient>>,
+  sessionId: string,
+  pidLabel: string,
+  anchorMs: number,
+  existingKeys: Set<string>,
+  userId: string,
+): Promise<void> {
+  // The participant's observations (read-all RLS); keep only event-marks.
+  const observations = await listObservationsForPid(pidLabel);
+  const eventMarks = observations.filter((o) => o.episodeId !== null);
+
+  for (const obs of eventMarks) {
+    const createdMs = Date.parse(obs.createdAt);
+    if (Number.isNaN(createdMs)) continue; // unparseable created_at: skip, not fatal
+    const tStartMs = Math.max(0, Math.round(createdMs - anchorMs));
+    const episodeId = obs.episodeId as string;
+
+    const key = markKey(episodeId, tStartMs);
+    if (existingKeys.has(key)) continue; // idempotent: skip an identical triple
+    existingKeys.add(key);
+
+    const { error: insErr } = await sb.from('cb_session_episodes').insert({
+      session_id: sessionId,
+      episode_id: episodeId,
+      t_start_ms: tStartMs,
+      marked_by: userId,
+    });
+    if (insErr) {
+      throw new Error(
+        `materializeAutoEpisodes: manual mark insert failed: ${insErr.message}`,
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

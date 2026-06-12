@@ -1,5 +1,6 @@
 import { getOrCreateCodebook } from '@/app/actions/codebook';
 import { listFlagTypes } from '@/app/actions/flag-types';
+import { listEpisodes } from '@/app/actions/episodes';
 import { listObservationsForPid } from '@/app/actions/observations';
 import { listParticipants, liveStatusForPid } from '@/app/actions/live';
 import LiveFollow from '@/components/live/LiveFollow';
@@ -36,17 +37,30 @@ export default async function LiveFollowPage({
 
   const cb = await getOrCreateCodebook();
 
-  // Flag taxonomy + participant list are PID-independent; load them always.
-  const [flagTypes, participants] = await Promise.all([
+  // Flag taxonomy + event taxonomy + participant list are PID-independent; load
+  // them always. The codebook id rides through so the live page can inline-create
+  // flags/events (createFlagType/createEpisode are codebook-scoped).
+  const [flagTypes, episodes, participants] = await Promise.all([
     listFlagTypes(cb.id),
+    listEpisodes(cb.id),
     listParticipants(),
   ]);
 
   // PID-scoped initial data: this participant's observations and the first live
-  // status (current step + clock anchors). Skipped when no PID is selected.
+  // status (current step + clock anchors + manual recording mark). Skipped when no
+  // PID is selected.
   const [observations, initialStatus] = pid
     ? await Promise.all([listObservationsForPid(pid), liveStatusForPid(pid)])
-    : [[], { stepLabel: null, latestAt: null, taskStartedAt: null, taskEndedAt: null }];
+    : [
+        [],
+        {
+          stepLabel: null,
+          latestAt: null,
+          taskStartedAt: null,
+          taskEndedAt: null,
+          recordingStartedAt: null,
+        },
+      ];
 
   return (
     // key={pid} remounts LiveFollow on a participant switch so its local state
@@ -55,8 +69,10 @@ export default async function LiveFollowPage({
     <LiveFollow
       key={pid || '__none__'}
       pid={pid}
+      codebookId={cb.id}
       participants={participants}
       flagTypes={flagTypes}
+      episodes={episodes}
       initialObservations={observations}
       initialStatus={initialStatus}
     />

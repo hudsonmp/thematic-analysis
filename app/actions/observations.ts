@@ -32,8 +32,10 @@ type Observation = Tables<'cb_observations'>;
 /**
  * One observation as the live view / playback rail consumes it: the
  * `cb_observations` row's display fields, left-joined to its `cb_flag_types`
- * (flag label + swatch color). A tap-only observation has `body: null`; a
- * bare-note observation has `flagTypeId: null` (and so `flagLabel`/`color` null).
+ * (flag label + swatch color) and its `cb_episodes` (event name). An observation
+ * is a FLAG (`flagTypeId`), an EVENT-MARK (`episodeId`), and/or a NOTE (`body`):
+ * a tap-only flag has `body: null` and `episodeId: null`; a bare event-mark has
+ * `flagTypeId: null`/`body: null`; a bare note has both ids null.
  */
 export type ObservationView = {
   id: string;
@@ -45,16 +47,24 @@ export type ObservationView = {
   /** The flag's swatch color (hex), joined from cb_flag_types; null when there is
    *  no flag or the flag carried no color. */
   color: string | null;
+  /** The marked EVENT's preset episode id, or null when this observation is not an
+   *  event-mark. */
+  episodeId: string | null;
+  /** The marked event's preset episode name, joined from cb_episodes; null when
+   *  there is no event-mark, and '(deleted event)' if the episode was removed out
+   *  from under the row. */
+  episodeName: string | null;
   body: string | null;
   createdAt: string;
 };
 
 /**
- * Log an observation for a participant. `pid` is required. `flagTypeId` and `body`
- * are both optional, but AT LEAST ONE must be present — a tap-only flag has no
- * body, a bare note has no flag, but an observation with neither carries no
+ * Log an observation for a participant. `pid` is required. `flagTypeId`,
+ * `episodeId`, and `body` are all optional, but AT LEAST ONE must be present — a
+ * tap-only flag has no episode/body, a bare event-mark has no flag/body, a bare
+ * note has no flag/episode, but an observation with none of the three carries no
  * information and is rejected. `body` is trimmed; a whitespace-only body counts as
- * absent (so a whitespace-only body with no flag is rejected too).
+ * absent (so a whitespace-only body with no flag and no episode is rejected too).
  *
  * `created_by` is set explicitly to the signed-in user's uid: the RLS insert
  * policy is `with check (created_by = auth.uid())`, so this is both required and
@@ -64,10 +74,12 @@ export type ObservationView = {
 export async function addObservation({
   pid,
   flagTypeId,
+  episodeId,
   body,
 }: {
   pid: string;
   flagTypeId?: string | null;
+  episodeId?: string | null;
   body?: string | null;
 }): Promise<Observation> {
   const user = await requireAuthUser();
@@ -76,13 +88,14 @@ export async function addObservation({
   if (!trimmedPid) throw new Error('addObservation: pid is required.');
 
   const flag = flagTypeId ?? null;
+  const episode = episodeId ?? null;
   const trimmedBody = typeof body === 'string' ? body.trim() : '';
   const finalBody = trimmedBody === '' ? null : trimmedBody;
 
-  // At least one of (flag, body) must be present — a both-null observation
-  // carries no information.
-  if (flag === null && finalBody === null) {
-    throw new Error('addObservation: an observation needs a flag or a note.');
+  // At least one of (flag, episode, body) must be present — an all-null
+  // observation carries no information.
+  if (flag === null && episode === null && finalBody === null) {
+    throw new Error('addObservation: an observation needs a flag, an event, or a note.');
   }
 
   const sb = await createUserServerClient();
@@ -91,6 +104,7 @@ export async function addObservation({
     .insert({
       pid: trimmedPid,
       flag_type_id: flag,
+      episode_id: episode,
       body: finalBody,
       // Set explicitly to the caller's uid: RLS `with check (created_by =
       // auth.uid())` admits only the signed-in user's own id.
@@ -106,10 +120,11 @@ export async function addObservation({
 
 /**
  * List a participant's observations in time order (`created_at` asc), each
- * left-joined to its `cb_flag_types(label, color)`. The read-all RLS policy
- * admits every co-observer's rows. `flag_type_id` is nullable, so the embed is a
- * left join: a bare note returns `null` for the joined flag (→ flagLabel/color
- * null); a tap whose flag was deleted also returns `null` (→ '(deleted flag)').
+ * left-joined to its `cb_flag_types(label, color)` and `cb_episodes(name)`. The
+ * read-all RLS policy admits every co-observer's rows. Both `flag_type_id` and
+ * `episode_id` are nullable, so the embeds are left joins: a bare note returns
+ * `null` for both (→ flagLabel/color/episodeName null); a tap whose flag/episode
+ * was deleted returns `null` (→ '(deleted flag)' / '(deleted event)').
  */
 export async function listObservationsForPid(pid: string): Promise<ObservationView[]> {
   await requireAuthUser();
@@ -117,7 +132,9 @@ export async function listObservationsForPid(pid: string): Promise<ObservationVi
 
   const { data, error } = await sb
     .from('cb_observations')
-    .select('id, pid, flag_type_id, body, created_at, cb_flag_types(label, color)')
+    .select(
+      'id, pid, flag_type_id, episode_id, body, created_at, cb_flag_types(label, color), cb_episodes(name)',
+    )
     .eq('pid', pid)
     .order('created_at', { ascending: true });
   if (error) {
@@ -217,15 +234,18 @@ export async function deleteObservation(id: string): Promise<void> {
 // Internal
 // ---------------------------------------------------------------------------
 
-/** Map raw `cb_observations` rows (with embedded flag type) to `ObservationView`. */
+/** Map raw `cb_observations` rows (with embedded flag type + episode) to
+ *  `ObservationView`. */
 function toObservationViews(data: unknown): ObservationView[] {
   const rows = (data ?? []) as Array<{
     id: string;
     pid: string;
     flag_type_id: string | null;
+    episode_id: string | null;
     body: string | null;
     created_at: string;
     cb_flag_types: { label: string; color: string | null } | null;
+    cb_episodes: { name: string } | null;
   }>;
 
   return rows.map((r) => ({
@@ -237,6 +257,11 @@ function toObservationViews(data: unknown): ObservationView[] {
     flagLabel:
       r.flag_type_id === null ? null : (r.cb_flag_types?.label ?? '(deleted flag)'),
     color: r.cb_flag_types?.color ?? null,
+    episodeId: r.episode_id,
+    // Same pattern as flags: a bare flag/note has no episode_id (→ null name); an
+    // event-mark whose episode was deleted keeps episode_id but the join is null.
+    episodeName:
+      r.episode_id === null ? null : (r.cb_episodes?.name ?? '(deleted event)'),
     body: r.body,
     createdAt: r.created_at,
   }));
