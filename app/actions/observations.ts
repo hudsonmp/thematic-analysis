@@ -119,8 +119,10 @@ export async function addObservation({
 }
 
 /**
- * List a participant's observations in time order (`created_at` asc), each
- * left-joined to its `cb_flag_types(label, color)` and `cb_episodes(name)`. The
+ * List a participant's observations NEWEST-FIRST (`created_at` desc) — the live
+ * page shows the most recent mark on top, and live-added rows prepend, so the
+ * seed order must match. Each row is left-joined to its
+ * `cb_flag_types(label, color)` and `cb_episodes(name)`. The
  * read-all RLS policy admits every co-observer's rows. Both `flag_type_id` and
  * `episode_id` are nullable, so the embeds are left joins: a bare note returns
  * `null` for both (→ flagLabel/color/episodeName null); a tap whose flag/episode
@@ -136,7 +138,7 @@ export async function listObservationsForPid(pid: string): Promise<ObservationVi
       'id, pid, flag_type_id, episode_id, body, created_at, cb_flag_types(label, color), cb_episodes(name)',
     )
     .eq('pid', pid)
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: false });
   if (error) {
     throw new Error(`listObservationsForPid failed: ${error.message}`);
   }
