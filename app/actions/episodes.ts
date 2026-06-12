@@ -5,6 +5,7 @@ import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getOrCreateCodebook } from '@/app/actions/codebook';
 import { taskBoundaryEventsForPid, taskStartForPid } from '@/app/actions/live';
+import { getRecordingStart } from '@/app/actions/recording';
 import { listObservationsForPid } from '@/app/actions/observations';
 import {
   deriveEpisodeMarks,
@@ -311,20 +312,20 @@ export async function materializeAutoEpisodes(
     throw new Error('materializeAutoEpisodes: session has no pid_label.');
   }
 
-  // Anchor: PREFER the manual recording mark; FALL BACK to the participant's task
-  // start (earliest task `module_start`) when no mark was set. An unparseable or
-  // missing anchor yields [] rather than a throw — without a clock there is simply
-  // nothing to project the marks onto.
-  let anchorMs: number;
-  if (session.recording_started_at) {
-    anchorMs = Date.parse(session.recording_started_at);
-    if (Number.isNaN(anchorMs)) return [];
-  } else {
-    const taskStart = await taskStartForPid(pidLabel);
-    if (!taskStart) return [];
-    anchorMs = Date.parse(taskStart);
-    if (Number.isNaN(anchorMs)) return [];
-  }
+  // Anchor (MUST match the page's flag anchor so episodes + flags share ONE clock):
+  // PREFER the manual "Start recording" mark (cb_recording_marks via
+  // getRecordingStart), then the session's recording_started_at column, then FALL
+  // BACK to the participant's task start (earliest task `module_start`). An
+  // unparseable or missing anchor yields [] rather than a throw — without a clock
+  // there is nothing to project the marks onto. See app/(protected)/sessions/[id]/
+  // page.tsx, which resolves the same precedence for the flag rail.
+  const anchorIso =
+    (await getRecordingStart(pidLabel)) ??
+    session.recording_started_at ??
+    (await taskStartForPid(pidLabel));
+  if (!anchorIso) return [];
+  const anchorMs = Date.parse(anchorIso);
+  if (Number.isNaN(anchorMs)) return [];
 
   // 2-3. READ-ONLY study reads → derive canonical marks.
   const events = await taskBoundaryEventsForPid(pidLabel);
@@ -356,24 +357,31 @@ export async function materializeAutoEpisodes(
     (existingRows ?? []).map((r) => markKey(r.episode_id, r.t_start_ms)),
   );
 
-  // Insert each derived mark that does not already exist (by triple). Episode-id
-  // resolution caches/creates per canonical phase, so a phase that recurs across
-  // scenarios maps to ONE preset.
+  // Insert each derived mark. The `existingKeys` set is a fast-path skip, but the
+  // REAL idempotency guarantee is the DB UNIQUE(session_id, episode_id, t_start_ms)
+  // constraint (migration 28): because this runs automatically on every page load,
+  // concurrent/repeated loads would otherwise race the read-then-insert and
+  // duplicate every mark. `upsert(..., ignoreDuplicates)` turns a colliding triple
+  // into a no-op instead of a duplicate row (or an error). Episode-id resolution
+  // caches/creates per canonical phase, so a recurring phase maps to ONE preset.
   for (const mark of marks) {
     const episodeId = await resolveEpisodeId(mark.stepLabel);
     const key = markKey(episodeId, mark.tStartMs);
-    if (existingKeys.has(key)) continue; // idempotent: skip an identical triple
+    if (existingKeys.has(key)) continue; // fast-path: skip a triple we already saw
     existingKeys.add(key);
 
-    const { error: insErr } = await sb.from('cb_session_episodes').insert({
-      session_id: id,
-      episode_id: episodeId,
-      t_start_ms: mark.tStartMs,
-      marked_by: user.id,
-    });
+    const { error: insErr } = await sb.from('cb_session_episodes').upsert(
+      {
+        session_id: id,
+        episode_id: episodeId,
+        t_start_ms: mark.tStartMs,
+        marked_by: user.id,
+      },
+      { onConflict: 'session_id,episode_id,t_start_ms', ignoreDuplicates: true },
+    );
     if (insErr) {
       throw new Error(
-        `materializeAutoEpisodes: cb_session_episodes insert failed: ${insErr.message}`,
+        `materializeAutoEpisodes: cb_session_episodes upsert failed: ${insErr.message}`,
       );
     }
   }
@@ -427,15 +435,18 @@ async function materializeManualMarks(
     if (existingKeys.has(key)) continue; // idempotent: skip an identical triple
     existingKeys.add(key);
 
-    const { error: insErr } = await sb.from('cb_session_episodes').insert({
-      session_id: sessionId,
-      episode_id: episodeId,
-      t_start_ms: tStartMs,
-      marked_by: userId,
-    });
+    const { error: insErr } = await sb.from('cb_session_episodes').upsert(
+      {
+        session_id: sessionId,
+        episode_id: episodeId,
+        t_start_ms: tStartMs,
+        marked_by: userId,
+      },
+      { onConflict: 'session_id,episode_id,t_start_ms', ignoreDuplicates: true },
+    );
     if (insErr) {
       throw new Error(
-        `materializeAutoEpisodes: manual mark insert failed: ${insErr.message}`,
+        `materializeAutoEpisodes: manual mark upsert failed: ${insErr.message}`,
       );
     }
   }

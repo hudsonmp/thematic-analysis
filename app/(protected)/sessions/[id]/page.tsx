@@ -9,6 +9,7 @@ import {
   materializeAutoEpisodes,
 } from '@/app/actions/episodes';
 import { taskStartForPid } from '@/app/actions/live';
+import { getRecordingStart } from '@/app/actions/recording';
 import { listObservationsForSession } from '@/app/actions/observations';
 import { getAuthUser } from '@/lib/auth/supabase-auth';
 import SessionPlayer from '@/components/sessions/SessionPlayer';
@@ -113,14 +114,16 @@ export default async function SessionPage({
     name: c.name,
   }));
 
-  // Effective recording anchor (Task 5): PREFER the manual recording mark
-  // (`observations.recordingStartedAt`); FALL BACK to the participant's task
-  // start (earliest `module_start`) when no mark was set. Passing this as the
-  // player's `recordingStartedAt` makes live flags place at `createdAt −
-  // taskStart` even with no manual mark — the same anchor the auto-episode
-  // derivation uses, so flags and derived episodes share one clock.
+  // Effective recording anchor (Task 5) — MUST match materializeAutoEpisodes so
+  // flags and derived episodes share ONE clock. Precedence: the manual "Start
+  // recording" mark (cb_recording_marks via getRecordingStart), then the session's
+  // recording_started_at column, then the participant's task start (earliest
+  // `module_start`). The task-start fallback makes live flags place at `createdAt −
+  // taskStart` even with no manual mark, so the rail is never a dead-end.
   const effectiveAnchor =
-    observations.recordingStartedAt ?? (await taskStartForPid(session.pidLabel));
+    (await getRecordingStart(session.pidLabel)) ??
+    observations.recordingStartedAt ??
+    (await taskStartForPid(session.pidLabel));
 
   return (
     <SessionPlayer
