@@ -94,6 +94,7 @@ function fixture(): CodebookTree {
         current_version_id: 'ver-1',
         created_at: '2026-01-01T00:00:00Z',
         retired_at: null,
+        study_label: null,
         current: {
           id: 'ver-1',
           code_id: 'code-1',
@@ -126,6 +127,7 @@ function fixture(): CodebookTree {
         current_version_id: null,
         created_at: '2026-01-01T00:00:00Z',
         retired_at: null,
+        study_label: null,
         current: null,
         facetValueIds: [],
         facetFields: [],

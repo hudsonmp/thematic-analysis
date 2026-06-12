@@ -4,7 +4,7 @@ import { cbFrom } from '@/lib/supabase/guard';
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getOrCreateCodebook } from '@/app/actions/codebook';
-import { taskBoundaryEventsForPid } from '@/app/actions/live';
+import { taskBoundaryEventsForPid, taskStartForPid } from '@/app/actions/live';
 import { listObservationsForPid } from '@/app/actions/observations';
 import {
   deriveEpisodeMarks,
@@ -247,26 +247,31 @@ export async function deleteSessionEpisode(id: string): Promise<void> {
 // (auto-create) via `cbFrom`, cb_session_episodes (the marks) via the user client.
 // ---------------------------------------------------------------------------
 
-/** The display name an auto-created `cb_episodes` preset gets for each canonical
- *  phase. Chosen so the case-insensitive match reuses a researcher preset named,
- *  e.g., "Read" or "read" rather than creating a duplicate. */
+/** The display name each canonical phase resolves to. These match the researcher's
+ *  EIGHT existing `cb_episodes` presets EXACTLY (case-insensitively), so a derived
+ *  phase reuses the real preset instead of auto-creating a duplicate. */
 const CANONICAL_EPISODE_NAME: Record<CanonicalStep, string> = {
-  intro: 'Intro',
-  'initial-spec': 'Initial spec',
-  read: 'Read',
-  ponder: 'Ponder',
-  revise: 'Revise',
-  retrospective: 'Retrospective',
+  requirements: 'Requirements Analysis',
+  specification: 'Writing Specification from Requirements',
+  scenario: 'New Scenario Introduced',
+  editing: 'Editing Specification',
+  scenario_retro: 'Scenario Retrospective',
+  general_retro_1: 'General Retrospective Question I',
+  general_retro_2: 'General Retrospective Question II',
+  general_retro_3: 'General Retrospective Question III',
 };
 
 /**
  * Derive the participant's task episodes from `study_events` and materialize them
  * as `cb_session_episodes` marks for the session.
  *
- * Requires the session's `recording_started_at` to be set (run `autoAnchorSession`
- * first); without the anchor there is no relative clock to project marks onto, so
- * this throws. Steps:
- *   1. Load the session (`pid_label`, `recording_started_at`). Anchor unset → throw.
+ * PREFERS the session's manual `recording_started_at` anchor, but does NOT require
+ * it: when unset (no "Start recording" mark), it FALLS BACK to the participant's
+ * task-start anchor (`taskStartForPid` → earliest task `module_start`), so the
+ * auto-episodes still materialize on a sensible relative clock. Steps:
+ *   1. Load the session (`pid_label`, `recording_started_at`). Anchor: use
+ *      `recording_started_at` if set, else the task `module_start`; if neither
+ *      resolves to a parseable instant, return [] (no throw).
  *   2. `taskBoundaryEventsForPid(pid)` (READ-ONLY) → ordered boundary events.
  *   3. `deriveEpisodeMarks(events, anchorMs)` → canonical marks (clamped/deduped).
  *   4. Resolve the bound codebook (`getOrCreateCodebook`) and its existing episode
@@ -305,16 +310,20 @@ export async function materializeAutoEpisodes(
   if (!pidLabel) {
     throw new Error('materializeAutoEpisodes: session has no pid_label.');
   }
-  if (!session.recording_started_at) {
-    throw new Error(
-      'materializeAutoEpisodes: recording_started_at is unset — run autoAnchorSession first.',
-    );
-  }
-  const anchorMs = Date.parse(session.recording_started_at);
-  if (Number.isNaN(anchorMs)) {
-    throw new Error(
-      `materializeAutoEpisodes: unparseable recording_started_at: ${session.recording_started_at}`,
-    );
+
+  // Anchor: PREFER the manual recording mark; FALL BACK to the participant's task
+  // start (earliest task `module_start`) when no mark was set. An unparseable or
+  // missing anchor yields [] rather than a throw — without a clock there is simply
+  // nothing to project the marks onto.
+  let anchorMs: number;
+  if (session.recording_started_at) {
+    anchorMs = Date.parse(session.recording_started_at);
+    if (Number.isNaN(anchorMs)) return [];
+  } else {
+    const taskStart = await taskStartForPid(pidLabel);
+    if (!taskStart) return [];
+    anchorMs = Date.parse(taskStart);
+    if (Number.isNaN(anchorMs)) return [];
   }
 
   // 2-3. READ-ONLY study reads → derive canonical marks.

@@ -74,6 +74,7 @@ function singleCode(): CodebookTree {
         current_version_id: 'ver-1',
         created_at: NOW,
         retired_at: null,
+        study_label: null,
         current: {
           id: 'ver-1',
           code_id: 'code-1',
