@@ -49,11 +49,19 @@ export async function getAccessToken(): Promise<string> {
     return cachedToken.value;
   }
 
+  // Drive-video creds. The `GDRIVE_*` vars take precedence so the recordings can
+  // be pointed at a SEPARATE account (e.g. the Virginia Tech @vt.edu Drive)
+  // WITHOUT disturbing the personal `GOOGLE_OAUTH_*` token the rest of the stack
+  // uses. Each field falls back independently: setting only `GDRIVE_REFRESH_TOKEN`
+  // (same OAuth app, different account) is enough to redirect uploads to VT.
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
-    client_id: requireEnv('GOOGLE_OAUTH_CLIENT_ID'),
-    client_secret: requireEnv('GOOGLE_OAUTH_CLIENT_SECRET'),
-    refresh_token: requireEnv('GOOGLE_OAUTH_REFRESH_TOKEN'),
+    client_id:
+      process.env.GDRIVE_CLIENT_ID || requireEnv('GOOGLE_OAUTH_CLIENT_ID'),
+    client_secret:
+      process.env.GDRIVE_CLIENT_SECRET || requireEnv('GOOGLE_OAUTH_CLIENT_SECRET'),
+    refresh_token:
+      process.env.GDRIVE_REFRESH_TOKEN || requireEnv('GOOGLE_OAUTH_REFRESH_TOKEN'),
   });
 
   const res = await fetch(TOKEN_ENDPOINT, {
