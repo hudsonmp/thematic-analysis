@@ -578,6 +578,7 @@ export type Database = {
           parent_code_id: string | null
           retired_at: string | null
           status: string
+          study_label: string | null
         }
         Insert: {
           codebook_id: string
@@ -590,6 +591,7 @@ export type Database = {
           parent_code_id?: string | null
           retired_at?: string | null
           status?: string
+          study_label?: string | null
         }
         Update: {
           codebook_id?: string
@@ -602,6 +604,7 @@ export type Database = {
           parent_code_id?: string | null
           retired_at?: string | null
           status?: string
+          study_label?: string | null
         }
         Relationships: [
           {
