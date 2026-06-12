@@ -4,7 +4,12 @@ import {
   listMyAnnotationsForVersion,
   listAnnotationComments,
 } from '@/app/actions/annotations';
-import { listEpisodes, listSessionEpisodes } from '@/app/actions/episodes';
+import {
+  listEpisodes,
+  listSessionEpisodes,
+  materializeAutoEpisodes,
+} from '@/app/actions/episodes';
+import { taskStartForPid } from '@/app/actions/live';
 import { listObservationsForSession } from '@/app/actions/observations';
 import { getAuthUser } from '@/lib/auth/supabase-auth';
 import SessionPlayer from '@/components/sessions/SessionPlayer';
@@ -51,11 +56,23 @@ export default async function SessionPage({
 }) {
   const { id } = await params;
 
+  // Auto-derive episode marks from the participant's task timeline (Task 2/5)
+  // BEFORE reading them, so the page reflects the freshly-materialized marks.
+  // Non-fatal: a derivation failure (e.g. no anchor / no task clock) must not
+  // break the page — we still render with whatever marks already exist.
+  try {
+    await materializeAutoEpisodes(id);
+  } catch {
+    // Non-fatal: derivation failures must not break the page.
+  }
+
   const [session, versions, codebook, sessionEpisodes, observations, user] =
     await Promise.all([
       getSessionCloud(id),
       getSessionVersions(id),
       getOrCreateCodebook(),
+      // Read AFTER materializeAutoEpisodes so the navigable timeline reflects
+      // the just-derived marks (not a stale, pre-derivation snapshot).
       listSessionEpisodes(id),
       // Live co-observation review markers (Task 5): this session's PID's
       // observations + the `recording_started_at` anchor for offset math. The
@@ -98,6 +115,15 @@ export default async function SessionPage({
     name: c.name,
   }));
 
+  // Effective recording anchor (Task 5): PREFER the manual recording mark
+  // (`observations.recordingStartedAt`); FALL BACK to the participant's task
+  // start (earliest `module_start`) when no mark was set. Passing this as the
+  // player's `recordingStartedAt` makes live flags place at `createdAt −
+  // taskStart` even with no manual mark — the same anchor the auto-episode
+  // derivation uses, so flags and derived episodes share one clock.
+  const effectiveAnchor =
+    observations.recordingStartedAt ?? (await taskStartForPid(session.pidLabel));
+
   return (
     <SessionPlayer
       id={session.id}
@@ -114,7 +140,10 @@ export default async function SessionPage({
       episodes={episodes.map((e) => ({ id: e.id, name: e.name }))}
       sessionEpisodes={sessionEpisodes}
       observations={observations.observations}
-      recordingStartedAt={observations.recordingStartedAt}
+      recordingStartedAt={effectiveAnchor}
+      codebookId={codebook.id}
+      facets={tree.facets}
+      collection={session.collection ?? null}
       compareHref={`/sessions/${session.id}/compare`}
     />
   );

@@ -21,18 +21,17 @@ import {
   type MyAnnotationView,
   type AnnotationCommentView,
 } from '@/app/actions/annotations';
-import {
-  markSessionEpisode,
-  deleteSessionEpisode,
-  type SessionEpisodeView,
-} from '@/app/actions/episodes';
+import { type SessionEpisodeView } from '@/app/actions/episodes';
 import type { ObservationView } from '@/app/actions/observations';
+import type { FacetWithValues } from '@/app/actions/codebook';
+import SessionCodeCreator from './SessionCodeCreator';
 import {
   buildTextAnchor,
   splitIntoPieces,
   type Highlight,
   type TextAnchor,
 } from '@/lib/transcript/selection';
+import { groupIntoTurns } from '@/lib/transcript/turns';
 import { useRealtimeAnnotations } from './useRealtimeAnnotations';
 
 /** Minimal code shape the picker needs (flattened from the codebook tree). */
@@ -209,11 +208,13 @@ function charOffsetWithin(segEl: HTMLElement, container: Node, offset: number): 
  * `createdAt − recordingStartedAt` (the recording anchor) and listed, in time
  * order, in a "Flags on timeline" rail — flag swatch/label + note + `[mm:ss]`,
  * each a `seekTo(offset)` button (reusing the same seek mechanism as transcript
- * clicks and episode marks). Pre-record offsets clamp to 0 (mirroring the
- * auto-episode clamp); when the recording was never anchored
- * (`recordingStartedAt` null) the markers can't be placed, so an "anchor not
- * set" hint renders instead. Read-only here — flags are logged live on
- * `/sessions/live`.
+ * clicks and episode marks). The same flags ALSO render next to the transcript,
+ * grouped under the speaker turn whose time range contains each offset
+ * (`flagsByTurnIndex`), so a flag's timestamp connects to the words it was
+ * logged against. Pre-record offsets clamp to 0 (mirroring the auto-episode
+ * clamp); when the recording was never anchored (`recordingStartedAt` null) no
+ * anchor is derivable, so the flag affordances render NOTHING (silent — no
+ * alarming copy). Read-only here — flags are logged live on `/sessions/live`.
  */
 export default function SessionPlayer({
   id,
@@ -227,10 +228,12 @@ export default function SessionPlayer({
   myAnnotations: initialAnnotations = [],
   comments: initialComments = {},
   myUid = null,
-  episodes = [],
   sessionEpisodes = [],
   observations = [],
   recordingStartedAt = null,
+  codebookId,
+  facets,
+  collection,
   compareHref = null,
 }: {
   id: string;
@@ -274,6 +277,16 @@ export default function SessionPlayer({
    * marker, so it renders an "anchor not set" hint instead.
    */
   recordingStartedAt?: string | null;
+  /** The resolved codebook id new codes are authored into (SessionCodeCreator). */
+  codebookId: string;
+  /** The codebook's facets (each with its enum values) for the new-code panel. */
+  facets: FacetWithValues[];
+  /**
+   * This session's `cb_sessions.collection` — the auto-assigned authoring study
+   * threaded to `SessionCodeCreator` as the per-code `studyLabel`. Null outside a
+   * session/collection context.
+   */
+  collection: string | null;
   /** Link to the post-hoc, read-only Compare tab (own-coding stays here). */
   compareHref?: string | null;
 }) {
@@ -371,7 +384,11 @@ export default function SessionPlayer({
   });
   const videoRef = useRef<HTMLVideoElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
-  const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  // One ref per ORIGINAL cue index (NOT per turn): the active-scroll effect reads
+  // `rowRefs.current[activeIdx]` to bring the active CUE into view, and the
+  // active cue lives inside its turn block as its own `data-seg-idx` span. Typed
+  // `HTMLElement` because a cue's element is a `<span>`, not a `<div>` row.
+  const rowRefs = useRef<(HTMLElement | null)[]>([]);
   const railRowRefs = useRef<Record<string, HTMLLIElement | null>>({});
 
   const [activeIdx, setActiveIdx] = useState(-1);
@@ -399,6 +416,14 @@ export default function SessionPlayer({
   // it). `null` = no thread open. The popover renders the excerpt + codes +
   // thread + an add-comment input for THIS annotation.
   const [openCommentAnnId, setOpenCommentAnnId] = useState<string | null>(null);
+  // Whether the over-video comment COMPOSER (new-comment mode) is open. Opened
+  // ONLY by Cmd+Opt+M on a brushed-but-uncommitted selection (plain selection is
+  // just a yellow highlight, no popup). Distinct from `openCommentAnnId`, which
+  // drives the EXISTING-thread view of the same callout; if a thread is open it
+  // takes precedence (a fresh selection has no annotation yet).
+  const [composerOpen, setComposerOpen] = useState(false);
+  // Ref to the composer textarea so Cmd+Opt+M can focus it on open (next tick).
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   // The add-comment draft for the OPEN thread (existing annotation).
   const [commentDraft, setCommentDraft] = useState('');
   // The comment draft for a FRESH selection (the coding-toolbar "Comment"
@@ -420,12 +445,6 @@ export default function SessionPlayer({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-
-  // Episode-mark state: which preset episode is selected to mark at the current
-  // video timecode, and whether a mark/delete is in flight.
-  const [selectedEpisodeId, setSelectedEpisodeId] = useState('');
-  const [marking, setMarking] = useState(false);
-  const [busyEpisodeMarkId, setBusyEpisodeMarkId] = useState<string | null>(null);
 
   const handleTimeUpdate = useCallback(() => {
     const video = videoRef.current;
@@ -468,6 +487,7 @@ export default function SessionPlayer({
         setSegments(segs);
         setMyAnnotations(anns);
         setTextSel(null);
+        setComposerOpen(false);
         setActiveIdx(-1);
         // Load this version's annotations' comment threads; close any open one
         // (its annotation belongs to the version we just left).
@@ -494,6 +514,7 @@ export default function SessionPlayer({
     setVersionId(originalVersionId);
     setSegments(originalSegmentsRef.current);
     setTextSel(null);
+    setComposerOpen(false);
     setActiveIdx(-1);
     setOpenCommentAnnId(null);
     if (originalVersionId) {
@@ -531,6 +552,7 @@ export default function SessionPlayer({
       setMyAnnotations([]);
       setComments({});
       setOpenCommentAnnId(null);
+      setComposerOpen(false);
       setTextSel(null);
       setActiveIdx(-1);
     }
@@ -608,6 +630,9 @@ export default function SessionPlayer({
 
   const clearSelection = useCallback(() => {
     setTextSel(null);
+    // The new-comment composer is anchored to the pending selection; clearing the
+    // brush closes it (an open existing-thread is independent — left untouched).
+    setComposerOpen(false);
     window.getSelection()?.removeAllRanges();
   }, []);
 
@@ -623,6 +648,38 @@ export default function SessionPlayer({
       anchor: textSel.anchor,
     };
   }, [textSel, segments]);
+
+  // --- Comment-callout keyboard control -----------------------------------
+  //
+  // Cmd+Opt+M opens the over-video comment composer on a brushed selection;
+  // Escape closes the callout (composer + any open thread) and clears the brush.
+  // Plain text selection (`mouseup`) deliberately opens NOTHING — selecting is
+  // just a (yellow) highlight; only this shortcut promotes it to a comment.
+  //
+  // We match on `e.code === 'KeyM'` (the physical key), NOT `e.key`: on macOS,
+  // Cmd+Opt+M emits a dead/composed `key` (often 'µ' or 'Dead'), so keying on
+  // `e.key === 'm'` would silently miss the shortcut. `e.code` is layout- and
+  // dead-key-independent.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey && e.altKey && e.code === 'KeyM') {
+        e.preventDefault();
+        // Only promote an existing brushed selection (when coding is enabled).
+        if (pending && codingEnabled) {
+          setOpenCommentAnnId(null); // fresh selection → new-comment mode
+          setComposerOpen(true);
+          // Focus the textarea after it mounts.
+          setTimeout(() => composerTextareaRef.current?.focus(), 0);
+        }
+      } else if (e.code === 'Escape') {
+        setComposerOpen(false);
+        setOpenCommentAnnId(null);
+        clearSelection();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [pending, codingEnabled, clearSelection]);
 
   // --- Mutations ----------------------------------------------------------
 
@@ -800,6 +857,9 @@ export default function SessionPlayer({
       await addAnnotationComment(ann.id, selectionCommentDraft.trim());
       setSelectionCommentDraft('');
       clearSelection();
+      // The fresh-selection composer is done; the callout now shows the new
+      // thread (opened below) instead of the new-comment composer.
+      setComposerOpen(false);
       // Reload the active version's annotations (so the new anchor + its
       // comment-count appear), then open the new thread.
       await afterAnnotationMutation();
@@ -870,41 +930,6 @@ export default function SessionPlayer({
     [openCommentAnnId, afterAnnotationMutation],
   );
 
-  // --- Episode marks -------------------------------------------------------
-
-  // Mark the selected preset episode at the CURRENT video time. Reads
-  // `videoRef.current.currentTime` at click time (so the mark lands wherever the
-  // coder has the playhead) and converts to ms. `router.refresh()` re-loads the
-  // session's marks server-side.
-  const handleMarkEpisode = useCallback(async () => {
-    if (!selectedEpisodeId) return;
-    const video = videoRef.current;
-    const tStartMs = Math.round((video?.currentTime ?? 0) * 1000);
-    setMarking(true);
-    setError(null);
-    try {
-      await markSessionEpisode({ sessionId: id, episodeId: selectedEpisodeId, tStartMs });
-      router.refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to mark event.');
-    } finally {
-      setMarking(false);
-    }
-  }, [selectedEpisodeId, id, router]);
-
-  const handleDeleteEpisodeMark = useCallback(async (markId: string) => {
-    setBusyEpisodeMarkId(markId);
-    setError(null);
-    try {
-      await deleteSessionEpisode(markId);
-      router.refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete event mark.');
-    } finally {
-      setBusyEpisodeMarkId(null);
-    }
-  }, [router]);
-
   // Clicking a transcript highlight (a `<mark>`) is the Google-Docs
   // "click-the-highlight-to-comment" affordance: it OPENS the excerpt's comment
   // thread AND focuses its rail row. Opening the thread re-pulls this
@@ -953,6 +978,30 @@ export default function SessionPlayer({
     }
     return m;
   }, [myAnnotations]);
+
+  // The pending (brushed-but-uncommitted) text selection renders as a PERSISTENT
+  // yellow highlight — Hudson's "selecting is just a highlight" model. We model it
+  // as a synthetic highlight on the active segment with a sentinel annotation id
+  // and `kind:'pending'`, woven into the per-segment highlight map so a cue that
+  // is ONLY brushed (no real annotation) still hits the `highlights.length > 0`
+  // render branch and paints yellow. It is NOT a real annotation — it carries no
+  // `annById` entry and is never clickable; it clears exactly when `textSel` does.
+  const PENDING_ANN_ID = '__pending__';
+  const highlightsBySegmentWithPending = useMemo(() => {
+    if (!textSel) return highlightsBySegment;
+    const seg = segments[textSel.segIdx];
+    if (!seg) return highlightsBySegment;
+    const m = new Map(highlightsBySegment);
+    const list = [...(m.get(seg.id) ?? [])];
+    list.push({
+      annotationId: PENDING_ANN_ID,
+      charStart: textSel.anchor.charStart,
+      charEnd: textSel.anchor.charEnd,
+      kind: 'pending',
+    });
+    m.set(seg.id, list);
+    return m;
+  }, [textSel, segments, highlightsBySegment]);
 
   // Annotation lookup by id (for resolving a clicked highlight → rail focus).
   const annById = useMemo(() => {
@@ -1028,6 +1077,48 @@ export default function SessionPlayer({
     return Math.max(1, durationMs, lastOffset);
   }, [flagMarkers, durationMs]);
 
+  // --- Speaker-turn grouping (Change 1a) ----------------------------------
+  //
+  // The transcript renders ONE block per speaker TURN (a maximal run of
+  // consecutive same-speaker cues) instead of one row per SRT cue, so a
+  // monologue stays in one block and the only break is a speaker change
+  // (the "arbitrary per-cue breaks" Hudson is removing). `groupIntoTurns`
+  // returns each turn's ORIGINAL segment indices (not copies) — CRUCIAL,
+  // because every cue must keep its own `data-seg-idx={originalIndex}` so
+  // `resolveSelection`/`charOffsetWithin`/`highlightsBySegment` (all keyed on a
+  // single cue's element + `seg.id`) keep working unchanged: a brush still
+  // resolves within ONE cue's text element, and sub-segment annotation
+  // anchoring is untouched. Only the visual grouping changes here.
+  const turns = useMemo(() => groupIntoTurns(segments), [segments]);
+
+  // Flags placed NEXT TO THE TRANSCRIPT (Change 5): group each live-flag marker
+  // under the turn it falls inside, so a flag's `[mm:ss]` sits with the words it
+  // was logged against ("flags must have timestamps that connect to the script").
+  // A flag belongs to turn t iff `offsetMs ∈ [t.startMs, t.endMs)`. Flags before
+  // the FIRST turn's start attach to the first turn; flags at/after the LAST
+  // turn's end attach to the last turn — so none are dropped (turn time ranges
+  // may not tile the whole video, and pre-record flags clamp to 0). Empty when
+  // there's no anchor (`flagMarkers` is already []), so the gutter renders nothing.
+  const flagsByTurnIndex = useMemo(() => {
+    const m = new Map<number, { obs: ObservationView; offsetMs: number }[]>();
+    if (turns.length === 0) return m;
+    const lastTurnIdx = turns.length - 1;
+    for (const marker of flagMarkers) {
+      // First turn whose [startMs, endMs) contains the offset; else clamp to the
+      // first/last turn by comparing against the boundary turns' ranges.
+      let turnIdx = turns.findIndex(
+        (t) => marker.offsetMs >= t.startMs && marker.offsetMs < t.endMs,
+      );
+      if (turnIdx === -1) {
+        turnIdx = marker.offsetMs < turns[0].startMs ? 0 : lastTurnIdx;
+      }
+      const list = m.get(turnIdx) ?? [];
+      list.push(marker);
+      m.set(turnIdx, list);
+    }
+    return m;
+  }, [turns, flagMarkers]);
+
   // The annotation whose comment thread is open + its loaded comments, for the
   // popover. `null` when nothing is open or the annotation is no longer present
   // (e.g. deleted / version switched out from under the open thread).
@@ -1079,24 +1170,256 @@ export default function SessionPlayer({
         </p>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        {/* Left (2/3): video + (when enabled) coding toolbar + own-coding rail */}
-        <div className="space-y-4 lg:col-span-2">
-          <video
-            ref={videoRef}
-            controls
-            preload="metadata"
-            src={`/api/media/${id}/video`}
-            onTimeUpdate={handleTimeUpdate}
-            className="w-full bg-black"
-          />
+      <div className="grid gap-6 lg:grid-cols-2">
+        {/* Left (1/2): video + (when enabled) coding toolbar + own-coding rail */}
+        <div className="space-y-4 lg:col-span-1">
+          {/* Relative wrapper: the positioning anchor for the comment callout
+              that overlays the video. The callout floats over the video's
+              top-right; it is the SINGLE home for both leaving a NEW comment on a
+              fresh selection (composer) and viewing an EXISTING excerpt's thread
+              (clicking a yellow span) — there is no comment box in the left
+              column anymore. */}
+          <div className="relative">
+            <video
+              ref={videoRef}
+              controls
+              preload="metadata"
+              src={`/api/media/${id}/video`}
+              onTimeUpdate={handleTimeUpdate}
+              className="w-full bg-black"
+            />
+
+            {/* Over-video comment callout. Existing-thread view (openCommentAnn)
+                takes precedence over the new-comment composer: clicking a yellow
+                span opens its thread here, while Cmd+Opt+M on a fresh selection
+                opens the composer. Both can't sensibly coexist; if a thread is
+                open we show it. */}
+            {codingEnabled && (openCommentAnn || composerOpen) && (
+              <div className="absolute right-3 top-3 z-20 w-[22rem] max-h-[85%] overflow-auto rounded-lg border border-foreground/20 bg-background/95 shadow-xl backdrop-blur p-3">
+                {openCommentAnn ? (
+                  /* EXISTING-THREAD mode: the excerpt + codes header, the thread
+                     list, and the add-comment input — relocated here from the old
+                     left-column section. */
+                  <>
+                    <div className="mb-2 flex items-start gap-2">
+                      <h2 className="text-sm font-semibold">
+                        Comments
+                        <span className="ml-1 font-normal text-foreground/40">
+                          on excerpt
+                        </span>
+                      </h2>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpenCommentAnnId(null);
+                          setCommentError(null);
+                          setCommentDraft('');
+                        }}
+                        aria-label="Close comments"
+                        className="ml-auto text-foreground/40 hover:text-foreground"
+                      >
+                        {'✕'}
+                      </button>
+                    </div>
+
+                    {/* The anchored excerpt + its codes (what you're commenting
+                        on — the Docs comment-card header). */}
+                    <div className="mb-2 rounded border border-foreground/10 bg-background/40 px-2 py-1.5 text-sm">
+                      <button
+                        type="button"
+                        onClick={() => seekTo(openCommentAnn.tStartMs)}
+                        className="font-mono text-xs text-foreground/50 hover:underline"
+                        title="Seek to here"
+                      >
+                        [{formatTime(openCommentAnn.tStartMs)}]
+                      </button>{' '}
+                      <span className="italic text-foreground/80">
+                        “{openCommentAnn.quoteText ?? '(whole segment)'}”
+                      </span>
+                      {openCommentAnn.codes.length > 0 && (
+                        <span className="ml-1 text-xs text-emerald-700 dark:text-emerald-300">
+                          · {openCommentAnn.codes.map((c) => c.mnemonic).join(', ')}
+                        </span>
+                      )}
+                    </div>
+
+                    {commentError && (
+                      <p className="mb-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+                        {commentError}
+                      </p>
+                    )}
+
+                    {/* The thread. */}
+                    {openThread.length === 0 ? (
+                      <p className="mb-2 text-sm text-foreground/50">
+                        No comments yet. Start the thread below.
+                      </p>
+                    ) : (
+                      <ul className="mb-2 divide-y divide-foreground/10">
+                        {openThread.map((c) => (
+                          <li key={c.id} className="py-1.5 text-sm">
+                            <div className="flex items-baseline gap-2">
+                              <span className="font-semibold">{c.authorName}</span>
+                              <span className="font-mono text-xs text-foreground/40">
+                                {formatCommentTime(c.createdAt)}
+                              </span>
+                              {c.resolved && (
+                                <span className="rounded bg-emerald-500/15 px-1 text-xs text-emerald-700 dark:text-emerald-300">
+                                  resolved
+                                </span>
+                              )}
+                              <span className="ml-auto flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleResolveComment(c.id, !c.resolved)}
+                                  disabled={commentRowBusyId === c.id}
+                                  className="text-xs text-foreground/50 underline hover:text-foreground disabled:opacity-40"
+                                  title={c.resolved ? 'Re-open this comment' : 'Mark resolved'}
+                                >
+                                  {c.resolved ? 'Re-open' : 'Resolve'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteComment(c.id)}
+                                  disabled={commentRowBusyId === c.id}
+                                  aria-label="Delete comment"
+                                  className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
+                                >
+                                  {'✕'}
+                                </button>
+                              </span>
+                            </div>
+                            <p
+                              className={`mt-0.5 whitespace-pre-wrap text-foreground/80 ${
+                                c.resolved ? 'line-through opacity-60' : ''
+                              }`}
+                            >
+                              {c.body}
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                    {/* Add a comment to this thread. */}
+                    <div className="flex items-start gap-2">
+                      <textarea
+                        value={commentDraft}
+                        onChange={(e) => setCommentDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                            e.preventDefault();
+                            if (commentDraft.trim() !== '' && !commentBusy) {
+                              void handleAddComment();
+                            }
+                          }
+                        }}
+                        placeholder="Add a comment… (⌘/Ctrl+Enter to send)"
+                        rows={2}
+                        className="flex-1 resize-none rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
+                        aria-label="Add a comment"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddComment}
+                        disabled={commentDraft.trim() === '' || commentBusy}
+                        className="rounded bg-sky-600 px-3 py-1 text-sm text-white disabled:opacity-40"
+                      >
+                        {commentBusy ? 'Saving…' : 'Comment'}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  /* NEW-COMMENT mode: a fresh brushed selection (no annotation
+                     yet). Show the excerpt, a draft textarea, and Comment/Cancel.
+                     Comment → handleCommentOnSelection (creates a quote anchor +
+                     first comment, then opens its thread here). */
+                  <>
+                    <div className="mb-2 flex items-start gap-2">
+                      <h2 className="text-sm font-semibold">
+                        Comment
+                        <span className="ml-1 font-normal text-foreground/40">
+                          on selection
+                        </span>
+                      </h2>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setComposerOpen(false);
+                          setCommentError(null);
+                          setSelectionCommentDraft('');
+                          clearSelection();
+                        }}
+                        aria-label="Close comment composer"
+                        className="ml-auto text-foreground/40 hover:text-foreground"
+                      >
+                        {'✕'}
+                      </button>
+                    </div>
+
+                    {pending && (
+                      <div className="mb-2 rounded border border-foreground/10 bg-background/40 px-2 py-1.5 text-sm italic text-foreground/80">
+                        “{pending.anchor.quoteText.length > 120
+                          ? pending.anchor.quoteText.slice(0, 120) + '…'
+                          : pending.anchor.quoteText}”
+                      </div>
+                    )}
+
+                    {commentError && (
+                      <p className="mb-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+                        {commentError}
+                      </p>
+                    )}
+
+                    <textarea
+                      ref={composerTextareaRef}
+                      value={selectionCommentDraft}
+                      onChange={(e) => setSelectionCommentDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                          e.preventDefault();
+                          if (canCommentOnSelection) void handleCommentOnSelection();
+                        }
+                      }}
+                      placeholder="Comment on this selection… (⌘/Ctrl+Enter to send)"
+                      rows={3}
+                      className="mb-2 w-full resize-none rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
+                      aria-label="Comment on selection"
+                    />
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setComposerOpen(false);
+                          setSelectionCommentDraft('');
+                          clearSelection();
+                        }}
+                        className="rounded border border-foreground/30 px-3 py-1 text-sm text-foreground/70 hover:text-foreground"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCommentOnSelection}
+                        disabled={!canCommentOnSelection}
+                        className="rounded bg-sky-600 px-3 py-1 text-sm text-white disabled:opacity-40"
+                      >
+                        {commentBusy ? 'Commenting…' : 'Comment'}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Live-flag marker rail (Task 5): the participant's live observations
               placed along an absolute time rail at `createdAt − recording start`.
               Each marker is a button → seekTo(offset); its color is the flag's
               swatch; its title shows the label + note. Read-only (flags are
               created live on /sessions/live). When the recording was never
-              anchored we can't place anything, so we show a hint instead. */}
+              anchored we can't place anything, so the flag affordances render
+              nothing (silent — no alarming copy). */}
           {observations.length > 0 && (
             <section
               aria-label="Live flags on the timeline"
@@ -1110,15 +1433,12 @@ export default function SessionPlayer({
                   {observations.length === 1 ? '' : 's'}
                 </span>
               </h2>
-              {anchorMs === null ? (
-                <p className="text-sm text-foreground/50">
-                  Recording anchor not set — once this recording is anchored to
-                  the participant&apos;s event clock, the{' '}
-                  {observations.length} logged flag
-                  {observations.length === 1 ? '' : 's'} will appear here at their
-                  video offsets.
-                </p>
-              ) : (
+              {/* No "anchor not set" copy (Change 5): when no anchor is
+                  derivable (`anchorMs === null`) we render NOTHING for flags —
+                  the overview rail + Flags list below are already guarded on
+                  `anchorMs !== null`, so the section is silent rather than
+                  showing alarming copy. */}
+              {anchorMs !== null && (
                 <div
                   className="relative h-7 w-full rounded bg-foreground/[0.06]"
                   role="group"
@@ -1199,12 +1519,19 @@ export default function SessionPlayer({
 
           {codingEnabled && (
             <>
-              {/* Episode marks: pick a preset episode + "Mark here" pins it at
-                  the current video time; the list below is the navigable timeline
-                  of episode boundaries (click → seek, ✕ → delete). */}
+              {/* Events (auto-derived, Task 2): the navigable timeline of episode
+                  boundaries derived from the participant's task clock on page load
+                  (see `materializeAutoEpisodes`). READ-ONLY here — each row is a
+                  seek button only; there is no manual mark/delete. "Manage presets"
+                  still links to the codebook's preset-event editor. */}
               <section className="rounded border border-foreground/15 p-3">
                 <div className="mb-2 flex items-center gap-2">
-                  <h2 className="text-sm font-semibold">Event</h2>
+                  <h2 className="text-sm font-semibold">
+                    Events
+                    <span className="ml-1 font-normal text-foreground/40">
+                      · auto-derived
+                    </span>
+                  </h2>
                   <Link
                     href="/episodes"
                     className="ml-auto text-xs text-foreground/50 underline hover:text-foreground"
@@ -1214,43 +1541,10 @@ export default function SessionPlayer({
                   </Link>
                 </div>
 
-                {episodes.length === 0 ? (
-                  <p className="text-sm text-foreground/50">
-                    No preset events.{' '}
-                    <Link href="/episodes" className="underline hover:text-foreground">
-                      Add some
-                    </Link>{' '}
-                    to mark session phases for navigation.
-                  </p>
+                {sessionEpisodes.length === 0 ? (
+                  <p className="text-sm text-foreground/50">No events derived yet.</p>
                 ) : (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <select
-                      value={selectedEpisodeId}
-                      onChange={(e) => setSelectedEpisodeId(e.target.value)}
-                      className="min-w-40 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
-                      aria-label="Event to mark"
-                    >
-                      <option value="">Select an event…</option>
-                      {episodes.map((ep) => (
-                        <option key={ep.id} value={ep.id}>
-                          {ep.name}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={handleMarkEpisode}
-                      disabled={!selectedEpisodeId || marking}
-                      title="Mark the selected event at the current video time"
-                      className="rounded bg-foreground px-3 py-1 text-sm text-background disabled:opacity-40"
-                    >
-                      {marking ? 'Marking…' : 'Mark here'}
-                    </button>
-                  </div>
-                )}
-
-                {sessionEpisodes.length > 0 && (
-                  <ul className="mt-2 divide-y divide-foreground/10">
+                  <ul className="divide-y divide-foreground/10">
                     {sessionEpisodes.map((m) => (
                       <li
                         key={m.id}
@@ -1266,15 +1560,6 @@ export default function SessionPlayer({
                           <span className="font-mono text-xs text-foreground/50">
                             [{formatTime(m.tStartMs)}]
                           </span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteEpisodeMark(m.id)}
-                          disabled={busyEpisodeMarkId === m.id}
-                          aria-label={`Delete event mark ${m.episodeName}`}
-                          className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
-                        >
-                          {'✕'}
                         </button>
                       </li>
                     ))}
@@ -1355,173 +1640,30 @@ export default function SessionPlayer({
                   </button>
                 </div>
 
-                {/* Comment on a fresh selection (Google-Docs "comment on
-                    selection"): creates a quote anchor + the first comment, then
-                    opens its thread. Works on arbitrary text without coding it.
-                    Only meaningful once text is brushed. */}
+                {/* Commenting on a selection lives in the over-video callout now,
+                    not here: brush text (it stays yellow-highlighted) and press
+                    ⌘+⌥+M to open the comment composer over the video. */}
                 {pending && (
-                  <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-foreground/10 pt-2">
-                    <input
-                      type="text"
-                      value={selectionCommentDraft}
-                      onChange={(e) => setSelectionCommentDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey && canCommentOnSelection) {
-                          e.preventDefault();
-                          void handleCommentOnSelection();
-                        }
-                      }}
-                      placeholder="Comment on this selection…"
-                      className="min-w-48 flex-1 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
-                      aria-label="Comment on selection"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleCommentOnSelection}
-                      disabled={!canCommentOnSelection}
-                      title="Comment on the selected text (creates a commentable excerpt)"
-                      className="rounded border border-sky-500/60 px-3 py-1 text-sm text-sky-700 hover:bg-sky-500/10 disabled:opacity-40 dark:text-sky-300"
-                    >
-                      {commentBusy ? 'Commenting…' : 'Comment 💬'}
-                    </button>
-                  </div>
+                  <p className="mt-2 border-t border-foreground/10 pt-2 text-xs text-foreground/50">
+                    To comment, press{' '}
+                    <kbd className="rounded border border-foreground/20 bg-foreground/5 px-1 font-mono">
+                      ⌘
+                    </kbd>
+                    +
+                    <kbd className="rounded border border-foreground/20 bg-foreground/5 px-1 font-mono">
+                      ⌥
+                    </kbd>
+                    +
+                    <kbd className="rounded border border-foreground/20 bg-foreground/5 px-1 font-mono">
+                      M
+                    </kbd>{' '}
+                    — the comment box opens over the video.
+                  </p>
                 )}
               </section>
 
-              {/* Per-excerpt comment thread (Google-Docs style, #17/#18): opens
-                  when a highlight is clicked. Shows the quoted excerpt + its
-                  code(s) + the comment thread + an add-comment input. */}
-              {openCommentAnn && (
-                <section className="rounded border border-sky-500/40 bg-sky-500/[0.03] p-3">
-                  <div className="mb-2 flex items-start gap-2">
-                    <h2 className="text-sm font-semibold">
-                      Comments
-                      <span className="ml-1 font-normal text-foreground/40">
-                        on excerpt
-                      </span>
-                    </h2>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setOpenCommentAnnId(null);
-                        setCommentError(null);
-                        setCommentDraft('');
-                      }}
-                      aria-label="Close comments"
-                      className="ml-auto text-foreground/40 hover:text-foreground"
-                    >
-                      {'✕'}
-                    </button>
-                  </div>
-
-                  {/* The anchored excerpt + its codes (the "what you're
-                      commenting on" context, like a Docs comment card header). */}
-                  <div className="mb-2 rounded border border-foreground/10 bg-background/40 px-2 py-1.5 text-sm">
-                    <button
-                      type="button"
-                      onClick={() => seekTo(openCommentAnn.tStartMs)}
-                      className="font-mono text-xs text-foreground/50 hover:underline"
-                      title="Seek to here"
-                    >
-                      [{formatTime(openCommentAnn.tStartMs)}]
-                    </button>{' '}
-                    <span className="italic text-foreground/80">
-                      “{openCommentAnn.quoteText ?? '(whole segment)'}”
-                    </span>
-                    {openCommentAnn.codes.length > 0 && (
-                      <span className="ml-1 text-xs text-emerald-700 dark:text-emerald-300">
-                        · {openCommentAnn.codes.map((c) => c.mnemonic).join(', ')}
-                      </span>
-                    )}
-                  </div>
-
-                  {commentError && (
-                    <p className="mb-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-xs text-red-700 dark:text-red-300">
-                      {commentError}
-                    </p>
-                  )}
-
-                  {/* The thread. */}
-                  {openThread.length === 0 ? (
-                    <p className="mb-2 text-sm text-foreground/50">
-                      No comments yet. Start the thread below.
-                    </p>
-                  ) : (
-                    <ul className="mb-2 divide-y divide-foreground/10">
-                      {openThread.map((c) => (
-                        <li key={c.id} className="py-1.5 text-sm">
-                          <div className="flex items-baseline gap-2">
-                            <span className="font-semibold">{c.authorName}</span>
-                            <span className="font-mono text-xs text-foreground/40">
-                              {formatCommentTime(c.createdAt)}
-                            </span>
-                            {c.resolved && (
-                              <span className="rounded bg-emerald-500/15 px-1 text-xs text-emerald-700 dark:text-emerald-300">
-                                resolved
-                              </span>
-                            )}
-                            <span className="ml-auto flex gap-2">
-                              <button
-                                type="button"
-                                onClick={() => handleResolveComment(c.id, !c.resolved)}
-                                disabled={commentRowBusyId === c.id}
-                                className="text-xs text-foreground/50 underline hover:text-foreground disabled:opacity-40"
-                                title={c.resolved ? 'Re-open this comment' : 'Mark resolved'}
-                              >
-                                {c.resolved ? 'Re-open' : 'Resolve'}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteComment(c.id)}
-                                disabled={commentRowBusyId === c.id}
-                                aria-label="Delete comment"
-                                className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
-                              >
-                                {'✕'}
-                              </button>
-                            </span>
-                          </div>
-                          <p
-                            className={`mt-0.5 whitespace-pre-wrap text-foreground/80 ${
-                              c.resolved ? 'line-through opacity-60' : ''
-                            }`}
-                          >
-                            {c.body}
-                          </p>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-
-                  {/* Add a comment to this thread. */}
-                  <div className="flex items-start gap-2">
-                    <textarea
-                      value={commentDraft}
-                      onChange={(e) => setCommentDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                          e.preventDefault();
-                          if (commentDraft.trim() !== '' && !commentBusy) {
-                            void handleAddComment();
-                          }
-                        }
-                      }}
-                      placeholder="Add a comment… (⌘/Ctrl+Enter to send)"
-                      rows={2}
-                      className="flex-1 resize-none rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
-                      aria-label="Add a comment"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleAddComment}
-                      disabled={commentDraft.trim() === '' || commentBusy}
-                      className="rounded bg-sky-600 px-3 py-1 text-sm text-white disabled:opacity-40"
-                    >
-                      {commentBusy ? 'Saving…' : 'Comment'}
-                    </button>
-                  </div>
-                </section>
-              )}
+              {/* (The per-excerpt comment thread used to live here; it now opens
+                  in the over-video callout — see the `relative` video wrapper.) */}
 
               {/* Own-coding rail: ONLY the signed-in coder's annotations, with a
                   Codes / Quotes tab. */}
@@ -1661,11 +1803,22 @@ export default function SessionPlayer({
                   </ul>
                 )}
               </section>
+
+              {/* New-code panel (Task 5): authoring new codes lives BELOW the
+                  video and the codes rail (NOT below the transcript). Creating a
+                  code refreshes the server tree so the code picker above picks it
+                  up. `collection` is threaded through as the study attribution. */}
+              <SessionCodeCreator
+                codebookId={codebookId}
+                facets={facets}
+                studyLabel={collection}
+                onCreated={() => router.refresh()}
+              />
             </>
           )}
         </div>
 
-        {/* Right (1/3): version tabs + scrollable, click-to-seek transcript */}
+        {/* Right (1/2): version tabs + scrollable, click-to-seek transcript */}
         <div className="lg:col-span-1">
           {/* Transcript-layer tabs (feature #20): Original (verbatim) is
               read-only; Cleaned is an editable copy for navigation/quoting. */}
@@ -1795,72 +1948,175 @@ export default function SessionPlayer({
               ) : segments.length === 0 ? (
                 <p className="p-4 text-sm text-foreground/60">No transcript</p>
               ) : (
-                segments.map((seg, i) => {
-                  const active = i === activeIdx;
-                  const highlights = highlightsBySegment.get(seg.id) ?? [];
-                  const isAnnotated = codingEnabled && highlights.length > 0;
+                /* ONE block per speaker TURN (Change 1a). A turn is a maximal run
+                   of consecutive same-speaker cues, so a monologue is one block
+                   and the only divider is a speaker change. The speaker label and
+                   a single `[mm:ss]` seek button (turn.startMs) render ONCE per
+                   block; the cues render INLINE in one selectable `<p>`. Each cue
+                   keeps its OWN `data-seg-idx={originalIndex}` span and its own
+                   `rowRefs` entry — so `resolveSelection`/`highlightsBySegment`
+                   (sub-segment anchoring) and the active-cue scroll are unchanged;
+                   only the visual grouping moved from per-cue to per-turn. */
+                turns.map((turn, turnIdx) => {
+                  const firstSeg = segments[turn.segIndices[0]];
+                  const speaker = firstSeg?.speaker ?? null;
+                  // The turn is "annotated" (emerald accent) if ANY of its cues
+                  // carries a highlight; the active-cue tint is applied per cue.
+                  const turnAnnotated =
+                    codingEnabled &&
+                    turn.segIndices.some(
+                      (si) => (highlightsBySegment.get(segments[si].id)?.length ?? 0) > 0,
+                    );
+                  // Flags whose offset falls inside this turn (Change 5) — render
+                  // as a chip row ABOVE the turn so the flag's `[mm:ss]` sits with
+                  // the words it was logged against.
+                  const turnFlags = flagsByTurnIndex.get(turnIdx) ?? [];
                   return (
                     <div
-                      key={seg.id}
-                      ref={(el) => {
-                        rowRefs.current[i] = el;
-                      }}
-                      aria-current={active ? 'true' : undefined}
-                      className={`flex items-start gap-1 px-2 py-2 text-sm transition ${
-                        active ? 'bg-foreground/10' : 'hover:bg-foreground/[0.04]'
-                      } ${isAnnotated ? 'border-l-2 border-l-emerald-500' : 'border-l-2 border-l-transparent'}`}
+                      key={firstSeg?.id ?? turnIdx}
+                      className={`px-2 py-2 text-sm ${
+                        turnAnnotated
+                          ? 'border-l-2 border-l-emerald-500'
+                          : 'border-l-2 border-l-transparent'
+                      }`}
                     >
-                      {/* Timestamp = seek affordance */}
-                      <button
-                        type="button"
-                        onClick={() => seekTo(seg.startMs)}
-                        title="Seek to here"
-                        className="mt-px shrink-0 font-mono text-xs text-foreground/40 hover:text-foreground hover:underline"
-                      >
-                        [{formatTime(seg.startMs)}]
-                      </button>
-                      {/* Row body. In CLEANING mode (cleaned tab + Edit on) each
-                          segment is a textarea committed on blur; otherwise the
-                          text is selectable for coding (one `data-seg-idx`
-                          element so `resolveSelection` maps a Range to offsets). */}
-                      {isCleanedActive && editing ? (
-                        <div className="flex-1">
-                          {seg.speaker && (
-                            <span className="mb-0.5 block text-xs font-semibold text-foreground/60">
-                              {seg.speaker}:
-                            </span>
-                          )}
-                          <SegmentTextEditor
-                            // Key on the persisted text so an external change
-                            // (revert / reload) REMOUNTS the editor with the new
-                            // value, re-seeding the draft without a setState-in-
-                            // effect (banned by react-hooks/set-state-in-effect).
-                            key={`${seg.id}:${seg.text}`}
-                            initialText={seg.text}
-                            onCommit={(t) => handleSegmentTextCommit(seg.id, t)}
-                          />
+                      {/* In-transcript flag chips (Change 5): each chip is a seek
+                          button → flag swatch + label + note + [mm:ss]. A thin
+                          left-accent + pill keeps them visually distinct from the
+                          transcript text. Only present when an anchor exists
+                          (`flagMarkers`/`flagsByTurnIndex` are empty otherwise). */}
+                      {turnFlags.length > 0 && (
+                        <div className="mb-1.5 flex flex-col gap-1">
+                          {turnFlags.map(({ obs, offsetMs }) => {
+                            const label = observationLabel(obs);
+                            return (
+                              <button
+                                key={obs.id}
+                                type="button"
+                                onClick={() => seekTo(offsetMs)}
+                                title={`[${formatTime(offsetMs)}] ${label}${
+                                  obs.body ? ` — ${obs.body}` : ''
+                                }`}
+                                className="flex items-start gap-1.5 rounded border-l-2 bg-foreground/[0.04] py-0.5 pl-1.5 pr-2 text-left text-xs hover:bg-foreground/[0.08]"
+                                style={{ borderLeftColor: observationColor(obs) }}
+                              >
+                                <span
+                                  aria-hidden
+                                  style={{ backgroundColor: observationColor(obs) }}
+                                  className="mt-0.5 inline-block h-2.5 w-2.5 shrink-0 rounded-sm border border-foreground/20"
+                                />
+                                <span className="flex-1">
+                                  <span className="font-semibold">{label}</span>
+                                  {obs.body && (
+                                    <span className="text-foreground/70">
+                                      {' — '}
+                                      {obs.body}
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="shrink-0 font-mono text-foreground/50">
+                                  [{formatTime(offsetMs)}]
+                                </span>
+                              </button>
+                            );
+                          })}
                         </div>
-                      ) : (
-                        <p className="flex-1 select-text text-left">
-                          {seg.speaker && (
-                            <span className="mr-1.5 font-semibold">
-                              {seg.speaker}:
-                            </span>
-                          )}
-                          <span data-seg-idx={i} className="text-foreground/80">
-                            {codingEnabled && highlights.length > 0
-                              ? renderHighlightedText(
-                                  seg.text,
-                                  highlights,
-                                  annById,
-                                  focusAnnotation,
-                                  commentedAnnIds,
-                                  openCommentAnnId,
-                                )
-                              : seg.text}
-                          </span>
-                        </p>
                       )}
+
+                      <div className="flex items-start gap-1">
+                        {/* ONE seek affordance per turn (turn.startMs). */}
+                        <button
+                          type="button"
+                          onClick={() => seekTo(turn.startMs)}
+                          title="Seek to here"
+                          className="mt-px shrink-0 font-mono text-xs text-foreground/40 hover:text-foreground hover:underline"
+                        >
+                          [{formatTime(turn.startMs)}]
+                        </button>
+
+                        {/* CLEANING mode (cleaned tab + Edit on): speaker label
+                            once, then EACH cue in the turn as its own
+                            `SegmentTextEditor`, stacked — per-cue editability
+                            preserved (no cue is lost) under one turn header. */}
+                        {isCleanedActive && editing ? (
+                          <div className="flex-1">
+                            {speaker && (
+                              <span className="mb-0.5 block text-xs font-semibold text-foreground/60">
+                                {speaker}:
+                              </span>
+                            )}
+                            <div className="space-y-1">
+                              {turn.segIndices.map((si) => {
+                                const seg = segments[si];
+                                return (
+                                  <SegmentTextEditor
+                                    // Key on the persisted text so an external
+                                    // change (revert / reload) REMOUNTS the editor
+                                    // with the new value, re-seeding the draft
+                                    // without a setState-in-effect (banned by
+                                    // react-hooks/set-state-in-effect).
+                                    key={`${seg.id}:${seg.text}`}
+                                    initialText={seg.text}
+                                    onCommit={(t) => handleSegmentTextCommit(seg.id, t)}
+                                  />
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : (
+                          /* READ/CODE mode: the turn's cues INLINE in one
+                             selectable `<p>`, separated by a single space. Each
+                             cue keeps its OWN `data-seg-idx={originalIndex}` span
+                             (so a brush still resolves within ONE cue and
+                             sub-segment anchoring is intact) and its own `rowRefs`
+                             entry (so the active-cue scroll still finds it). The
+                             active cue is tinted; the turn block stays calm. */
+                          <p className="flex-1 select-text text-left">
+                            {speaker && (
+                              <span className="mr-1.5 font-semibold">
+                                {speaker}:
+                              </span>
+                            )}
+                            {turn.segIndices.map((si, posInTurn) => {
+                              const seg = segments[si];
+                              // Source from the map that INCLUDES the pending
+                              // selection, so a cue that is only brushed (no real
+                              // annotation) still hits the highlight render branch
+                              // and paints the transient yellow mark.
+                              const highlights =
+                                highlightsBySegmentWithPending.get(seg.id) ?? [];
+                              const active = si === activeIdx;
+                              return (
+                                <span key={seg.id}>
+                                  {/* Single space between cues within the turn. */}
+                                  {posInTurn > 0 ? ' ' : null}
+                                  <span
+                                    data-seg-idx={si}
+                                    ref={(el) => {
+                                      rowRefs.current[si] = el;
+                                    }}
+                                    className={`text-foreground/80 ${
+                                      active ? 'rounded-sm bg-foreground/10' : ''
+                                    }`}
+                                  >
+                                    {codingEnabled && highlights.length > 0
+                                      ? renderHighlightedText(
+                                          seg.text,
+                                          highlights,
+                                          annById,
+                                          focusAnnotation,
+                                          commentedAnnIds,
+                                          openCommentAnnId,
+                                          PENDING_ANN_ID,
+                                        )
+                                      : seg.text}
+                                  </span>
+                                </span>
+                              );
+                            })}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   );
                 })
@@ -1922,23 +2178,33 @@ function SegmentTextEditor({
 /**
  * Render a segment's text with its annotation char-ranges marked. Splits the
  * text at every highlight boundary (`splitIntoPieces`) and wraps each covered
- * piece in a `<mark>`-style span — emerald for code annotations, amber for
- * quotes. Overlapping ranges layer: a piece under both a code and a quote gets
- * the quote tint (quotes are the rarer, paper-bound signal).
+ * piece in a `<mark>`-style span.
  *
- * Clicking a marked piece OPENS its (first) annotation's comment thread and
- * focuses its rail row (the Google-Docs "click the highlight to comment" feel).
+ * Colors (Hudson's "comments are highlighted too" model — quotes/comments read
+ * as one consistent YELLOW):
+ *   • code-only span → emerald
+ *   • quote span OR any span whose annotation carries comments → yellow
+ *   • the PENDING (brushed-but-uncommitted) selection → a transient yellow brush
+ *
+ * The pending highlight: the caller weaves a synthetic highlight with id
+ * `pendingAnnId` and `kind:'pending'` into the segment's highlight set. A piece
+ * may carry BOTH a real annotation id and the pending id (the brush overlapping
+ * an existing mark): if it includes ANY non-pending id we keep the normal
+ * clickable annotation behavior; a PURE-pending piece (only the sentinel id) is
+ * the non-clickable yellow brush — no `annById` lookup, no `onFocus`, no thread.
+ *
+ * Clicking a (real) marked piece OPENS its (first real) annotation's comment
+ * thread in the over-video callout and focuses its rail row.
  *
  * Comment indicator: a piece whose annotation has a comment thread is given a
  * dotted sky UNDERLINE (a box-shadow, not extra text), and the currently-open
  * thread's mark gets a sky ring so it reads as "selected". Crucially the
- * indicator adds NO characters to the segment's rendered text — the selection
- * anchoring (`charOffsetWithin`) measures rendered-text length, so injecting a
- * glyph (e.g. a 💬) inside the mark would shift char offsets for selections made
- * later in the same segment and corrupt new anchors. Styling-only avoids that.
+ * indicator (and the pending brush) add NO characters to the segment's rendered
+ * text — selection anchoring (`charOffsetWithin`) measures rendered-text length,
+ * so injecting a glyph would shift char offsets for later selections and corrupt
+ * new anchors. Styling-only avoids that.
  *
- * Returned as a plain string when there are no highlights would be simpler, but
- * the caller only invokes this when `highlights.length > 0`.
+ * The caller only invokes this when `highlights.length > 0`.
  */
 function renderHighlightedText(
   text: string,
@@ -1947,19 +2213,39 @@ function renderHighlightedText(
   onFocus: (ann: MyAnnotationView) => void,
   commentedAnnIds: Set<string>,
   openCommentAnnId: string | null,
+  pendingAnnId: string,
 ): React.ReactNode {
   const pieces = splitIntoPieces(text, highlights);
   return pieces.map((piece, idx) => {
     if (piece.highlightIds.length === 0) {
       return <span key={idx}>{piece.text}</span>;
     }
+    // Real annotation ids covering this piece (excluding the pending sentinel).
+    const realIds = piece.highlightIds.filter((hid) => hid !== pendingAnnId);
+
+    // PURE-pending piece: the transient yellow brush. Not an annotation — never
+    // clickable, no thread, no rail focus. Clears when `textSel` clears.
+    if (realIds.length === 0) {
+      return (
+        <mark
+          key={idx}
+          className="rounded-sm bg-yellow-300/60 px-px text-foreground dark:bg-yellow-400/30"
+        >
+          {piece.text}
+        </mark>
+      );
+    }
+
     const hasQuote = piece.kinds.includes('quote');
-    const firstId = piece.highlightIds[0];
+    const firstId = realIds[0];
     const ann = annById.get(firstId);
-    // Does any annotation covering this piece carry a comment thread / is open?
-    const hasComment = piece.highlightIds.some((hid) => commentedAnnIds.has(hid));
+    // Does any REAL annotation covering this piece carry a comment thread / open?
+    const hasComment = realIds.some((hid) => commentedAnnIds.has(hid));
     const isOpen =
-      openCommentAnnId !== null && piece.highlightIds.includes(openCommentAnnId);
+      openCommentAnnId !== null && realIds.includes(openCommentAnnId);
+    // Yellow when it's a quote OR carries comments ("comments are highlighted
+    // too"); emerald only for a code-only span with no comments.
+    const isYellow = hasQuote || hasComment;
     const title = hasComment
       ? 'Has comments — click to open the thread'
       : hasQuote
@@ -1976,8 +2262,8 @@ function renderHighlightedText(
         // `decoration-dotted` sky underline = "has comments" (text-only, so it
         // never shifts char offsets); a sky ring = the currently-open thread.
         className={`cursor-pointer rounded-sm px-px ${
-          hasQuote
-            ? 'bg-amber-300/50 text-foreground dark:bg-amber-400/30'
+          isYellow
+            ? 'bg-yellow-300/55 text-foreground dark:bg-yellow-400/30'
             : 'bg-emerald-300/50 text-foreground dark:bg-emerald-400/30'
         } ${hasComment ? 'underline decoration-sky-500 decoration-dotted decoration-2 underline-offset-2' : ''} ${
           isOpen ? 'ring-2 ring-sky-500' : ''
