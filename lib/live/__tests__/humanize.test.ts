@@ -46,7 +46,7 @@ describe('humanizeEvent', () => {
           moduleId: '3g7lg4if',
           payload: { from: 'scenario_2_read', to: 'scenario_2_revise' },
         }),
-      ).toBe('Scenario 2 · revise');
+      ).toBe('Scenario III · revise');
     });
 
     it('humanizes a scenario retro step with a 1-based index', () => {
@@ -56,7 +56,7 @@ describe('humanizeEvent', () => {
           moduleId: '3g7lg4if',
           payload: { from: 'scenario_3_revise', to: 'scenario_3_retro_0' },
         }),
-      ).toBe('Scenario 3 · retro 1');
+      ).toBe('Scenario IV · retro 1');
     });
 
     it('humanizes a standalone retrospective step with a 1-based index', () => {

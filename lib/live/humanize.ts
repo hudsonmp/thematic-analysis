@@ -121,19 +121,34 @@ function asRecord(value: unknown): Record<string, unknown> {
  *
  * Anything that doesn't match a known shape is spaced/capitalized generically.
  */
+/** 1-based integer → Roman numeral. Scenario indices in the step keys are
+ *  0-based (`scenario_0_…` is the first), so callers pass `idx + 1`: the first
+ *  scenario reads as "I", not "0". */
+function toRoman(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return String(n);
+  const table: [number, string][] = [
+    [1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'],
+    [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'],
+    [5, 'V'], [4, 'IV'], [1, 'I'],
+  ];
+  let out = '';
+  for (const [v, sym] of table) while (n >= v) { out += sym; n -= v; }
+  return out;
+}
+
 function humanizeStep(step: string): string {
-  // scenario_<n>_retro_<m>  → "Scenario <n> · retro <m+1>"
+  // scenario_<n>_retro_<m>  → "Scenario <I-based roman> · retro <m+1>"
   const scenarioRetro = step.match(/^scenario_(\d+)_retro_(\d+)$/);
   if (scenarioRetro) {
-    const n = scenarioRetro[1];
+    const n = toRoman(Number(scenarioRetro[1]) + 1);
     const m = Number(scenarioRetro[2]) + 1;
     return `Scenario ${n} · retro ${m}`;
   }
 
-  // scenario_<n>_<phase>  → "Scenario <n> · <phase>"  (read / ponder / revise)
+  // scenario_<n>_<phase>  → "Scenario <I-based roman> · <phase>"  (read/ponder/revise)
   const scenarioPhase = step.match(/^scenario_(\d+)_(.+)$/);
   if (scenarioPhase) {
-    const n = scenarioPhase[1];
+    const n = toRoman(Number(scenarioPhase[1]) + 1);
     const phase = scenarioPhase[2].replace(/_/g, ' ');
     return `Scenario ${n} · ${phase}`;
   }
