@@ -863,6 +863,7 @@ export type Database = {
           episode_id: string | null
           flag_type_id: string | null
           id: string
+          is_quote: boolean
           pid: string
           session_id: string | null
         }
@@ -873,6 +874,7 @@ export type Database = {
           episode_id?: string | null
           flag_type_id?: string | null
           id?: string
+          is_quote?: boolean
           pid: string
           session_id?: string | null
         }
@@ -883,6 +885,7 @@ export type Database = {
           episode_id?: string | null
           flag_type_id?: string | null
           id?: string
+          is_quote?: boolean
           pid?: string
           session_id?: string | null
         }

@@ -33,9 +33,10 @@ type Observation = Tables<'cb_observations'>;
  * One observation as the live view / playback rail consumes it: the
  * `cb_observations` row's display fields, left-joined to its `cb_flag_types`
  * (flag label + swatch color) and its `cb_episodes` (event name). An observation
- * is a FLAG (`flagTypeId`), an EVENT-MARK (`episodeId`), and/or a NOTE (`body`):
- * a tap-only flag has `body: null` and `episodeId: null`; a bare event-mark has
- * `flagTypeId: null`/`body: null`; a bare note has both ids null.
+ * is a FLAG (`flagTypeId`), an EVENT-MARK (`episodeId`), a NOTE (`body`), and/or
+ * a QUOTE-MARK (`isQuote`): a tap-only flag has `body: null` and `episodeId: null`;
+ * a bare event-mark has `flagTypeId: null`/`body: null`; a bare note has both ids
+ * null; a bare quote-mark has flag/episode/body all null and `isQuote: true`.
  */
 export type ObservationView = {
   id: string;
@@ -55,16 +56,25 @@ export type ObservationView = {
    *  from under the row. */
   episodeName: string | null;
   body: string | null;
+  /** A QUOTE-MARK: a one-tap, content-free bookmark of a quotable moment. The
+   *  exact words are grabbed later from the recording at this row's timestamp, so
+   *  the row may legitimately carry no flag/episode/body. */
+  isQuote: boolean;
   createdAt: string;
 };
 
 /**
  * Log an observation for a participant. `pid` is required. `flagTypeId`,
- * `episodeId`, and `body` are all optional, but AT LEAST ONE must be present — a
- * tap-only flag has no episode/body, a bare event-mark has no flag/body, a bare
- * note has no flag/episode, but an observation with none of the three carries no
- * information and is rejected. `body` is trimmed; a whitespace-only body counts as
- * absent (so a whitespace-only body with no flag and no episode is rejected too).
+ * `episodeId`, `body`, and `isQuote` are all optional, but AT LEAST ONE must be
+ * present — a tap-only flag has no episode/body/quote, a bare event-mark has no
+ * flag/body/quote, a bare note has no flag/episode/quote, a bare quote-mark has no
+ * flag/episode/body. An observation with none of the four carries no information
+ * and is rejected. `body` is trimmed; a whitespace-only body counts as absent (so
+ * a whitespace-only body with no flag, event, or quote is rejected too).
+ *
+ * A QUOTE (`isQuote: true`) is a content-free bookmark of a quotable moment: the
+ * timestamp is the whole point (the exact words are grabbed later from the
+ * recording), so it needs nothing else.
  *
  * `created_by` is set explicitly to the signed-in user's uid: the RLS insert
  * policy is `with check (created_by = auth.uid())`, so this is both required and
@@ -76,11 +86,13 @@ export async function addObservation({
   flagTypeId,
   episodeId,
   body,
+  isQuote,
 }: {
   pid: string;
   flagTypeId?: string | null;
   episodeId?: string | null;
   body?: string | null;
+  isQuote?: boolean;
 }): Promise<Observation> {
   const user = await requireAuthUser();
 
@@ -91,11 +103,14 @@ export async function addObservation({
   const episode = episodeId ?? null;
   const trimmedBody = typeof body === 'string' ? body.trim() : '';
   const finalBody = trimmedBody === '' ? null : trimmedBody;
+  const quote = isQuote === true;
 
-  // At least one of (flag, episode, body) must be present — an all-null
-  // observation carries no information.
-  if (flag === null && episode === null && finalBody === null) {
-    throw new Error('addObservation: an observation needs a flag, an event, or a note.');
+  // At least one of (flag, episode, body, quote) must be present — an observation
+  // with all of them absent carries no information.
+  if (flag === null && episode === null && finalBody === null && !quote) {
+    throw new Error(
+      'addObservation: an observation needs a flag, an event, a note, or a quote.',
+    );
   }
 
   const sb = await createUserServerClient();
@@ -106,6 +121,7 @@ export async function addObservation({
       flag_type_id: flag,
       episode_id: episode,
       body: finalBody,
+      is_quote: quote,
       // Set explicitly to the caller's uid: RLS `with check (created_by =
       // auth.uid())` admits only the signed-in user's own id.
       created_by: user.id,
@@ -135,7 +151,7 @@ export async function listObservationsForPid(pid: string): Promise<ObservationVi
   const { data, error } = await sb
     .from('cb_observations')
     .select(
-      'id, pid, flag_type_id, episode_id, body, created_at, cb_flag_types(label, color), cb_episodes(name)',
+      'id, pid, flag_type_id, episode_id, body, is_quote, created_at, cb_flag_types(label, color), cb_episodes(name)',
     )
     .eq('pid', pid)
     .order('created_at', { ascending: false });
@@ -245,6 +261,7 @@ function toObservationViews(data: unknown): ObservationView[] {
     flag_type_id: string | null;
     episode_id: string | null;
     body: string | null;
+    is_quote: boolean;
     created_at: string;
     cb_flag_types: { label: string; color: string | null } | null;
     cb_episodes: { name: string } | null;
@@ -265,6 +282,7 @@ function toObservationViews(data: unknown): ObservationView[] {
     episodeName:
       r.episode_id === null ? null : (r.cb_episodes?.name ?? '(deleted event)'),
     body: r.body,
+    isQuote: r.is_quote === true,
     createdAt: r.created_at,
   }));
 }

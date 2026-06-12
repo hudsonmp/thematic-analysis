@@ -168,7 +168,12 @@ export default function LiveFollow({
   const logObservation = useCallback(
     async (
       optimistic: ObservationView,
-      args: { flagTypeId?: string | null; episodeId?: string | null; body?: string | null },
+      args: {
+        flagTypeId?: string | null;
+        episodeId?: string | null;
+        body?: string | null;
+        isQuote?: boolean;
+      },
       failMsg: string,
     ) => {
       setError(null);
@@ -204,6 +209,7 @@ export default function LiveFollow({
           episodeId: null,
           episodeName: null,
           body: null,
+          isQuote: false,
           createdAt: new Date().toISOString(),
         },
         { flagTypeId: flag.id },
@@ -227,6 +233,7 @@ export default function LiveFollow({
           episodeId: ep.id,
           episodeName: ep.name,
           body: null,
+          isQuote: false,
           createdAt: new Date().toISOString(),
         },
         { episodeId: ep.id },
@@ -235,6 +242,29 @@ export default function LiveFollow({
     },
     [pid, logObservation],
   );
+
+  // Mark a QUOTE at the current moment — a one-tap, content-free bookmark of a
+  // quotable line (parallel to a flag/event tap). No flag, no event, no text: the
+  // timestamp is the point — the exact words are grabbed later from the recording.
+  const addQuote = useCallback(async () => {
+    const tempId = tempKey();
+    await logObservation(
+      {
+        id: tempId,
+        pid,
+        flagTypeId: null,
+        flagLabel: null,
+        color: null,
+        episodeId: null,
+        episodeName: null,
+        body: null,
+        isQuote: true,
+        createdAt: new Date().toISOString(),
+      },
+      { isQuote: true },
+      'Failed to mark quote.',
+    );
+  }, [pid, logObservation]);
 
   // Submit a note (Enter in the note box). Attaches the armed flag if one is set.
   // A blank note with no armed flag is a no-op (addObservation would reject it).
@@ -256,6 +286,7 @@ export default function LiveFollow({
         episodeId: null,
         episodeName: null,
         body: body || null,
+        isQuote: false,
         createdAt: new Date().toISOString(),
       },
       { flagTypeId: flag?.id ?? null, body: body || null },
@@ -570,6 +601,19 @@ export default function LiveFollow({
                   + new flag
                 </button>
               )}
+
+              {/* Quote — a one-tap red-ribbon bookmark of a quotable moment. No
+                  text required: the timestamp is the point; the exact words are
+                  grabbed later from the recording. Parallel to a flag tap. */}
+              <button
+                type="button"
+                onClick={() => void addQuote()}
+                className="flex items-center gap-1.5 border border-red-600/50 px-3 py-1.5 text-sm text-red-700 transition hover:bg-red-600/10 dark:text-red-400"
+                title="Bookmark a quotable moment at the current instant (grab the words later from the recording)"
+              >
+                <RedRibbon />
+                <span>Quote</span>
+              </button>
             </div>
 
             {/* Note input */}
@@ -700,6 +744,11 @@ export default function LiveFollow({
                           event
                         </span>
                       </span>
+                    ) : o.isQuote ? (
+                      <span className="inline-flex shrink-0 items-center gap-1.5">
+                        <RedRibbon />
+                        <span className="text-red-700 dark:text-red-400">quote</span>
+                      </span>
                     ) : (
                       <span className="shrink-0 text-foreground/30">note</span>
                     )}
@@ -721,6 +770,26 @@ export default function LiveFollow({
         </div>
       )}
     </main>
+  );
+}
+
+/** A small red ribbon glyph for the Quote marker — an inline SVG (a folded
+ *  bookmark ribbon) so it renders crisply and identically across platforms,
+ *  unlike an emoji whose font varies. `currentColor` lets the surrounding red
+ *  text color drive it. */
+function RedRibbon() {
+  return (
+    <svg
+      width="11"
+      height="14"
+      viewBox="0 0 11 14"
+      aria-hidden
+      className="shrink-0 text-red-600"
+      fill="currentColor"
+    >
+      {/* A ribbon/bookmark: a rectangle with a notched (swallowtail) bottom. */}
+      <path d="M0 0h11v14L5.5 10 0 14V0z" />
+    </svg>
   );
 }
 
