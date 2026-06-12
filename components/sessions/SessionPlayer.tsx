@@ -37,9 +37,6 @@ import { useRealtimeAnnotations } from './useRealtimeAnnotations';
 /** Minimal code shape the picker needs (flattened from the codebook tree). */
 type CodeOption = { id: string; mnemonic: string; name: string };
 
-/** A preset episode the coder can mark at a timecode (name + id only). */
-type EpisodeOption = { id: string; name: string };
-
 /** Format a millisecond offset as `mm:ss` (minutes uncapped past 60). */
 function formatTime(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
@@ -259,9 +256,8 @@ export default function SessionPlayer({
   comments?: Record<string, AnnotationCommentView[]>;
   /** The signed-in coder's auth uid — used to scope realtime sync to own rows. */
   myUid?: string | null;
-  /** The codebook's preset episodes the coder can mark at a timecode. */
-  episodes?: EpisodeOption[];
-  /** This session's episode marks (boundaries to navigate / resume by). */
+  /** This session's episode marks — AUTO-DERIVED from study_events (read-only
+   *  seek list; the manual mark control was removed in Task 2). */
   sessionEpisodes?: SessionEpisodeView[];
   /**
    * The live co-observation flags logged for this session's participant (Task 5).
@@ -271,10 +267,12 @@ export default function SessionPlayer({
    */
   observations?: ObservationView[];
   /**
-   * `cb_sessions.recording_started_at` (ISO) — the t=0 anchor that turns an
-   * observation's absolute `createdAt` into a video offset. `null` when the
-   * recording was never anchored: with no anchor the player can't place any
-   * marker, so it renders an "anchor not set" hint instead.
+   * The EFFECTIVE recording anchor (ISO) — the t=0 that turns an observation's
+   * absolute `createdAt` into a video offset. The page resolves it as the manual
+   * recording mark, FALLING BACK to the participant's task start (earliest task
+   * `module_start`), so it is almost always set (Task 5). `null` only when even
+   * the task start can't be derived — the flag markers then render nothing
+   * (silent), never a blocking "anchor not set" message.
    */
   recordingStartedAt?: string | null;
   /** The resolved codebook id new codes are authored into (SessionCodeCreator). */
@@ -1040,8 +1038,9 @@ export default function SessionPlayer({
   // flag tapped live lands on the moment in the recording. Computed once here so
   // the time-rail markers and the Flags rail share one ordered list.
   //
-  // recordingStartedAt null → no anchor yet: we can't place any marker, so this
-  // is empty and the UI shows an "anchor not set" hint instead (handled below).
+  // recordingStartedAt null → no anchor derivable at all (not even task start):
+  // this is empty and the flag UI renders nothing (silent — no hint). Normally the
+  // page supplies the task-start fallback, so an anchor is present.
   // Offsets < 0 (a flag logged before record start, e.g. during onboarding) are
   // CLAMPED to 0 — consistent with Task 4's `t_start_ms: Math.max(0, …)` clamp
   // for auto-episodes — so an early flag pins to the recording's start rather

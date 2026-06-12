@@ -5,7 +5,6 @@ import {
   listAnnotationComments,
 } from '@/app/actions/annotations';
 import {
-  listEpisodes,
   listSessionEpisodes,
   materializeAutoEpisodes,
 } from '@/app/actions/episodes';
@@ -100,12 +99,11 @@ export default async function SessionPage({
       ? await listAnnotationComments(myAnnotations.map((a) => a.id))
       : {};
 
-  // The codebook tree (for the code picker) and the codebook's preset episodes
-  // (for the assign-during-coding control) both key off the resolved codebook id.
-  const [tree, episodes] = await Promise.all([
-    listCodebookTree(codebook.id),
-    listEpisodes(codebook.id),
-  ]);
+  // The codebook tree (for the code picker + the new-code panel's scheme facets)
+  // keys off the resolved codebook id. Preset episodes are no longer fetched here:
+  // events are auto-derived from study_events (materializeAutoEpisodes above), not
+  // marked by hand, so the player needs no preset list.
+  const tree = await listCodebookTree(codebook.id);
 
   // Flatten the codebook tree to the minimal `{id, mnemonic, name}` the code
   // picker consumes.
@@ -137,7 +135,6 @@ export default async function SessionPage({
       myAnnotations={myAnnotations}
       comments={comments}
       myUid={user?.id ?? null}
-      episodes={episodes.map((e) => ({ id: e.id, name: e.name }))}
       sessionEpisodes={sessionEpisodes}
       observations={observations.observations}
       recordingStartedAt={effectiveAnchor}
