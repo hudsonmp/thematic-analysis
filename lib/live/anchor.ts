@@ -53,3 +53,47 @@ export function computeAnchorMs(taskModuleStartIso: string): number {
   }
   return baseMs + ANCHOR_CORRECTION_MS;
 }
+
+/** The resolved recording anchor and HOW it was sourced. `source:'manual'` is the
+ *  researcher's exact "Start recording" click (cb_recording_marks); `source:'auto'`
+ *  is the derived `task module_start + ANCHOR_CORRECTION_MS` fallback. `recordingStartedAt`
+ *  is the absolute anchor in epoch-ms. `null` when neither source is available. */
+export type ResolvedAnchor =
+  | { source: 'manual'; recordingStartedAt: number }
+  | { source: 'auto'; recordingStartedAt: number }
+  | null;
+
+/**
+ * Choose the recording anchor, MANUAL over AUTO.
+ *
+ * The manual mark (`cb_recording_marks.started_at`, the instant the researcher hit
+ * record) is the SOURCE OF TRUTH when present: it is used EXACTLY — NO
+ * `ANCHOR_CORRECTION_MS` — because the click already captures the real record
+ * start, so there is no reaction gap to absorb. When there is no manual mark we
+ * fall back to the AUTO derivation: `task module_start + ANCHOR_CORRECTION_MS`
+ * (the +2 s reaction correction). When neither exists, the anchor is unresolved
+ * (`null`) and the caller leaves `recording_started_at` unset.
+ *
+ * Pure: both inputs are ISO strings (or null); an unparseable manual mark is
+ * ignored (falls through to auto) rather than throwing, since a malformed mark
+ * must not block the auto fallback. The auto path still delegates to
+ * `computeAnchorMs`, which throws on an unparseable task-start (a bad task-start
+ * is a hard error — there is no further fallback).
+ */
+export function resolveRecordingAnchorMs(
+  manualStartIso: string | null,
+  taskModuleStartIso: string | null,
+): ResolvedAnchor {
+  if (manualStartIso) {
+    const manualMs = Date.parse(manualStartIso);
+    // Exact: the manual click already is the record start (no +correction).
+    if (!Number.isNaN(manualMs)) {
+      return { source: 'manual', recordingStartedAt: manualMs };
+    }
+    // A malformed manual mark must not block the auto fallback — fall through.
+  }
+  if (taskModuleStartIso) {
+    return { source: 'auto', recordingStartedAt: computeAnchorMs(taskModuleStartIso) };
+  }
+  return null;
+}

@@ -860,6 +860,7 @@ export type Database = {
           body: string | null
           created_at: string
           created_by: string | null
+          episode_id: string | null
           flag_type_id: string | null
           id: string
           pid: string
@@ -869,6 +870,7 @@ export type Database = {
           body?: string | null
           created_at?: string
           created_by?: string | null
+          episode_id?: string | null
           flag_type_id?: string | null
           id?: string
           pid: string
@@ -878,12 +880,20 @@ export type Database = {
           body?: string | null
           created_at?: string
           created_by?: string | null
+          episode_id?: string | null
           flag_type_id?: string | null
           id?: string
           pid?: string
           session_id?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "cb_observations_episode_id_fkey"
+            columns: ["episode_id"]
+            isOneToOne: false
+            referencedRelation: "cb_episodes"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "cb_observations_flag_type_id_fkey"
             columns: ["flag_type_id"]
@@ -918,6 +928,27 @@ export type Database = {
           display_name?: string | null
           initials?: string | null
           user_id?: string
+        }
+        Relationships: []
+      }
+      cb_recording_marks: {
+        Row: {
+          created_at: string
+          marked_by: string | null
+          pid: string
+          started_at: string
+        }
+        Insert: {
+          created_at?: string
+          marked_by?: string | null
+          pid: string
+          started_at?: string
+        }
+        Update: {
+          created_at?: string
+          marked_by?: string | null
+          pid?: string
+          started_at?: string
         }
         Relationships: []
       }

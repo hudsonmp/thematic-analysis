@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatElapsed, formatDate, mmss } from '@/lib/live/clock';
+import {
+  formatElapsed,
+  formatDate,
+  mmss,
+  resolveClockStart,
+} from '@/lib/live/clock';
 
 describe('mmss', () => {
   it('formats sub-minute, minute, and >60-minute spans', () => {
@@ -7,6 +12,30 @@ describe('mmss', () => {
     expect(mmss(5_000)).toBe('00:05');
     expect(mmss(65_000)).toBe('01:05');
     expect(mmss(3_661_000)).toBe('61:01'); // minutes uncapped past 60
+  });
+});
+
+describe('resolveClockStart (manual over task-start)', () => {
+  const manual = '2026-06-11T15:53:00.000Z';
+  const task = '2026-06-11T15:53:02.197Z';
+
+  it('counts from the MANUAL recording start when present', () => {
+    expect(resolveClockStart(manual, task)).toEqual({
+      source: 'manual',
+      startedAt: manual,
+    });
+  });
+
+  it('falls back to the task start when there is no manual mark', () => {
+    expect(resolveClockStart(null, task)).toEqual({ source: 'task', startedAt: task });
+  });
+
+  it('manual wins even over a present task start', () => {
+    expect(resolveClockStart(manual, task).source).toBe('manual');
+  });
+
+  it('is "none" (not started) when neither anchor exists', () => {
+    expect(resolveClockStart(null, null)).toEqual({ source: 'none', startedAt: null });
   });
 });
 

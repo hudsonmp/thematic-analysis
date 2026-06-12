@@ -12,6 +12,35 @@
 // elapsed FREEZES at `study_complete − taskStart`.
 // ---------------------------------------------------------------------------
 
+/** Which anchor the live clock is counting from. `manual` is the researcher's
+ *  exact "Start recording" click (cb_recording_marks); `task` is the participant's
+ *  task `module_start`; `none` means no anchor (clock not started). */
+export type ClockSource = 'manual' | 'task' | 'none';
+
+/** The resolved live-clock start: the effective anchor ISO and HOW it was sourced.
+ *  `startedAt` is null iff `source: 'none'`. */
+export type ClockStart = { source: ClockSource; startedAt: string | null };
+
+/**
+ * Choose the live clock's start anchor, MANUAL over task-start.
+ *
+ * When the researcher has hit "Start recording" the clock counts from that EXACT
+ * instant (`recordingStartedAt`); otherwise it falls back to the participant's
+ * task `module_start` (`taskStartedAt`); when neither exists the clock has no
+ * anchor (`source:'none'`, the UI shows "not started"). Mirrors the upload-time
+ * anchor preference (`resolveRecordingAnchorMs`) so the live preview and the final
+ * recording clock agree on which moment is t=0. Pure; null/empty inputs are
+ * treated as absent.
+ */
+export function resolveClockStart(
+  recordingStartedAt: string | null,
+  taskStartedAt: string | null,
+): ClockStart {
+  if (recordingStartedAt) return { source: 'manual', startedAt: recordingStartedAt };
+  if (taskStartedAt) return { source: 'task', startedAt: taskStartedAt };
+  return { source: 'none', startedAt: null };
+}
+
 /**
  * Format `endpoint − taskStart` as `mm:ss` (minutes uncapped). Null when there
  * is no task-start anchor (clock not running).

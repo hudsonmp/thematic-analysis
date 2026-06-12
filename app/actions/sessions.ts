@@ -9,7 +9,8 @@ import {
   createDriveResumableUpload,
 } from '@/lib/google/drive';
 import { taskStartForPid } from '@/app/actions/live';
-import { computeAnchorMs } from '@/lib/live/anchor';
+import { getRecordingStart } from '@/app/actions/recording';
+import { resolveRecordingAnchorMs } from '@/lib/live/anchor';
 
 /**
  * Begin a browser-direct video upload to Google Drive.
@@ -652,22 +653,30 @@ export type AutoAnchorResult =
   | { anchored: false; reason: string };
 
 /**
- * Set `cb_sessions.recording_started_at` for a session from its participant's
- * task `module_start`, applying the +`ANCHOR_CORRECTION_MS` correction.
+ * Set `cb_sessions.recording_started_at` for a session, preferring the
+ * participant's MANUAL recording mark over the auto task-start derivation.
  *
- * Steps (study reads are READ-ONLY, via `taskStartForPid`):
+ * The MANUAL mark (`cb_recording_marks.started_at`, the instant the researcher hit
+ * "Start recording") is the SOURCE OF TRUTH when present — used EXACTLY, with NO
+ * `ANCHOR_CORRECTION_MS` (the click already captures the real record start, so
+ * there is no reaction gap to absorb). The AUTO derivation (task `module_start` +
+ * `ANCHOR_CORRECTION_MS`) is the FALLBACK when no manual mark exists.
+ *
+ * Steps (study reads are READ-ONLY, via `taskStartForPid`; the manual mark is a
+ * cb_ read via `getRecordingStart`):
  *   1. Load the session's `pid_label` (a cb_ read). Missing session → not anchored.
- *   2. `taskStartForPid(pidLabel)` → the earliest task `module_start` time (ISO),
- *      resolving `users.pid → user_id` and the `type:'task'` module id from the
- *      shown study's `authored_data`. Null when the study has no task module, the
- *      PID is unknown, or the participant has not reached the task yet.
- *   3. `recording_started_at = computeAnchorMs(taskStart)` (epoch-ms → ISO),
- *      persisted to the session.
+ *   2. In parallel: `getRecordingStart(pidLabel)` (the manual mark, cb_ read) and
+ *      `taskStartForPid(pidLabel)` (the earliest task `module_start`, READ-ONLY
+ *      study read). The latter is null when the study has no task module, the PID
+ *      is unknown, or the participant has not reached the task yet.
+ *   3. `resolveRecordingAnchorMs(manual, taskStart)` → manual (exact) when present,
+ *      else auto (+correction). Null when NEITHER exists → leave the anchor unset.
+ *   4. Persist `recording_started_at` (epoch-ms → ISO) to the session.
  *
- * If there is no task `module_start`, `recording_started_at` is LEFT NULL and the
- * function returns `{anchored:false, reason}` (the manual-anchor fallback is out
- * of MVP scope). Idempotent: re-running recomputes the same anchor and overwrites
- * the same value.
+ * If neither a manual mark nor a task `module_start` exists, `recording_started_at`
+ * is LEFT NULL and the function returns `{anchored:false, reason}`. Idempotent:
+ * re-running recomputes the same anchor and overwrites the same value (so a manual
+ * mark placed after a prior auto-anchor takes over on the next run).
  */
 export async function autoAnchorSession(
   sessionId: string,
@@ -694,18 +703,24 @@ export async function autoAnchorSession(
     return { anchored: false, reason: 'session has no pid_label to resolve a participant.' };
   }
 
-  // 2. The participant's task module_start (READ-ONLY study read via live.ts).
-  const taskStartIso = await taskStartForPid(pidLabel);
-  if (!taskStartIso) {
-    // No task module_start for this PID → leave recording_started_at null.
+  // 2. The manual mark (cb_ read) and the task module_start (READ-ONLY study read).
+  const [manualStartIso, taskStartIso] = await Promise.all([
+    getRecordingStart(pidLabel),
+    taskStartForPid(pidLabel),
+  ]);
+
+  // 3. Choose the anchor: manual (exact) over auto (+correction). Null when
+  //    neither exists → leave recording_started_at unset.
+  const resolved = resolveRecordingAnchorMs(manualStartIso, taskStartIso);
+  if (!resolved) {
     return {
       anchored: false,
-      reason: `no task module_start for pid ${pidLabel} (anchor unset — set manually).`,
+      reason: `no recording mark or task module_start for pid ${pidLabel} (anchor unset — set manually).`,
     };
   }
 
-  // 3. Anchor = task module_start + ANCHOR_CORRECTION_MS; persist as ISO.
-  const recordingStartedAt = new Date(computeAnchorMs(taskStartIso)).toISOString();
+  // 4. Persist as ISO.
+  const recordingStartedAt = new Date(resolved.recordingStartedAt).toISOString();
   const { error: updErr } = await sb
     .from('cb_sessions')
     .update({ recording_started_at: recordingStartedAt })

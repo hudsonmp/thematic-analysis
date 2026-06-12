@@ -3,6 +3,7 @@
 import { createServiceRoleClient } from '@/lib/supabase/service';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getShownStudy } from '@/app/actions/codebook';
+import { getRecordingStart } from '@/app/actions/recording';
 import { humanizeEvent } from '@/lib/live/humanize';
 import type { Json } from '@/lib/types/cb-db';
 
@@ -258,6 +259,11 @@ export type LiveStatus = {
    *  screen, or null if they haven't. When set, the live clock FREEZES at
    *  `taskEndedAt − taskStartedAt` (no ticking past finish). */
   taskEndedAt: string | null;
+  /** The MANUAL recording-start instant (ISO) from cb_recording_marks, or null if
+   *  the researcher has not hit "Start recording" for this PID. When present, the
+   *  live clock counts from THIS (the exact record start) rather than
+   *  `taskStartedAt`. Polled so a mark set elsewhere shows up within a tick. */
+  recordingStartedAt: string | null;
 };
 
 /**
@@ -271,14 +277,24 @@ export async function liveStatusForPid(pid: string): Promise<LiveStatus> {
   await requireAuthUser();
   const trimmed = (pid ?? '').trim();
   if (!trimmed)
-    return { stepLabel: null, latestAt: null, taskStartedAt: null, taskEndedAt: null };
+    return {
+      stepLabel: null,
+      latestAt: null,
+      taskStartedAt: null,
+      taskEndedAt: null,
+      recordingStartedAt: null,
+    };
 
-  const [latest, taskStartedAt, taskEndedAt, modules] = await Promise.all([
-    latestEventForPid(trimmed),
-    taskStartForPid(trimmed),
-    taskEndedForPid(trimmed),
-    listStudyModules(),
-  ]);
+  const [latest, taskStartedAt, taskEndedAt, modules, recordingStartedAt] =
+    await Promise.all([
+      latestEventForPid(trimmed),
+      taskStartForPid(trimmed),
+      taskEndedForPid(trimmed),
+      listStudyModules(),
+      // The MANUAL recording mark (a cb_ read). Folded into the polled status so a
+      // mark set on the live page (or elsewhere) surfaces within a poll tick.
+      getRecordingStart(trimmed),
+    ]);
 
   const stepLabel = latest
     ? humanizeEvent(
@@ -296,6 +312,7 @@ export async function liveStatusForPid(pid: string): Promise<LiveStatus> {
     latestAt: latest?.createdAt ?? null,
     taskStartedAt,
     taskEndedAt,
+    recordingStartedAt,
   };
 }
 
