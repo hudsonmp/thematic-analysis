@@ -99,7 +99,18 @@ type Result =
   | { pid: string; ok: true; sessionId: string; segmentCount: number }
   | { pid: string; ok: false; error: string };
 
-/** The leaf filename from a `webkitRelativePath` (`a/b/c.srt` → `c.srt`). */
+/**
+ * A file paired with its explicit relative path. We carry `relPath` separately
+ * because the two ingest routes derive it differently and `File.webkitRelativePath`
+ * is read-only (so we can't normalize onto the File itself):
+ *   - `<input webkitdirectory>` → `file.webkitRelativePath` = `<root>/<pid>/<file>`.
+ *   - drag-and-drop of folders   → synthesized as `<pid>/<…>/<file>`, where the
+ *     top-level dropped folder's own name is the PID (its first path segment).
+ * Both shapes share the same invariant: the segment ABOVE the leaf is the PID.
+ */
+type PathedFile = { file: File; relPath: string };
+
+/** The leaf filename from a relative path (`a/b/c.srt` → `c.srt`). */
 function leafName(relPath: string): string {
   const parts = relPath.split('/');
   return parts[parts.length - 1] ?? relPath;
@@ -113,11 +124,59 @@ function pidOf(relPath: string): string | null {
   return parts[parts.length - 2];
 }
 
-/** Group a flat `File[]` (from webkitdirectory) into per-PID file sets. */
-function groupByPid(files: File[]): PidGroup[] {
+/**
+ * Recursively read a dropped `FileSystemEntry` into `{file, relPath}` pairs.
+ * `prefix` is the accumulated parent path (`''` at the top level, so a dropped
+ * folder's own name becomes the first path segment = the PID). Directories use
+ * `createReader().readEntries`, which is paginated: it must be called repeatedly
+ * until it yields an empty batch. Files resolve their `File` via `entry.file`.
+ */
+function readEntry(
+  entry: FileSystemEntry,
+  prefix: string,
+): Promise<PathedFile[]> {
+  if (entry.isFile) {
+    const fileEntry = entry as FileSystemFileEntry;
+    return new Promise<PathedFile[]>((resolve, reject) => {
+      fileEntry.file(
+        (file) => resolve([{ file, relPath: prefix + entry.name }]),
+        (err) => reject(err),
+      );
+    });
+  }
+
+  if (entry.isDirectory) {
+    const dirEntry = entry as FileSystemDirectoryEntry;
+    const reader = dirEntry.createReader();
+    const childPrefix = prefix + entry.name + '/';
+
+    return new Promise<PathedFile[]>((resolve, reject) => {
+      const all: FileSystemEntry[] = [];
+      const readBatch = () => {
+        reader.readEntries((batch) => {
+          if (batch.length === 0) {
+            // Drained: recurse into every collected child and flatten.
+            Promise.all(all.map((child) => readEntry(child, childPrefix)))
+              .then((nested) => resolve(nested.flat()))
+              .catch(reject);
+            return;
+          }
+          all.push(...batch);
+          readBatch();
+        }, reject);
+      };
+      readBatch();
+    });
+  }
+
+  return Promise.resolve([]);
+}
+
+/** Group `{file, relPath}` pairs (from either input route) into per-PID sets. */
+function groupByPid(items: PathedFile[]): PidGroup[] {
   const byPid = new Map<string, PidGroup>();
-  for (const file of files) {
-    const rel = file.webkitRelativePath || file.name;
+  for (const { file, relPath } of items) {
+    const rel = relPath || file.name;
     const pid = pidOf(rel);
     if (!pid) continue;
     const leaf = leafName(rel);
@@ -138,21 +197,96 @@ function groupByPid(files: File[]): PidGroup[] {
 }
 
 export default function UploadSession() {
-  const [groups, setGroups] = useState<PidGroup[]>([]);
+  // The accumulated `{file, relPath}` pool feeding `groupByPid`. Both the
+  // directory `<input>` and the drag-and-drop dropzone push into this list;
+  // `groups` is always derived from it, so several drop batches can stack up
+  // (deduped by PID) before the researcher hits Upload.
+  const [items, setItems] = useState<PathedFile[]>([]);
   const [collection, setCollection] = useState('study');
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState<ProgressMap>({});
   const [results, setResults] = useState<Result[]>([]);
   const [activePid, setActivePid] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
 
   const supabase = useMemo(() => createBrowser(), []);
 
-  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    setGroups(groupByPid(files));
+  // `groups` is always DERIVED from the accumulated `{file, relPath}` pool — one
+  // source of truth — so both ingest routes (directory input + drag-drop) just
+  // update `items` and the PID grouping recomputes.
+  const groups = useMemo(() => groupByPid(items), [items]);
+
+  /** Reset the run state whenever the selection changes. */
+  function clearRun() {
     setResults([]);
     setProgress({});
     setPhase('idle');
+  }
+
+  /**
+   * Merge a fresh batch of pathed files into the pool, deduping by PID: any PID
+   * present in `incoming` replaces its previously-collected files entirely (a
+   * re-dropped folder wins). Files with no resolvable PID are dropped.
+   */
+  function mergeItems(incoming: PathedFile[]) {
+    setItems((prev) => {
+      const incomingPids = new Set<string>();
+      for (const it of incoming) {
+        const pid = pidOf(it.relPath || it.file.name);
+        if (pid !== null) incomingPids.add(pid);
+      }
+      const kept = prev.filter((it) => {
+        const pid = pidOf(it.relPath || it.file.name);
+        return pid !== null && !incomingPids.has(pid);
+      });
+      return [...kept, ...incoming];
+    });
+    clearRun();
+  }
+
+  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    // The directory input gives us `webkitRelativePath` = `<root>/<pid>/<file>`,
+    // which `pidOf`/`leafName` already understand. Replace the whole selection.
+    const incoming: PathedFile[] = Array.from(e.target.files ?? []).map(
+      (file) => ({ file, relPath: file.webkitRelativePath || file.name }),
+    );
+    setItems(incoming);
+    clearRun();
+  }
+
+  function onDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }
+
+  function onDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    if (phase !== 'uploading') setDragging(true);
+  }
+
+  function onDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    setDragging(false);
+  }
+
+  async function onDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragging(false);
+    if (phase === 'uploading') return;
+
+    // `webkitGetAsEntry()` exposes each dropped top-level item as a filesystem
+    // entry — unlike `<input webkitdirectory>`, this can yield SEVERAL directory
+    // entries at once, which is the whole point: drop many PID folders together.
+    const entries = Array.from(e.dataTransfer.items)
+      .map((it) => it.webkitGetAsEntry())
+      .filter((entry): entry is FileSystemEntry => entry !== null);
+
+    // Only ingest directories (each is a PID folder); skip loose files.
+    const dirs = entries.filter((entry) => entry.isDirectory);
+    if (dirs.length === 0) return;
+
+    const nested = await Promise.all(dirs.map((dir) => readEntry(dir, '')));
+    mergeItems(nested.flat());
   }
 
   function setPct(pid: string, kind: string, pct: number) {
@@ -249,17 +383,49 @@ export default function UploadSession() {
       <header className="mb-4">
         <h1 className="text-lg font-medium tracking-tight">Upload sessions</h1>
         <p className="text-sm text-foreground/60 max-w-2xl">
-          Point at your local Zoom Recordings folder. Each numeric participant
-          subfolder (with a <code>_transcript.srt</code>) becomes a session: its
-          video, audio, and transcript upload to cloud Storage and its segments
-          are ingested into the database.
+          Drop one or more numeric PID folders (or point at your local Zoom
+          Recordings folder). Each numeric participant folder (with a{' '}
+          <code>_transcript.srt</code>) becomes a session: its video, audio, and
+          transcript upload to cloud Storage and its segments are ingested into
+          the database. Every selected folder uploads under the one study /
+          collection set below.
         </p>
       </header>
 
       <form onSubmit={onSubmit} className="max-w-2xl space-y-4">
+        {/* Drag-and-drop dropzone: unlike the single-root `<input webkitdirectory>`
+            below, the DataTransfer entries API accepts MANY top-level folders at
+            once, so several PID folders (e.g. 067/, 528/) can be dropped together
+            and queued under one study. Each dropped folder's name becomes its PID. */}
         <div className="space-y-1">
           <label className="block text-xs uppercase tracking-wider text-foreground/50">
-            Recordings folder
+            Drop PID folders
+          </label>
+          <div
+            onDragOver={onDragOver}
+            onDragEnter={onDragEnter}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+            aria-disabled={phase === 'uploading'}
+            className={`rounded border border-dashed px-4 py-6 text-center text-sm transition ${
+              dragging
+                ? 'border-foreground/50 bg-foreground/5'
+                : 'border-foreground/25'
+            } ${phase === 'uploading' ? 'opacity-40' : ''}`}
+          >
+            <span className="text-foreground/70">
+              Drag one or more numeric PID folders here
+            </span>
+            <span className="mt-1 block text-xs text-foreground/45">
+              Drop several at once — all of them upload under the study/collection
+              named below.
+            </span>
+          </div>
+        </div>
+
+        <div className="space-y-1">
+          <label className="block text-xs uppercase tracking-wider text-foreground/50">
+            …or pick a Recordings folder
           </label>
           {/* webkitdirectory is non-standard, so it isn't in React's typed JSX
               attributes — set via a spread of string-keyed props. */}

@@ -10,7 +10,6 @@ import {
 import { liveStatusForPid, type LiveStatus, type LiveParticipant } from '@/app/actions/live';
 import { markRecordingStart, clearRecordingStart } from '@/app/actions/recording';
 import { createFlagType } from '@/app/actions/flag-types';
-import { createEpisode } from '@/app/actions/episodes';
 import {
   formatElapsed,
   formatDate,
@@ -20,7 +19,6 @@ import {
 import type { Tables } from '@/lib/types/cb-db';
 
 type FlagType = Tables<'cb_flag_types'>;
-type Episode = Tables<'cb_episodes'>;
 
 const POLL_MS = 3000;
 const DEFAULT_SWATCH = '#000000';
@@ -29,12 +27,13 @@ const DEFAULT_SWATCH = '#000000';
  * Live Follow (client). The whole in-the-moment interaction: pick a PID, hit
  * "▶ Start recording" the moment you start the Zoom recording (the clock then
  * counts from that EXACT instant), watch the polled current step, tap preset
- * FLAGS and preset EVENTS (each = one observation pinned at the current moment),
- * add a NOTE, and inline-create a new flag/event when the bar is empty. The
+ * FLAGS (each = one observation pinned at the current moment), mark a QUOTE,
+ * add a NOTE, and inline-create a new flag when the bar is empty. The
  * observations list is optimistic and each row is deletable (mis-taps happen).
+ * (Events are auto-derived from study_events at review — no manual marking here.)
  *
  * State the parent (server) seeds: the active `pid`, the codebook id (for
- * inline-create), the participant list, the flag + event taxonomies, this PID's
+ * inline-create), the participant list, the flag taxonomy, this PID's
  * existing observations, and an initial live status (current step + clock anchors
  * + the manual recording mark) so the first paint already shows everything.
  *
@@ -48,7 +47,6 @@ export default function LiveFollow({
   codebookId,
   participants,
   flagTypes: initialFlagTypes,
-  episodes: initialEpisodes,
   initialObservations,
   initialStatus,
 }: {
@@ -56,7 +54,6 @@ export default function LiveFollow({
   codebookId: string;
   participants: LiveParticipant[];
   flagTypes: FlagType[];
-  episodes: Episode[];
   initialObservations: ObservationView[];
   initialStatus: LiveStatus;
 }) {
@@ -64,10 +61,9 @@ export default function LiveFollow({
 
   const [status, setStatus] = useState<LiveStatus>(initialStatus);
   const [observations, setObservations] = useState<ObservationView[]>(initialObservations);
-  // Flag + event taxonomies are local state so inline-create appends without a
-  // full page reload (the new flag/event is usable immediately).
+  // The flag taxonomy is local state so inline-create appends without a full
+  // page reload (the new flag is usable immediately).
   const [flagTypes, setFlagTypes] = useState<FlagType[]>(initialFlagTypes);
-  const [episodes, setEpisodes] = useState<Episode[]>(initialEpisodes);
   const [note, setNote] = useState('');
   // The "armed" flag: when set, an Enter in the note box attaches this flag to
   // the note. Tapping a flag button still fires immediately (tap = flag-only).
@@ -77,11 +73,9 @@ export default function LiveFollow({
   // the elapsed time advances between 3 s polls.
   const [, setTick] = useState(0);
 
-  // Inline-create UI: which composer (if any) is open, and its draft text.
+  // Inline-create UI: whether the flag composer is open, and its draft text.
   const [newFlagOpen, setNewFlagOpen] = useState(false);
   const [newFlagLabel, setNewFlagLabel] = useState('');
-  const [newEventOpen, setNewEventOpen] = useState(false);
-  const [newEventName, setNewEventName] = useState('');
   // True while a "Start recording" / reset / clear write is in flight (so the
   // button can't be double-fired).
   const [recBusy, setRecBusy] = useState(false);
@@ -162,7 +156,7 @@ export default function LiveFollow({
     }
   }, [pid, recBusy]);
 
-  // --- Logging an observation (flag tap, event tap, note) -------------------
+  // --- Logging an observation (flag tap, quote, note) -----------------------
 
   // Optimistically prepend a row, run the insert, then reconcile (or roll back).
   const logObservation = useCallback(
@@ -214,30 +208,6 @@ export default function LiveFollow({
         },
         { flagTypeId: flag.id },
         'Failed to add flag.',
-      );
-    },
-    [pid, logObservation],
-  );
-
-  // Mark an EVENT (a preset episode) at the current moment — parallel to a flag.
-  const addEvent = useCallback(
-    async (ep: Episode) => {
-      const tempId = tempKey();
-      await logObservation(
-        {
-          id: tempId,
-          pid,
-          flagTypeId: null,
-          flagLabel: null,
-          color: null,
-          episodeId: ep.id,
-          episodeName: ep.name,
-          body: null,
-          isQuote: false,
-          createdAt: new Date().toISOString(),
-        },
-        { episodeId: ep.id },
-        'Failed to mark event.',
       );
     },
     [pid, logObservation],
@@ -332,20 +302,6 @@ export default function LiveFollow({
     }
   }, [newFlagLabel, codebookId]);
 
-  const submitNewEvent = useCallback(async () => {
-    const name = newEventName.trim();
-    if (!name) return;
-    setError(null);
-    try {
-      const created = await createEpisode(codebookId, { name });
-      setEpisodes((prev) => [...prev, created]);
-      setNewEventName('');
-      setNewEventOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create event.');
-    }
-  }, [newEventName, codebookId]);
-
   // Number keys 1–9 fire the first N flags — but ONLY when no text input is
   // focused (so typing a digit into a note / composer never trips a flag).
   useEffect(() => {
@@ -388,7 +344,7 @@ export default function LiveFollow({
             Follow a participant in the moment. Hit{' '}
             <span className="font-medium">Start recording</span> when you start the
             Zoom recording; the clock then counts from that exact instant. Tap a
-            flag (or press 1–9) or an event to log it; add a note and press Enter.
+            flag (or press 1–9) to log it; add a note and press Enter.
           </p>
         </div>
 
@@ -644,70 +600,6 @@ export default function LiveFollow({
               >
                 Log
               </button>
-            </div>
-          </section>
-
-          {/* Event bar (preset episodes) — parallel to flags. */}
-          <section>
-            <div className="mb-2 text-[11px] uppercase tracking-wider text-foreground/50">
-              events
-              <span className="ml-2 text-foreground/30 normal-case tracking-normal">
-                (tap to mark a phase at this moment)
-              </span>
-            </div>
-            <div className="flex flex-wrap items-stretch gap-2">
-              {episodes.map((ep) => (
-                <button
-                  key={ep.id}
-                  type="button"
-                  onClick={() => void addEvent(ep)}
-                  className="flex items-center gap-2 border border-foreground/25 px-3 py-1.5 text-sm transition hover:bg-foreground/5"
-                  title={`Mark "${ep.name}" at the current moment`}
-                >
-                  <span aria-hidden className="text-foreground/40">◆</span>
-                  <span>{ep.name}</span>
-                </button>
-              ))}
-
-              {/* Inline "+ new event". */}
-              {newEventOpen ? (
-                <span className="flex items-stretch">
-                  <input
-                    autoFocus
-                    value={newEventName}
-                    onChange={(e) => setNewEventName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        void submitNewEvent();
-                      } else if (e.key === 'Escape') {
-                        setNewEventOpen(false);
-                        setNewEventName('');
-                      }
-                    }}
-                    placeholder="new event name"
-                    aria-label="New event name"
-                    className="w-36 border border-foreground/25 bg-background px-2 py-1.5 text-sm"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void submitNewEvent()}
-                    disabled={!newEventName.trim()}
-                    className="border border-l-0 border-foreground px-2 text-sm transition hover:bg-foreground hover:text-background disabled:opacity-40"
-                  >
-                    add
-                  </button>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setNewEventOpen(true)}
-                  className="border border-dashed border-foreground/30 px-3 py-1.5 text-sm text-foreground/50 transition hover:bg-foreground/5"
-                  title="Create a new event"
-                >
-                  + new event
-                </button>
-              )}
             </div>
           </section>
 

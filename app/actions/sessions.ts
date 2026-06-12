@@ -5,6 +5,12 @@ import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { parseSrt, type Segment } from '@/lib/transcript/srt';
 import {
+  anonymizeSpeaker,
+  seededResearcherKeys,
+  speakerKey,
+  RESEARCHER_LABEL,
+} from '@/lib/transcript/anonymize';
+import {
   ensureRecordingsFolder,
   createDriveResumableUpload,
 } from '@/lib/google/drive';
@@ -278,6 +284,99 @@ function toCloudSegment(r: {
   };
 }
 
+type RawSegmentRow = {
+  id: string;
+  speaker: string | null;
+  t_start_ms: number;
+  t_end_ms: number;
+  text: string;
+  ordinal: number;
+};
+
+/**
+ * Map raw cb_segments rows into `CloudSegment`s with the speaker DISPLAY label
+ * anonymized: the interviewer's Zoom name → "Researcher", every other speaker →
+ * the participant's PID. ONLY `speaker` is rewritten; id/ordinal/timing/text are
+ * copied verbatim (annotation anchoring keys off segment text + ids, so it is
+ * unaffected).
+ *
+ * Empty-pidLabel guard: a session with a blank `pid_label` has no participant
+ * number to substitute, so we DON'T blank out participant labels (that would lose
+ * the only distinguishing info). Researcher labels still collapse to "Researcher";
+ * non-researcher speakers are left as their raw label. A single-track null speaker
+ * stays null in every case (handled by `anonymizeSpeaker`).
+ */
+function anonymizeSegments(
+  rows: RawSegmentRow[],
+  pidLabel: string,
+  researcherKeys: Set<string>,
+): CloudSegment[] {
+  const pid = (pidLabel ?? '').trim();
+  return rows.map((r) => {
+    const base = toCloudSegment(r);
+    if (pid === '') {
+      // No PID to map participants onto: only collapse researcher labels.
+      const anon = anonymizeSpeaker(r.speaker, pid, researcherKeys);
+      // anon is "Researcher" for interviewer keys, '' for other non-null speakers
+      // (because pid is empty), or null for null speakers. Keep the raw label for
+      // participants rather than blanking it.
+      return { ...base, speaker: anon === RESEARCHER_LABEL ? RESEARCHER_LABEL : r.speaker };
+    }
+    return { ...base, speaker: anonymizeSpeaker(r.speaker, pid, researcherKeys) };
+  });
+}
+
+/**
+ * The set of normalized speaker keys treated as the interviewer/researcher:
+ * the seeded interviewer aliases UNION any speaker label that recurs across
+ * ≥2 distinct sessions (the interviewer appears in many sessions; each
+ * participant appears in one). READ-ONLY over cb_segments.
+ *
+ * This is the server-side resolution of WHICH labels are the interviewer; the
+ * pure mapping (`anonymizeSpeaker`) lives in lib/transcript/anonymize.ts. We do
+ * it server-side so the raw Zoom display names never reach the client — only the
+ * anonymized "Researcher"/PID labels are returned by the segment loaders below.
+ *
+ * Recurrence heuristic: select every (speaker, session_id) from cb_segments,
+ * then in JS count the distinct session_ids per normalized speaker key; any key
+ * seen in ≥2 distinct sessions is treated as the interviewer. Fine for the
+ * current corpus; a future large corpus could push the dedupe into SQL.
+ */
+export async function researcherSpeakerLabels(): Promise<Set<string>> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+
+  const keys = seededResearcherKeys();
+
+  const { data, error } = await sb
+    .from('cb_segments')
+    .select('speaker, session_id')
+    .not('speaker', 'is', null);
+  if (error) {
+    throw new Error(`researcherSpeakerLabels: cb_segments select failed: ${error.message}`);
+  }
+
+  // Distinct session_ids per normalized speaker key.
+  const sessionsByKey = new Map<string, Set<string>>();
+  for (const row of data ?? []) {
+    if (row.speaker === null) continue;
+    const key = speakerKey(row.speaker);
+    if (key === '') continue;
+    let set = sessionsByKey.get(key);
+    if (!set) {
+      set = new Set<string>();
+      sessionsByKey.set(key, set);
+    }
+    set.add(row.session_id);
+  }
+
+  for (const [key, sessions] of sessionsByKey) {
+    if (sessions.size >= 2) keys.add(key);
+  }
+
+  return keys;
+}
+
 /**
  * Load one cloud session by id and ONE of its transcript versions.
  *
@@ -358,7 +457,11 @@ export async function getSessionCloud(
     if (segErr) {
       throw new Error(`getSessionCloud: cb_segments select failed: ${segErr.message}`);
     }
-    segments = (rows ?? []).map(toCloudSegment);
+    // Anonymize the speaker DISPLAY label server-side: interviewer → "Researcher",
+    // participant → PID. Done here so raw Zoom names never reach the client. ONLY
+    // the `speaker` field changes — text/ids/timing are untouched, so annotation
+    // anchoring (which keys off segment text + ids) is unaffected.
+    segments = anonymizeSegments(rows ?? [], session.pid_label, await researcherSpeakerLabels());
   }
 
   return {
@@ -439,6 +542,17 @@ export async function getSessionSegments(
   }
   if (!version) return [];
 
+  // Resolve the session's PID for participant anonymization (this loader, unlike
+  // getSessionCloud, doesn't already carry the session row).
+  const { data: session, error: sessErr } = await sb
+    .from('cb_sessions')
+    .select('pid_label')
+    .eq('id', sessionId)
+    .maybeSingle();
+  if (sessErr) {
+    throw new Error(`getSessionSegments: cb_sessions pid_label select failed: ${sessErr.message}`);
+  }
+
   const { data: rows, error: segErr } = await sb
     .from('cb_segments')
     .select('id, speaker, t_start_ms, t_end_ms, text, ordinal')
@@ -447,7 +561,14 @@ export async function getSessionSegments(
   if (segErr) {
     throw new Error(`getSessionSegments: cb_segments select failed: ${segErr.message}`);
   }
-  return (rows ?? []).map(toCloudSegment);
+  // Anonymize the speaker display label server-side (interviewer → "Researcher",
+  // participant → PID). ONLY `speaker` changes — ids/timing/text are untouched, so
+  // annotation anchoring is unaffected.
+  return anonymizeSegments(
+    rows ?? [],
+    session?.pid_label ?? '',
+    await researcherSpeakerLabels(),
+  );
 }
 
 /**

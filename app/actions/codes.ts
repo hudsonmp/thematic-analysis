@@ -52,6 +52,10 @@ function versionInsert(
  * `created_by` is left null for now (see versionInsert note); the real UI will
  * thread the researcher identity through once the session carries one.
  *
+ * `studyLabel` (optional) tags the code with the authoring study (the per-code
+ * study attribution; `cb_codes.study_label`). It is trimmed and stored, or NULL
+ * when blank/absent — so existing callers that omit it are unaffected.
+ *
  * Returns the new code id.
  */
 export async function createCode({
@@ -60,17 +64,26 @@ export async function createCode({
   name,
   origin,
   version,
+  studyLabel,
 }: {
   codebookId: string;
   mnemonic: string;
   name: string;
   origin: CodeOrigin;
   version: CodeVersionInputT;
+  studyLabel?: string | null;
 }): Promise<string> {
   const parsed = CodeVersionInput.parse(version);
 
   const codeRes = await cbFrom('cb_codes')
-    .insert({ codebook_id: codebookId, mnemonic, name, origin, status: 'proposed' })
+    .insert({
+      codebook_id: codebookId,
+      mnemonic,
+      name,
+      origin,
+      status: 'proposed',
+      study_label: studyLabel?.trim() || null,
+    })
     .select('*')
     .single();
   if (codeRes.error || !codeRes.data) {
