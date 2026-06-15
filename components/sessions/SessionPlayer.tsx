@@ -587,8 +587,13 @@ export default function SessionPlayer({
           });
           clearSelection();
         } else {
-          // No selection: anchor to the cue playing at the current time.
-          const idx = findActiveIndex(segments, currentMs);
+          // No selection: anchor to the cue playing NOW. Use `activeIdx` (the
+          // highlighted cue, from the UNROUNDED playhead) rather than re-deriving
+          // from `currentMs` (floored to whole seconds) — the floored second can
+          // fall into a different cue (or none) for sub-second/boundary cues, so
+          // re-deriving would anchor the code to a cue other than the one shown
+          // (or spuriously error). `activeIdx` makes the anchor match the highlight.
+          const idx = activeIdx >= 0 ? activeIdx : findActiveIndex(segments, currentMs);
           const seg = idx >= 0 ? segments[idx] : null;
           if (!seg) {
             setError('No transcript is playing at the current time — scrub to a line first.');
@@ -616,7 +621,7 @@ export default function SessionPlayer({
         setApplying(false);
       }
     },
-    [versionId, pending, id, segments, currentMs, clearSelection, afterAnnotationMutation],
+    [versionId, pending, id, segments, currentMs, activeIdx, clearSelection, afterAnnotationMutation],
   );
 
   // --- Per-excerpt comments (margin) --------------------------------------
