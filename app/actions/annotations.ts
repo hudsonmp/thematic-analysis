@@ -282,6 +282,27 @@ export async function listMyAnnotationsForVersion(
 }
 
 /**
+ * Set an annotation's `kind` ('code' | 'quote'). The player's ⌘⇧J "mark as
+ * important quote" gesture: a comment anchor (or any own annotation) is promoted
+ * to a flagged paper quote without changing its char-range or codes. RLS
+ * (`using (coder_id = auth.uid())`) admits only the signed-in coder's OWN row —
+ * a write against another coder's annotation matches zero rows (silent no-op).
+ * Returns the updated row (or throws on a DB error).
+ */
+export async function setAnnotationKind(
+  id: string,
+  kind: 'code' | 'quote',
+): Promise<void> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+  const { error } = await sb
+    .from('cb_annotations')
+    .update({ kind })
+    .eq('id', id);
+  if (error) throw new Error(`setAnnotationKind failed: ${error.message}`);
+}
+
+/**
  * Delete an annotation by id. RLS (`using (coder_id = auth.uid())`) admits only
  * the signed-in coder's OWN rows — a delete of another coder's annotation
  * matches zero rows and is a silent no-op, not an error. `cb_annotation_codes`

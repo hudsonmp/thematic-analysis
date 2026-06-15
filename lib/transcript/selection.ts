@@ -66,6 +66,14 @@ export type Highlight = {
   charStart: number;
   charEnd: number;
   kind: string;
+  /**
+   * Optional explicit render color (a CSS color string). Used by FLAG highlights
+   * (`kind:'flag'`), which paint the cue at a live observation's timestamp with
+   * that flag's swatch color — the only highlight kind whose color is data-driven
+   * rather than a fixed Tailwind class (codes=emerald, quotes/comments=yellow).
+   * Carried through `splitIntoPieces` so the renderer can read it off a piece.
+   */
+  color?: string;
 };
 
 /**
