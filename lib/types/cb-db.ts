@@ -86,6 +86,7 @@ export type Database = {
           char_start: number
           coder_id: string
           created_at: string
+          end_segment_id: string | null
           id: string
           is_canonical: boolean
           kind: string
@@ -104,6 +105,7 @@ export type Database = {
           char_start?: number
           coder_id: string
           created_at?: string
+          end_segment_id?: string | null
           id?: string
           is_canonical?: boolean
           kind: string
@@ -122,6 +124,7 @@ export type Database = {
           char_start?: number
           coder_id?: string
           created_at?: string
+          end_segment_id?: string | null
           id?: string
           is_canonical?: boolean
           kind?: string

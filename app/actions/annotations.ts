@@ -15,6 +15,8 @@ type Annotation = Tables<'cb_annotations'>;
 export type MyAnnotationView = {
   id: string;
   segmentId: string;
+  /** The END segment for a multi-CUE annotation; null for single-segment. */
+  endSegmentId: string | null;
   charStart: number;
   charEnd: number;
   /** The exact selected substring (sub-segment anchoring); null for whole-segment. */
@@ -76,6 +78,7 @@ export async function addAnnotation({
   sessionId,
   versionId,
   segmentId,
+  endSegmentId,
   charStart,
   charEnd,
   quoteText,
@@ -88,7 +91,11 @@ export async function addAnnotation({
 }: {
   sessionId: string;
   versionId: string;
+  /** The START segment (where `charStart` indexes). */
   segmentId: string;
+  /** The END segment for a multi-CUE selection (where `charEnd` indexes). Omit /
+   *  null for a single-segment selection (`charEnd` then indexes `segmentId`). */
+  endSegmentId?: string | null;
   charStart: number;
   charEnd: number;
   quoteText?: string | null;
@@ -108,6 +115,9 @@ export async function addAnnotation({
       session_id: sessionId,
       version_id: versionId,
       segment_id: segmentId,
+      // NULL for single-segment (and we normalize a self-referential end to null
+      // so the render path takes the simple single-cue branch).
+      end_segment_id: endSegmentId && endSegmentId !== segmentId ? endSegmentId : null,
       char_start: charStart,
       char_end: charEnd,
       quote_text: quoteText ?? null,
@@ -166,7 +176,7 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
   const { data, error } = await sb
     .from('cb_annotations')
     .select(
-      'id, segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name)), cb_annotation_comments(id)',
+      'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name)), cb_annotation_comments(id)',
     )
     .eq('session_id', sessionId)
     .eq('coder_id', user.id)
@@ -178,6 +188,7 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
   const rows = (data ?? []) as Array<{
     id: string;
     segment_id: string;
+    end_segment_id: string | null;
     char_start: number;
     char_end: number;
     quote_text: string | null;
@@ -195,6 +206,7 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
   return rows.map((r) => ({
     id: r.id,
     segmentId: r.segment_id,
+    endSegmentId: r.end_segment_id,
     charStart: r.char_start,
     charEnd: r.char_end,
     quoteText: r.quote_text,
@@ -234,7 +246,7 @@ export async function listMyAnnotationsForVersion(
   const { data, error } = await sb
     .from('cb_annotations')
     .select(
-      'id, segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name)), cb_annotation_comments(id)',
+      'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name)), cb_annotation_comments(id)',
     )
     .eq('session_id', sessionId)
     .eq('version_id', versionId)
@@ -249,6 +261,7 @@ export async function listMyAnnotationsForVersion(
   const rows = (data ?? []) as Array<{
     id: string;
     segment_id: string;
+    end_segment_id: string | null;
     char_start: number;
     char_end: number;
     quote_text: string | null;
@@ -266,6 +279,7 @@ export async function listMyAnnotationsForVersion(
   return rows.map((r) => ({
     id: r.id,
     segmentId: r.segment_id,
+    endSegmentId: r.end_segment_id,
     charStart: r.char_start,
     charEnd: r.char_end,
     quoteText: r.quote_text,

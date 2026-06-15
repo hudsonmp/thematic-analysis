@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildTextAnchor,
+  buildMultiAnchor,
   splitIntoPieces,
   CONTEXT_CHARS,
   type Highlight,
@@ -97,5 +98,70 @@ describe('splitIntoPieces', () => {
 
   it('returns no pieces for empty text', () => {
     expect(splitIntoPieces('', [h('a', 0, 0)])).toEqual([]);
+  });
+});
+
+describe('buildMultiAnchor', () => {
+  it('single segment: matches buildTextAnchor (normalized, with context)', () => {
+    const t = 'The quick brown fox jumps over the lazy dog.';
+    const a = buildMultiAnchor([t], 4, 9); // "quick"
+    expect(a).not.toBeNull();
+    expect(a!.startChar).toBe(4);
+    expect(a!.endChar).toBe(9);
+    expect(a!.quoteText).toBe('quick');
+    expect(a!.prefix).toBe('The ');
+    expect(a!.suffix.startsWith(' brown')).toBe(true);
+  });
+
+  it('single segment: collapsed selection → null', () => {
+    expect(buildMultiAnchor(['hello world'], 3, 3)).toBeNull();
+  });
+
+  it('single segment: normalizes a backwards offset pair', () => {
+    const a = buildMultiAnchor(['hello world'], 9, 2); // swapped
+    expect(a!.startChar).toBe(2);
+    expect(a!.endChar).toBe(9);
+    expect(a!.quoteText).toBe('llo wor');
+  });
+
+  it('empty input → null', () => {
+    expect(buildMultiAnchor([], 0, 5)).toBeNull();
+  });
+
+  it('two segments: joins start-slice + end-slice with a single space', () => {
+    // start: "...world" from index 6; end: "hello..." to index 5
+    const a = buildMultiAnchor(['hello world', 'hello there'], 6, 5);
+    expect(a).not.toBeNull();
+    expect(a!.startChar).toBe(6);
+    expect(a!.endChar).toBe(5);
+    expect(a!.quoteText).toBe('world hello');
+  });
+
+  it('three+ segments: middle segments are included WHOLE, in order', () => {
+    const a = buildMultiAnchor(['aaa end', 'MIDDLE', 'start bbb'], 4, 5);
+    // first.slice(4)="end", middle whole="MIDDLE", last.slice(0,5)="start"
+    expect(a!.quoteText).toBe('end MIDDLE start');
+  });
+
+  it('multi-segment: prefix from FIRST segment, suffix from LAST segment', () => {
+    const first = 'x'.repeat(CONTEXT_CHARS + 10) + 'START';
+    const startChar = first.length - 'START'.length; // select from "START"
+    const last = 'ENDpart' + 'y'.repeat(CONTEXT_CHARS + 10);
+    const endChar = 'ENDpart'.length;
+    const a = buildMultiAnchor([first, 'mid', last], startChar, endChar);
+    expect(a!.prefix.length).toBe(CONTEXT_CHARS);
+    expect(a!.prefix.endsWith('x')).toBe(true);
+    expect(a!.suffix.length).toBe(CONTEXT_CHARS);
+    expect(a!.suffix.startsWith('y')).toBe(true);
+    expect(a!.quoteText).toBe('START mid ENDpart');
+  });
+
+  it('multi-segment: clamps out-of-range offsets to each segment', () => {
+    const a = buildMultiAnchor(['abc', 'def'], 99, 99);
+    // startChar clamps to first.length (3) → start slice empty; endChar clamps to
+    // last.length (3) → whole last. quoteText = "" + " " + "def".
+    expect(a!.startChar).toBe(3);
+    expect(a!.endChar).toBe(3);
+    expect(a!.quoteText).toBe(' def');
   });
 });

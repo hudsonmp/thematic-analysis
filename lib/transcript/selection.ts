@@ -59,6 +59,75 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
+/** A char-anchored selection that may span MULTIPLE consecutive segments. The
+ *  start lives at `startChar` within the FIRST covered segment, the end at
+ *  `endChar` within the LAST. For a single-segment selection both offsets index
+ *  the same segment and `startChar ≤ endChar`. */
+export type MultiAnchor = {
+  startChar: number;
+  endChar: number;
+  /** The exact selected text, segments joined by a single space (matching the
+   *  rendered inter-cue spacing). */
+  quoteText: string;
+  /** Up to CONTEXT_CHARS before `startChar` in the first segment. */
+  prefix: string;
+  /** Up to CONTEXT_CHARS after `endChar` in the last segment. */
+  suffix: string;
+};
+
+/**
+ * Build a {@link MultiAnchor} from the texts of the covered segments (in order)
+ * and the raw start/end char offsets. `segTexts[0]` is the FIRST covered segment
+ * (where the selection starts at `rawStartChar`); `segTexts[last]` is the LAST
+ * (where it ends at `rawEndChar`).
+ *
+ * Single-segment case (`segTexts.length === 1`): the two offsets index the same
+ * text and are normalized (swapped so start ≤ end, clamped to `[0, len]`);
+ * returns `null` for a collapsed/empty selection — identical to
+ * {@link buildTextAnchor}, so the single-cue path is unchanged.
+ *
+ * Multi-segment case: offsets are NOT swapped (start is in the first segment, end
+ * in the last — DOM Ranges are already in document order). `quoteText` is
+ * `[first.slice(startChar), ...middleWhole, last.slice(0, endChar)]` joined by a
+ * single space; `prefix`/`suffix` come from the first/last segment respectively.
+ * Never null in the multi case (it always covers ≥1 whole middle cue or two
+ * partial ends).
+ */
+export function buildMultiAnchor(
+  segTexts: string[],
+  rawStartChar: number,
+  rawEndChar: number,
+): MultiAnchor | null {
+  if (segTexts.length === 0) return null;
+
+  if (segTexts.length === 1) {
+    const anchor = buildTextAnchor(segTexts[0], rawStartChar, rawEndChar);
+    if (!anchor) return null;
+    return {
+      startChar: anchor.charStart,
+      endChar: anchor.charEnd,
+      quoteText: anchor.quoteText,
+      prefix: anchor.prefix,
+      suffix: anchor.suffix,
+    };
+  }
+
+  const first = segTexts[0];
+  const last = segTexts[segTexts.length - 1];
+  const startChar = clamp(rawStartChar, 0, first.length);
+  const endChar = clamp(rawEndChar, 0, last.length);
+
+  const middle = segTexts.slice(1, -1);
+  const quoteText = [first.slice(startChar), ...middle, last.slice(0, endChar)].join(' ');
+  return {
+    startChar,
+    endChar,
+    quoteText,
+    prefix: first.slice(Math.max(0, startChar - CONTEXT_CHARS), startChar),
+    suffix: last.slice(endChar, Math.min(last.length, endChar + CONTEXT_CHARS)),
+  };
+}
+
 /** A char-anchored highlight to render over a segment's text. */
 export type Highlight = {
   /** The annotation this highlight belongs to (for click → rail selection). */

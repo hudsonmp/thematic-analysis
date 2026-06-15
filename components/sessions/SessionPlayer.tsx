@@ -28,16 +28,28 @@ import type { FacetWithValues } from '@/app/actions/codebook';
 import SessionCodeCreator from './SessionCodeCreator';
 import CodingPanel from './CodingPanel';
 import {
-  buildTextAnchor,
+  buildMultiAnchor,
   splitIntoPieces,
   type Highlight,
-  type TextAnchor,
 } from '@/lib/transcript/selection';
 import { groupIntoTurns } from '@/lib/transcript/turns';
 import { useRealtimeAnnotations } from './useRealtimeAnnotations';
 
 /** Minimal code shape the picker needs (flattened from the codebook tree). */
 type CodeOption = { id: string; mnemonic: string; name: string };
+
+/** A resolved transcript selection that may span MULTIPLE cues. `startSegIdx`/
+ *  `startChar` is where it begins, `endSegIdx`/`endChar` where it ends (start ≤
+ *  end in transcript order); the anchor fields are the built quote/context. */
+type TextSelection = {
+  startSegIdx: number;
+  startChar: number;
+  endSegIdx: number;
+  endChar: number;
+  quoteText: string;
+  prefix: string;
+  suffix: string;
+};
 
 /** The two player surfaces: REVIEW (read + comment, video 1/3 + transcript 2/3 with
  *  a Google-Docs comment margin) and CODING (apply codes, video 1/3 + coding panel
@@ -120,21 +132,25 @@ function findActiveIndex(segments: CloudSegment[], tMs: number): number {
 }
 
 /**
- * Resolve the current `window.getSelection()` to a single-segment text anchor.
+ * Resolve the current `window.getSelection()` to a (possibly multi-segment) raw
+ * char range over the transcript.
  *
- * Each segment's text is rendered into ONE element tagged `data-seg-idx={i}`
- * (see the transcript render below). We walk up from the selection's anchor node
- * to that element and require BOTH ends of the selection to live inside the SAME
- * segment element (single-segment selections only in SP-A; multi-segment is
- * SP-future — we clamp to the anchor segment by bailing out). Char offsets are
- * computed by measuring a Range from the start of the segment element to each
- * selection boundary with `toString().length`, which counts rendered text chars
- * and is robust to the text being split across child text nodes.
+ * Each cue's text is rendered into ONE element tagged `data-seg-idx={i}`. We walk
+ * up from BOTH selection boundaries to their cue elements (which may be DIFFERENT
+ * cues, even in different turns — multi-CUE selection). A DOM Range is always in
+ * document order (`startContainer` ≤ `endContainer`), so the start cue index is ≤
+ * the end cue index and no swap is needed. Char offsets within each cue are
+ * measured with `charOffsetWithin` (rendered-text length — robust to split text
+ * nodes), so they line up with the anchor model's char ranges.
  *
- * Returns `{ segIdx, anchor }` or `null` (no/collapsed selection, or a selection
- * that isn't fully within one segment's text element).
+ * Returns `{ startSegIdx, startChar, endSegIdx, endChar }` (raw — the caller
+ * builds the `MultiAnchor` from the covered cue texts), or `null` when either
+ * boundary isn't inside a cue's text element (e.g. a drag that begins on a speaker
+ * label) or the selection is collapsed.
  */
-function resolveSelection(root: HTMLElement | null): { segIdx: number; anchor: TextAnchor } | null {
+function resolveSelection(
+  root: HTMLElement | null,
+): { startSegIdx: number; startChar: number; endSegIdx: number; endChar: number } | null {
   if (!root) return null;
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
@@ -142,18 +158,15 @@ function resolveSelection(root: HTMLElement | null): { segIdx: number; anchor: T
 
   const startEl = segElementFor(range.startContainer, root);
   const endEl = segElementFor(range.endContainer, root);
-  // Require both boundaries inside the SAME segment text element.
-  if (!startEl || startEl !== endEl) return null;
+  if (!startEl || !endEl) return null;
 
-  const segIdx = Number(startEl.dataset.segIdx);
-  if (!Number.isInteger(segIdx)) return null;
+  const startSegIdx = Number(startEl.dataset.segIdx);
+  const endSegIdx = Number(endEl.dataset.segIdx);
+  if (!Number.isInteger(startSegIdx) || !Number.isInteger(endSegIdx)) return null;
 
-  const text = startEl.textContent ?? '';
-  const startOffset = charOffsetWithin(startEl, range.startContainer, range.startOffset);
-  const endOffset = charOffsetWithin(startEl, range.endContainer, range.endOffset);
-  const anchor = buildTextAnchor(text, startOffset, endOffset);
-  if (!anchor) return null;
-  return { segIdx, anchor };
+  const startChar = charOffsetWithin(startEl, range.startContainer, range.startOffset);
+  const endChar = charOffsetWithin(endEl, range.endContainer, range.endOffset);
+  return { startSegIdx, startChar, endSegIdx, endChar };
 }
 
 /** Walk up from `node` to the nearest `[data-seg-idx]` element within `root`, or null. */
@@ -177,6 +190,38 @@ function charOffsetWithin(segEl: HTMLElement, container: Node, offset: number): 
   r.selectNodeContents(segEl);
   r.setEnd(container, offset);
   return r.toString().length;
+}
+
+/**
+ * Expand a (possibly multi-cue) char range into ONE {@link Highlight} per covered
+ * cue, all sharing `annotationId` so they read as a single annotation (clicking
+ * any piece opens the same card; `splitIntoPieces` layers them per cue):
+ *   • the START cue is highlighted from `startChar` to its end,
+ *   • every MIDDLE cue is highlighted whole,
+ *   • the END cue is highlighted from 0 to `endChar`.
+ * A single-cue range (`startIdx === endIdx`) yields one highlight `[startChar,
+ * endChar)`, identical to the pre-multi-segment behavior. Returns `[segId,
+ * Highlight]` pairs so the caller can bucket them by segment id.
+ */
+function expandRangeHighlights(
+  annotationId: string,
+  kind: string,
+  startIdx: number,
+  startChar: number,
+  endIdx: number,
+  endChar: number,
+  segments: CloudSegment[],
+  color?: string,
+): Array<[string, Highlight]> {
+  const out: Array<[string, Highlight]> = [];
+  for (let i = startIdx; i <= endIdx; i++) {
+    const seg = segments[i];
+    if (!seg) continue;
+    const cs = i === startIdx ? startChar : 0;
+    const ce = i === endIdx ? endChar : seg.text.length;
+    out.push([seg.id, { annotationId, charStart: cs, charEnd: ce, kind, color }]);
+  }
+  return out;
 }
 
 /**
@@ -341,7 +386,7 @@ export default function SessionPlayer({
   }, [synced]);
 
   // --- Text selection (Google-Docs style, sub-segment) --------------------
-  const [textSel, setTextSel] = useState<{ segIdx: number; anchor: TextAnchor } | null>(null);
+  const [textSel, setTextSel] = useState<TextSelection | null>(null);
 
   // --- Per-excerpt comments (margin cards) --------------------------------
   // The annotation whose comment thread is OPEN (its card shows in the margin).
@@ -517,9 +562,29 @@ export default function SessionPlayer({
   // --- Selection capture --------------------------------------------------
 
   const handleTranscriptMouseUp = useCallback(() => {
-    const resolved = resolveSelection(transcriptRef.current);
-    setTextSel(resolved);
-  }, []);
+    const r = resolveSelection(transcriptRef.current);
+    if (!r || r.startSegIdx < 0 || r.endSegIdx >= segments.length || r.startSegIdx > r.endSegIdx) {
+      setTextSel(null);
+      return;
+    }
+    // Build the (possibly multi-cue) anchor from the covered cues' texts.
+    const segTexts: string[] = [];
+    for (let i = r.startSegIdx; i <= r.endSegIdx; i++) segTexts.push(segments[i].text);
+    const anchor = buildMultiAnchor(segTexts, r.startChar, r.endChar);
+    if (!anchor) {
+      setTextSel(null);
+      return;
+    }
+    setTextSel({
+      startSegIdx: r.startSegIdx,
+      endSegIdx: r.endSegIdx,
+      startChar: anchor.startChar,
+      endChar: anchor.endChar,
+      quoteText: anchor.quoteText,
+      prefix: anchor.prefix,
+      suffix: anchor.suffix,
+    });
+  }, [segments]);
 
   const clearSelection = useCallback(() => {
     setTextSel(null);
@@ -527,13 +592,22 @@ export default function SessionPlayer({
     window.getSelection()?.removeAllRanges();
   }, []);
 
-  // The anchor segment + char range to persist. With NO sub-selection there is
-  // nothing to code/comment (the affordances are inert).
+  // The START + END cues and char range to persist. A single-cue selection has
+  // `startSeg === endSeg`. With NO selection there is nothing to code/comment.
   const pending = useMemo(() => {
     if (!textSel) return null;
-    const seg = segments[textSel.segIdx];
-    if (!seg) return null;
-    return { segment: seg, anchor: textSel.anchor };
+    const startSeg = segments[textSel.startSegIdx];
+    const endSeg = segments[textSel.endSegIdx];
+    if (!startSeg || !endSeg) return null;
+    return {
+      startSeg,
+      endSeg,
+      startChar: textSel.startChar,
+      endChar: textSel.endChar,
+      quoteText: textSel.quoteText,
+      prefix: textSel.prefix,
+      suffix: textSel.suffix,
+    };
   }, [textSel, segments]);
 
   // --- Mutations ----------------------------------------------------------
@@ -570,18 +644,18 @@ export default function SessionPlayer({
       setError(null);
       try {
         if (useSelection && pending) {
-          const { segment, anchor } = pending;
           await addAnnotation({
             sessionId: id,
             versionId,
-            segmentId: segment.id,
-            charStart: anchor.charStart,
-            charEnd: anchor.charEnd,
-            quoteText: anchor.quoteText,
-            prefix: anchor.prefix,
-            suffix: anchor.suffix,
-            tStartMs: segment.startMs,
-            tEndMs: segment.endMs,
+            segmentId: pending.startSeg.id,
+            endSegmentId: pending.endSeg.id,
+            charStart: pending.startChar,
+            charEnd: pending.endChar,
+            quoteText: pending.quoteText,
+            prefix: pending.prefix,
+            suffix: pending.suffix,
+            tStartMs: pending.startSeg.startMs,
+            tEndMs: pending.endSeg.endMs,
             kind: 'code',
             codeIds: [codeId],
           });
@@ -669,18 +743,18 @@ export default function SessionPlayer({
     setCommentBusy(true);
     setCommentError(null);
     try {
-      const { segment, anchor } = pending;
       const ann = await addAnnotation({
         sessionId: id,
         versionId,
-        segmentId: segment.id,
-        charStart: anchor.charStart,
-        charEnd: anchor.charEnd,
-        quoteText: anchor.quoteText,
-        prefix: anchor.prefix,
-        suffix: anchor.suffix,
-        tStartMs: segment.startMs,
-        tEndMs: segment.endMs,
+        segmentId: pending.startSeg.id,
+        endSegmentId: pending.endSeg.id,
+        charStart: pending.startChar,
+        charEnd: pending.endChar,
+        quoteText: pending.quoteText,
+        prefix: pending.prefix,
+        suffix: pending.suffix,
+        tStartMs: pending.startSeg.startMs,
+        tEndMs: pending.endSeg.endMs,
         kind: 'quote',
         codeIds: [],
       });
@@ -721,18 +795,18 @@ export default function SessionPlayer({
       }
       setCommentBusy(true);
       try {
-        const { segment, anchor } = pending;
         await addAnnotation({
           sessionId: id,
           versionId,
-          segmentId: segment.id,
-          charStart: anchor.charStart,
-          charEnd: anchor.charEnd,
-          quoteText: anchor.quoteText,
-          prefix: anchor.prefix,
-          suffix: anchor.suffix,
-          tStartMs: segment.startMs,
-          tEndMs: segment.endMs,
+          segmentId: pending.startSeg.id,
+          endSegmentId: pending.endSeg.id,
+          charStart: pending.startChar,
+          charEnd: pending.endChar,
+          quoteText: pending.quoteText,
+          prefix: pending.prefix,
+          suffix: pending.suffix,
+          tStartMs: pending.startSeg.startMs,
+          tEndMs: pending.endSeg.endMs,
           kind: 'quote',
           codeIds: [],
         });
@@ -832,21 +906,61 @@ export default function SessionPlayer({
 
   // --- Derived view helpers ----------------------------------------------
 
-  // Own annotations grouped by segment id → the highlights to render.
+  // segment id → its index in `segments` (transcript order). Used to expand a
+  // multi-cue annotation's start/end segment ids back into a covered index range.
+  const segIndexById = useMemo(() => {
+    const m = new Map<string, number>();
+    segments.forEach((s, i) => m.set(s.id, i));
+    return m;
+  }, [segments]);
+
+  // Own annotations grouped by segment id → the highlights to render. A
+  // single-segment annotation (`endSegmentId` null) is one highlight on its
+  // segment; a MULTI-CUE annotation is expanded into one highlight per covered cue
+  // (start cue from `charStart`, middle cues whole, end cue to `charEnd`) — all
+  // sharing the annotation id. A multi-cue annotation whose end segment isn't in
+  // the active version (e.g. after a version switch) falls back to a single-cue
+  // highlight on the start segment so it never vanishes.
   const highlightsBySegment = useMemo(() => {
     const m = new Map<string, Highlight[]>();
+    const push = (segId: string, h: Highlight) => {
+      const list = m.get(segId) ?? [];
+      list.push(h);
+      m.set(segId, list);
+    };
     for (const a of myAnnotations) {
-      const list = m.get(a.segmentId) ?? [];
-      list.push({
-        annotationId: a.id,
-        charStart: a.charStart,
-        charEnd: a.charEnd,
-        kind: a.kind,
-      });
-      m.set(a.segmentId, list);
+      const startIdx = segIndexById.get(a.segmentId);
+      const endIdx = a.endSegmentId ? segIndexById.get(a.endSegmentId) : startIdx;
+      if (
+        startIdx === undefined ||
+        endIdx === undefined ||
+        endIdx < startIdx ||
+        !a.endSegmentId ||
+        a.endSegmentId === a.segmentId
+      ) {
+        // Single cue (or an unresolvable multi end → degrade to the start cue).
+        push(a.segmentId, {
+          annotationId: a.id,
+          charStart: a.charStart,
+          charEnd: a.charEnd,
+          kind: a.kind,
+        });
+        continue;
+      }
+      for (const [segId, h] of expandRangeHighlights(
+        a.id,
+        a.kind,
+        startIdx,
+        a.charStart,
+        endIdx,
+        a.charEnd,
+        segments,
+      )) {
+        push(segId, h);
+      }
     }
     return m;
-  }, [myAnnotations]);
+  }, [myAnnotations, segIndexById, segments]);
 
   // --- Live co-observation review markers (Task 5) ------------------------
   const anchorMs = useMemo(() => {
@@ -917,16 +1031,21 @@ export default function SessionPlayer({
       ]);
     }
     if (textSel) {
-      const seg = segments[textSel.segIdx];
-      if (seg) {
-        const list = [...(m.get(seg.id) ?? [])];
-        list.push({
-          annotationId: PENDING_ANN_ID,
-          charStart: textSel.anchor.charStart,
-          charEnd: textSel.anchor.charEnd,
-          kind: 'pending',
-        });
-        m.set(seg.id, list);
+      // Expand the pending selection across every covered cue so a multi-cue
+      // brush paints yellow on all of them (start cue from startChar, middle whole,
+      // end cue to endChar) — not just the first.
+      for (const [segId, h] of expandRangeHighlights(
+        PENDING_ANN_ID,
+        'pending',
+        textSel.startSegIdx,
+        textSel.startChar,
+        textSel.endSegIdx,
+        textSel.endChar,
+        segments,
+      )) {
+        const list = [...(m.get(segId) ?? [])];
+        list.push(h);
+        m.set(segId, list);
       }
     }
     return m;
@@ -975,13 +1094,8 @@ export default function SessionPlayer({
   // --- Comment-margin anchoring (flow gutter, no measurement) -------------
   // The review-mode comment card renders in the GUTTER of the turn that holds the
   // active anchor cue — so it aligns automatically and scrolls with the content,
-  // no offsetTop math (and no setState-in-effect). We need the turn index for the
-  // anchor cue, via segmentId → seg index → turn index lookups.
-  const segIndexById = useMemo(() => {
-    const m = new Map<string, number>();
-    segments.forEach((s, i) => m.set(s.id, i));
-    return m;
-  }, [segments]);
+  // no offsetTop math (and no setState-in-effect). `segIndexById` (above) maps the
+  // anchor's segment id → seg index → turn index.
   const turnIndexBySegIdx = useMemo(() => {
     const m = new Map<number, number>();
     turns.forEach((t, ti) => t.segIndices.forEach((si) => m.set(si, ti)));
@@ -998,7 +1112,7 @@ export default function SessionPlayer({
   // Which transcript turn the active card belongs to (its gutter hosts the card).
   const anchorSegIdx =
     composerOpen && textSel
-      ? textSel.segIdx
+      ? textSel.startSegIdx
       : openCommentAnn
         ? segIndexById.get(openCommentAnn.segmentId) ?? null
         : null;
@@ -1013,7 +1127,7 @@ export default function SessionPlayer({
   const commentCard = marginCardOpen ? (
     <CommentCard
       composerMode={composerOpen && !openCommentAnn}
-      pendingQuote={pending?.anchor.quoteText ?? null}
+      pendingQuote={pending?.quoteText ?? null}
       openCommentAnn={openCommentAnn}
       openThread={openThread}
       commentError={commentError}
@@ -1275,7 +1389,7 @@ export default function SessionPlayer({
               currentMs={currentMs}
               pending={
                 pending
-                  ? { quoteText: pending.anchor.quoteText, tStartMs: pending.segment.startMs }
+                  ? { quoteText: pending.quoteText, tStartMs: pending.startSeg.startMs }
                   : null
               }
               applying={applying}
