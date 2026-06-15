@@ -1015,8 +1015,12 @@ export default function SessionPlayer({
     return m;
   }, [flagMarkers, segments]);
 
-  // Merge annotation highlights + flag highlights, then weave the PENDING brush
-  // (a transient yellow mark) so a cue that is only brushed still paints yellow.
+  // Merge committed annotation highlights + flag highlights. The in-progress
+  // selection is deliberately NOT woven in here: the persistent yellow highlight
+  // appears only once the annotation is committed (comment saved / quote marked /
+  // code applied). While composing, the cue is shown by the browser's native
+  // selection plus the quote preview in the comment card — no synthetic brush, so
+  // nothing paints until there's a real annotation to paint.
   const PENDING_ANN_ID = '__pending__';
   const highlightsBySegmentAll = useMemo(() => {
     const m = new Map<string, Highlight[]>();
@@ -1030,26 +1034,8 @@ export default function SessionPlayer({
         ...(highlightsBySegment.get(segId) ?? []),
       ]);
     }
-    if (textSel) {
-      // Expand the pending selection across every covered cue so a multi-cue
-      // brush paints yellow on all of them (start cue from startChar, middle whole,
-      // end cue to endChar) — not just the first.
-      for (const [segId, h] of expandRangeHighlights(
-        PENDING_ANN_ID,
-        'pending',
-        textSel.startSegIdx,
-        textSel.startChar,
-        textSel.endSegIdx,
-        textSel.endChar,
-        segments,
-      )) {
-        const list = [...(m.get(segId) ?? [])];
-        list.push(h);
-        m.set(segId, list);
-      }
-    }
     return m;
-  }, [highlightsBySegment, flagHighlightsBySegment, textSel, segments]);
+  }, [highlightsBySegment, flagHighlightsBySegment]);
 
   const annById = useMemo(() => {
     const m = new Map<string, MyAnnotationView>();
@@ -2030,29 +2016,24 @@ function renderHighlightedText(
     );
 
     if (realIds.length === 0) {
-      // Pure flag piece → swatch-colored, non-clickable tint.
+      // Pure flag piece → swatch-colored, non-clickable tint. Background only (no
+      // padding) so the tint never changes the cue's width or shifts later text.
       const flagId = piece.highlightIds.find((hid) => hid.startsWith('flag:'));
       if (flagId && colorById.has(flagId)) {
         return (
           <mark
             key={idx}
             style={{ backgroundColor: hexWithAlpha(colorById.get(flagId)!, 0.32) }}
-            className="rounded-sm px-px text-foreground"
+            className="rounded-sm text-foreground"
             title="A live flag was logged at this moment"
           >
             {piece.text}
           </mark>
         );
       }
-      // Pure pending brush → transient yellow.
-      return (
-        <mark
-          key={idx}
-          className="rounded-sm bg-yellow-300/60 px-px text-foreground dark:bg-yellow-400/30"
-        >
-          {piece.text}
-        </mark>
-      );
+      // No real annotation and no flag color → nothing to paint (the in-progress
+      // selection is shown by the native browser selection, not a synthetic brush).
+      return <span key={idx}>{piece.text}</span>;
     }
 
     const hasQuote = piece.kinds.includes('quote');
@@ -2074,7 +2055,7 @@ function renderHighlightedText(
           if (ann) onFocus(ann);
         }}
         title={title}
-        className={`cursor-pointer rounded-sm px-px ${
+        className={`cursor-pointer rounded-sm ${
           isYellow
             ? 'bg-yellow-300/55 text-foreground dark:bg-yellow-400/30'
             : 'bg-emerald-300/50 text-foreground dark:bg-emerald-400/30'
