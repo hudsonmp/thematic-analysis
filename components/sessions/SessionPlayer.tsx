@@ -34,6 +34,7 @@ import {
 } from '@/lib/transcript/selection';
 import { groupIntoTurns } from '@/lib/transcript/turns';
 import { findActiveIndex, nearestCueIndex } from '@/lib/transcript/active';
+import { cardsByTurn, type RailCard } from '@/lib/transcript/rail';
 import { useRealtimeAnnotations } from './useRealtimeAnnotations';
 
 /** Minimal code shape the picker needs (flattened from the codebook tree). */
@@ -355,9 +356,12 @@ export default function SessionPlayer({
   useRealtimeAnnotations({
     sessionId: id,
     myUid,
+    // Always refetch into client state (BOTH tabs). `versionId` is set on the
+    // 'original' tab too, so `refreshActiveAnnotations` works there; a bare
+    // router.refresh() re-passed the prop but never synced it into `myAnnotations`
+    // state, so new annotations never rendered (issue A root cause).
     onChange: () => {
-      if (activeTab === 'original') router.refresh();
-      else void refreshActiveAnnotations();
+      void refreshActiveAnnotations();
     },
   });
 
@@ -606,13 +610,14 @@ export default function SessionPlayer({
 
   // --- Mutations ----------------------------------------------------------
 
+  // After any annotation/comment mutation, refetch the active version's own
+  // annotations + threads into STATE (both tabs). The old 'original'-tab branch
+  // did router.refresh(), which re-passed the `myAnnotations` prop but never
+  // synced it into the `useState(initialAnnotations)` — so a new highlight/comment
+  // never entered state and never rendered until a manual reload (issue A).
   const afterAnnotationMutation = useCallback(async () => {
-    if (activeTab === 'original') {
-      router.refresh();
-    } else {
-      await refreshActiveAnnotations();
-    }
-  }, [activeTab, router, refreshActiveAnnotations]);
+    await refreshActiveAnnotations();
+  }, [refreshActiveAnnotations]);
 
   const handleDeleteAnnotation = useCallback(async (annotationId: string) => {
     setBusyId(annotationId);
@@ -1089,62 +1094,177 @@ export default function SessionPlayer({
   }, [turns]);
 
   const openCommentAnn = openCommentAnnId ? annById.get(openCommentAnnId) ?? null : null;
-  const openThread = openCommentAnnId ? comments[openCommentAnnId] ?? [] : [];
 
   const canCommentOnSelection =
     !!pending && !!versionId && selectionCommentDraft.trim() !== '' && !commentBusy;
 
-  const marginCardOpen = mode === 'review' && !editing && (composerOpen || !!openCommentAnn);
-  // Which transcript turn the active card belongs to (its gutter hosts the card).
-  const anchorSegIdx =
-    composerOpen && textSel
-      ? textSel.startSegIdx
-      : openCommentAnn
-        ? segIndexById.get(openCommentAnn.segmentId) ?? null
-        : null;
-  const anchorTurnIdx =
-    anchorSegIdx !== null ? turnIndexBySegIdx.get(anchorSegIdx) ?? null : null;
-  // The turn whose gutter hosts the card; default to the first turn if the anchor
-  // turn can't be resolved (so an open card is never orphaned off-screen).
-  const cardTurnIdx = anchorTurnIdx ?? 0;
+  const railEnabled = mode === 'review' && !editing && codingEnabled;
+  // The TRANSIENT composer card (a fresh, uncommitted selection) — not yet a
+  // persisted annotation, so it isn't in `railCardsByTurn`. Its anchor turn is the
+  // selection's start cue's turn; default to the first turn if it can't be resolved.
+  const composerOpenForRail = railEnabled && composerOpen && !openCommentAnn;
+  const composerAnchorTurnIdx =
+    composerOpenForRail && textSel
+      ? turnIndexBySegIdx.get(textSel.startSegIdx) ?? 0
+      : null;
 
-  // The single review-mode comment card (composer or open thread), rendered into
-  // the gutter of `cardTurnIdx`. Null unless a card is open.
-  const commentCard = marginCardOpen ? (
-    <CommentCard
-      composerMode={composerOpen && !openCommentAnn}
-      pendingQuote={pending?.quoteText ?? null}
-      openCommentAnn={openCommentAnn}
-      openThread={openThread}
-      commentError={commentError}
-      commentDraft={commentDraft}
-      selectionCommentDraft={selectionCommentDraft}
-      commentBusy={commentBusy}
-      commentRowBusyId={commentRowBusyId}
-      canCommentOnSelection={canCommentOnSelection}
-      composerTextareaRef={composerTextareaRef}
-      busyId={busyId}
-      formatTime={formatTime}
-      formatCommentTime={formatCommentTime}
-      onClose={() => {
-        setComposerOpen(false);
-        setOpenCommentAnnId(null);
-        setCommentError(null);
-        setCommentDraft('');
-        setSelectionCommentDraft('');
-        clearSelection();
-      }}
-      onSeek={seekTo}
-      onChangeCommentDraft={setCommentDraft}
-      onChangeSelectionDraft={setSelectionCommentDraft}
-      onAddComment={handleAddComment}
-      onCommentOnSelection={handleCommentOnSelection}
-      onMarkQuote={handleMarkQuote}
-      onResolveComment={handleResolveComment}
-      onDeleteComment={handleDeleteComment}
-      onDeleteAnnotation={handleDeleteAnnotation}
-    />
-  ) : null;
+  // PERSISTENT rail cards: one card per annotation that has comments OR is a quote,
+  // bucketed into its anchor turn's gutter (issue C). Pure layout math in
+  // lib/transcript/rail (unit-tested).
+  const railCardsByTurn = useMemo(
+    () =>
+      railEnabled
+        ? cardsByTurn(myAnnotations, commentedAnnIds, segIndexById, turnIndexBySegIdx)
+        : new Map<number, RailCard[]>(),
+    [railEnabled, myAnnotations, commentedAnnIds, segIndexById, turnIndexBySegIdx],
+  );
+
+  // Close any open card / composer and clear the selection. Shared by every card's
+  // close button.
+  const closeCard = useCallback(() => {
+    setComposerOpen(false);
+    setOpenCommentAnnId(null);
+    setCommentError(null);
+    setCommentDraft('');
+    setSelectionCommentDraft('');
+    clearSelection();
+  }, [clearSelection]);
+
+  // Render the stack of cards hanging in turn `turnIdx`'s gutter: every persistent
+  // card anchored to this turn, plus the transient composer when its anchor turn
+  // matches. Cards are absolutely positioned in the gutter cell (so they never grow
+  // the transcript row / misalign text); each is offset down a little so collapsed
+  // previews fan out and stay individually clickable. The OPEN card (composer or
+  // the open thread) is expanded and gets the top z-index so it sits ABOVE the rest
+  // (issue D). A bare-preview card shows a one-line summary; clicking it opens it.
+  const renderGutter = useCallback(
+    (turnIdx: number): React.ReactNode => {
+      if (!railEnabled) return null;
+      const cards = railCardsByTurn.get(turnIdx) ?? [];
+      const showComposerHere = composerOpenForRail && composerAnchorTurnIdx === turnIdx;
+      if (cards.length === 0 && !showComposerHere) return null;
+
+      // Collapsed previews stack with a small vertical step; the open/composer card
+      // jumps to the top z-index. z-index base leaves headroom under the open card.
+      const STEP_REM = 2.5;
+      const nodes: React.ReactNode[] = [];
+
+      cards.forEach((card, i) => {
+        const ann = annById.get(card.annId);
+        if (!ann) return;
+        const isOpen = openCommentAnnId === card.annId;
+        const top = isOpen ? 0 : i * STEP_REM;
+        const z = isOpen ? 40 : 10 + i;
+        const thread = comments[card.annId] ?? [];
+        const previewText =
+          thread.length > 0 ? thread[thread.length - 1].body : ann.kind === 'quote' ? 'Quote' : '';
+        nodes.push(
+          <div
+            key={card.annId}
+            className="absolute left-0 w-72"
+            style={{ top: `${top}rem`, zIndex: z }}
+          >
+            {isOpen ? (
+              <CommentCard
+                composerMode={false}
+                pendingQuote={null}
+                openCommentAnn={ann}
+                openThread={thread}
+                commentError={commentError}
+                commentDraft={commentDraft}
+                selectionCommentDraft={selectionCommentDraft}
+                commentBusy={commentBusy}
+                commentRowBusyId={commentRowBusyId}
+                canCommentOnSelection={canCommentOnSelection}
+                composerTextareaRef={composerTextareaRef}
+                busyId={busyId}
+                formatTime={formatTime}
+                formatCommentTime={formatCommentTime}
+                onClose={closeCard}
+                onSeek={seekTo}
+                onChangeCommentDraft={setCommentDraft}
+                onChangeSelectionDraft={setSelectionCommentDraft}
+                onAddComment={handleAddComment}
+                onCommentOnSelection={handleCommentOnSelection}
+                onMarkQuote={handleMarkQuote}
+                onResolveComment={handleResolveComment}
+                onDeleteComment={handleDeleteComment}
+                onDeleteAnnotation={handleDeleteAnnotation}
+              />
+            ) : (
+              <CommentPreviewCard
+                kind={ann.kind}
+                previewText={previewText}
+                quoteText={ann.quoteText}
+                onOpen={() => openThreadForAnnotation(ann)}
+              />
+            )}
+          </div>,
+        );
+      });
+
+      if (showComposerHere) {
+        nodes.push(
+          <div key="__composer__" className="absolute left-0 top-0 w-72" style={{ zIndex: 50 }}>
+            <CommentCard
+              composerMode
+              pendingQuote={pending?.quoteText ?? null}
+              openCommentAnn={null}
+              openThread={[]}
+              commentError={commentError}
+              commentDraft={commentDraft}
+              selectionCommentDraft={selectionCommentDraft}
+              commentBusy={commentBusy}
+              commentRowBusyId={commentRowBusyId}
+              canCommentOnSelection={canCommentOnSelection}
+              composerTextareaRef={composerTextareaRef}
+              busyId={busyId}
+              formatTime={formatTime}
+              formatCommentTime={formatCommentTime}
+              onClose={closeCard}
+              onSeek={seekTo}
+              onChangeCommentDraft={setCommentDraft}
+              onChangeSelectionDraft={setSelectionCommentDraft}
+              onAddComment={handleAddComment}
+              onCommentOnSelection={handleCommentOnSelection}
+              onMarkQuote={handleMarkQuote}
+              onResolveComment={handleResolveComment}
+              onDeleteComment={handleDeleteComment}
+              onDeleteAnnotation={handleDeleteAnnotation}
+            />
+          </div>,
+        );
+      }
+
+      return <>{nodes}</>;
+    },
+    [
+      railEnabled,
+      railCardsByTurn,
+      composerOpenForRail,
+      composerAnchorTurnIdx,
+      annById,
+      openCommentAnnId,
+      comments,
+      commentError,
+      commentDraft,
+      selectionCommentDraft,
+      commentBusy,
+      commentRowBusyId,
+      canCommentOnSelection,
+      busyId,
+      pending,
+      closeCard,
+      seekTo,
+      handleAddComment,
+      handleCommentOnSelection,
+      handleMarkQuote,
+      handleResolveComment,
+      handleDeleteComment,
+      handleDeleteAnnotation,
+      openThreadForAnnotation,
+    ],
+  );
 
   // Props shared by both modes' transcript render. Review mode adds a gutter that
   // hosts the comment card; coding mode renders full-width with no gutter.
@@ -1518,7 +1638,7 @@ export default function SessionPlayer({
               >
                 <TranscriptBody
                   {...commonTranscriptProps}
-                  renderGutter={(turnIdx) => (turnIdx === cardTurnIdx ? commentCard : null)}
+                  renderGutter={renderGutter}
                 />
               </div>
             </>
@@ -1672,15 +1792,13 @@ function TranscriptBody({
         return (
           <div key={firstSeg?.id ?? turnIdx} className="mb-3 text-sm leading-relaxed">
             {renderGutter ? (
-              /* Text + a right comment GUTTER (lg+). The card is absolute inside
-                 the gutter cell so it never grows the row (text stays aligned). */
+              /* Text + a right comment GUTTER (lg+). `renderGutter` returns the
+                 turn's cards already absolutely positioned inside this relative
+                 cell, so they never grow the row (text stays aligned) and they
+                 scroll with the transcript (the cell is in flow). */
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,42rem)_19rem]">
                 {turnInner}
-                <div className="relative hidden lg:block">
-                  {gutterNode && (
-                    <div className="absolute left-0 top-0 z-10 w-72">{gutterNode}</div>
-                  )}
-                </div>
+                <div className="relative hidden lg:block">{gutterNode}</div>
               </div>
             ) : (
               turnInner
@@ -1788,12 +1906,18 @@ function CommentCard({
             value={selectionCommentDraft}
             onChange={(e) => onChangeSelectionDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              // Enter submits; Shift+Enter inserts a newline. Guard empty/
+              // whitespace and IME composition (a composing Enter commits the IME).
+              if (
+                e.key === 'Enter' &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing
+              ) {
                 e.preventDefault();
                 if (canCommentOnSelection) onCommentOnSelection();
               }
             }}
-            placeholder="Comment… (⌘/Ctrl+Enter to send · ⌘⇧J = important quote)"
+            placeholder="Comment… (Enter to send · Shift+Enter newline · ⌘⇧J = important quote)"
             rows={3}
             className="mb-2 w-full resize-none rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
             aria-label="Comment on selection"
@@ -1897,12 +2021,18 @@ function CommentCard({
               value={commentDraft}
               onChange={(e) => onChangeCommentDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                // Enter submits; Shift+Enter inserts a newline. Guard empty/
+                // whitespace and IME composition.
+                if (
+                  e.key === 'Enter' &&
+                  !e.shiftKey &&
+                  !e.nativeEvent.isComposing
+                ) {
                   e.preventDefault();
                   if (commentDraft.trim() !== '' && !commentBusy) onAddComment();
                 }
               }}
-              placeholder="Add a comment… (⌘/Ctrl+Enter)"
+              placeholder="Add a comment… (Enter to send · Shift+Enter newline)"
               rows={2}
               className="flex-1 resize-none rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
               aria-label="Add a comment"
@@ -1939,6 +2069,50 @@ function CommentCard({
         </>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The COLLAPSED face of a rail card (issue C): a compact, unobtrusive preview for a
+ * commented/quoted excerpt that is NOT the currently-open one. Shows a one-line
+ * preview (the latest comment, or "Quote" for an uncommented quote) above the
+ * excerpt. Clicking anywhere opens the full thread (`onOpen` → `openCommentThread`),
+ * which expands this annotation's card and elevates it above the rest (issue D).
+ */
+function CommentPreviewCard({
+  kind,
+  previewText,
+  quoteText,
+  onOpen,
+}: {
+  kind: string;
+  previewText: string;
+  quoteText: string | null;
+  onOpen: () => void;
+}) {
+  const preview = previewText.trim() !== '' ? previewText : kind === 'quote' ? 'Quote' : 'Comment';
+  const excerpt = quoteText ?? '(whole segment)';
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title="Open this comment thread"
+      className="block w-full rounded-lg border border-foreground/15 bg-background/95 px-2.5 py-1.5 text-left shadow-sm hover:border-foreground/30 hover:shadow"
+    >
+      <div className="flex items-center gap-1 text-[0.7rem] text-foreground/40">
+        {kind === 'quote' && (
+          <span className="text-amber-700 dark:text-amber-300" aria-hidden>
+            ❝
+          </span>
+        )}
+        <span className="truncate italic">
+          “{excerpt.length > 48 ? excerpt.slice(0, 48) + '…' : excerpt}”
+        </span>
+      </div>
+      <div className="mt-0.5 truncate text-xs text-foreground/80">
+        {preview.length > 64 ? preview.slice(0, 64) + '…' : preview}
+      </div>
+    </button>
   );
 }
 
