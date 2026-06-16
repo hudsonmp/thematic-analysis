@@ -51,7 +51,7 @@ type Candidate = { id: string; mnemonic: string };
  * Post-hoc multi-coder Compare matrix with a NEGOTIATED CANONICAL layer
  * (#21, Tasks 11–12).
  *
- * Rows = transcript segments in ordinal order; columns = the distinct coders (by
+ * Rows = transcript segments in temporal (video) order; columns = the distinct coders (by
  * display name) plus a Canonical column. Each coder cell shows the code mnemonics
  * that coder applied to an annotation anchored to the row's segment. This is the
  * diff surface that supports negotiated agreement — it reads EVERY coder's work,

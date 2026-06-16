@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation';
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { parseSrt, type Segment } from '@/lib/transcript/srt';
+import { orderByTime } from '@/lib/transcript/order';
 import {
   anonymizeSpeaker,
   seededResearcherKeys,
@@ -518,7 +519,14 @@ export async function getSessionCloud(
     // participant → PID. Done here so raw Zoom names never reach the client. ONLY
     // the `speaker` field changes — text/ids/timing are untouched, so annotation
     // anchoring (which keys off segment text + ids) is unaffected.
-    segments = anonymizeSegments(rows ?? [], session.pid_label, await researcherSpeakerLabels());
+    //
+    // Then order TEMPORALLY (by startMs, ties by ordinal): the SQL `ordinal` order is
+    // SRT block order, which clusters a multi-track file by speaker rather than by
+    // time. Reading order must follow the video so the follow-along highlight runs
+    // straight down the page and interjections sit between the phrases they interrupt.
+    segments = orderByTime(
+      anonymizeSegments(rows ?? [], session.pid_label, await researcherSpeakerLabels()),
+    );
   }
 
   return {
@@ -620,11 +628,10 @@ export async function getSessionSegments(
   }
   // Anonymize the speaker display label server-side (interviewer → "Researcher",
   // participant → PID). ONLY `speaker` changes — ids/timing/text are untouched, so
-  // annotation anchoring is unaffected.
-  return anonymizeSegments(
-    rows ?? [],
-    session?.pid_label ?? '',
-    await researcherSpeakerLabels(),
+  // annotation anchoring is unaffected. Then order temporally (by startMs, ties by
+  // ordinal) so the player reads in video order — see getSessionCloud for why.
+  return orderByTime(
+    anonymizeSegments(rows ?? [], session?.pid_label ?? '', await researcherSpeakerLabels()),
   );
 }
 
