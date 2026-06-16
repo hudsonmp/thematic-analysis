@@ -242,6 +242,63 @@ export async function listSessionsCloud(): Promise<SessionListRow[]> {
 }
 
 /**
+ * Reassign a session's `collection` (the index bucket + the code-authoring
+ * `study_label`). Trimmed; an all-whitespace value falls back to 'uncategorized'
+ * (matching the upload default) rather than persisting a blank. Writes through the
+ * user client — `auth.uid()` is the researcher and the cb_ RLS write policy admits
+ * the update. cb_ table only; no study table is touched.
+ */
+export async function updateSessionCollection(
+  sessionId: string,
+  collection: string,
+): Promise<void> {
+  await requireAuthUser();
+  const id = (sessionId ?? '').trim();
+  if (!id) throw new Error('updateSessionCollection: sessionId is required.');
+  const coll = (collection ?? '').trim() || 'uncategorized';
+
+  const sb = await createUserServerClient();
+  const { error } = await sb
+    .from('cb_sessions')
+    .update({ collection: coll })
+    .eq('id', id);
+  if (error) {
+    throw new Error(`updateSessionCollection: update failed: ${error.message}`);
+  }
+}
+
+/**
+ * Permanently delete a session and everything anchored to it.
+ *
+ * A single `delete from cb_sessions where id = …` drives the whole teardown via FK
+ * cascades (verified against the live schema):
+ *   • cb_transcript_versions, cb_segments         — session_id CASCADE
+ *   • cb_annotations (+ its cb_annotation_codes / cb_annotation_comments)
+ *                                                  — session_id CASCADE (the child
+ *                                                    tables cascade on annotation_id;
+ *                                                    both segment anchors segment_id
+ *                                                    and end_segment_id also CASCADE).
+ *   • cb_session_episodes                          — session_id CASCADE
+ *   • cb_observations                              — session_id SET NULL (live flags
+ *                                                    intentionally OUTLIVE the session;
+ *                                                    they detach rather than delete).
+ *
+ * Irreversible. Writes through the user client; the cb_ RLS write (delete) policy
+ * admits it. cb_ tables only — no study table is touched.
+ */
+export async function deleteSessionCloud(sessionId: string): Promise<void> {
+  await requireAuthUser();
+  const id = (sessionId ?? '').trim();
+  if (!id) throw new Error('deleteSessionCloud: sessionId is required.');
+
+  const sb = await createUserServerClient();
+  const { error } = await sb.from('cb_sessions').delete().eq('id', id);
+  if (error) {
+    throw new Error(`deleteSessionCloud: delete failed: ${error.message}`);
+  }
+}
+
+/**
  * A cloud segment is the pure-parser `Segment` plus the real `cb_segments.id`.
  * Annotations anchor to that DB id (it is the `segment_id` FK), so the player
  * needs it on every row — `Segment` (the SRT-parser shape) carries only `idx`,

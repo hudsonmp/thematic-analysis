@@ -5,6 +5,10 @@ import Link from 'next/link';
 import { createBrowser } from '@/lib/supabase/browser';
 import { resumableUpload, FileTooLargeError } from '@/lib/storage/resumable-upload';
 import { createSessionFromUpload } from '@/app/actions/sessions';
+import {
+  SESSION_COLLECTIONS,
+  DEFAULT_SESSION_COLLECTION,
+} from '@/lib/sessions/collections';
 
 // ---------------------------------------------------------------------------
 // Zoom-folder upload UI.
@@ -202,7 +206,7 @@ export default function UploadSession() {
   // `groups` is always derived from it, so several drop batches can stack up
   // (deduped by PID) before the researcher hits Upload.
   const [items, setItems] = useState<PathedFile[]>([]);
-  const [collection, setCollection] = useState('study');
+  const [collection, setCollection] = useState<string>(DEFAULT_SESSION_COLLECTION);
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState<ProgressMap>({});
   const [results, setResults] = useState<Result[]>([]);
@@ -446,15 +450,19 @@ export default function UploadSession() {
           >
             Collection
           </label>
-          <input
+          <select
             id="collection"
-            type="text"
             value={collection}
             onChange={(e) => setCollection(e.target.value)}
             disabled={phase === 'uploading'}
-            placeholder="study"
-            className="w-48 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
-          />
+            className="w-48 rounded border border-foreground/20 bg-background px-2 py-1 text-sm"
+          >
+            {SESSION_COLLECTIONS.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
         </div>
 
         {groups.length > 0 && (

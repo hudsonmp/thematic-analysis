@@ -1646,7 +1646,7 @@ function TranscriptBody({
                         ref={(el) => {
                           rowRefs.current[si] = el;
                         }}
-                        className={`text-foreground/80 ${active ? 'rounded-sm bg-foreground/10' : ''}`}
+                        className={`text-foreground/80 ${active ? 'rounded-sm bg-sky-200/70 dark:bg-sky-400/25' : ''}`}
                       >
                         {codingEnabled && highlights.length > 0
                           ? renderHighlightedText(
