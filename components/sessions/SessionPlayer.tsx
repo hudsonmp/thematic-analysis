@@ -33,6 +33,7 @@ import {
   type Highlight,
 } from '@/lib/transcript/selection';
 import { groupIntoTurns } from '@/lib/transcript/turns';
+import { findActiveIndex, nearestCueIndex } from '@/lib/transcript/active';
 import { useRealtimeAnnotations } from './useRealtimeAnnotations';
 
 /** Minimal code shape the picker needs (flattened from the codebook tree). */
@@ -116,48 +117,13 @@ function formatCommentTime(iso: string): string {
   });
 }
 
-/**
- * Index of the segment whose [startMs, endMs) contains `tMs`, or -1.
- *
- * A LINEAR scan, deliberately: multi-track transcripts have overlapping,
- * non-monotonic time ranges (see `parseSrt`), so a binary search would be wrong
- * there. At a few hundred segments and the browser's `timeupdate` cadence
- * (~4 Hz) this is free. The first containing segment wins on overlap.
- */
-function findActiveIndex(segments: CloudSegment[], tMs: number): number {
-  for (let i = 0; i < segments.length; i++) {
-    if (tMs >= segments[i].startMs && tMs < segments[i].endMs) return i;
-  }
-  return -1;
-}
-
-/**
- * Index of the cue a flag at `tMs` should attach to. Unlike {@link findActiveIndex}
- * (which returns -1 when `tMs` falls in a gap between cues), this ALWAYS resolves to
- * a real cue so EVERY flag maps onto some transcript text — a flag's record-relative
- * time rarely lands exactly inside a cue's span, but it always has a nearest one.
- *
- * Resolution: a cue whose [startMs, endMs) CONTAINS `tMs` wins (distance 0);
- * otherwise the cue with the smallest time GAP to `tMs` (the gap to its start if
- * `tMs` precedes it, else to its end). Ties resolve to the EARLIER cue (array order),
- * giving a stable ordering. Works for multi-track transcripts too, where spans
- * overlap and aren't monotonic, because it minimizes an absolute time distance rather
- * than assuming order. Returns -1 only for an empty transcript.
- */
-function nearestCueIndex(segments: CloudSegment[], tMs: number): number {
-  let best = -1;
-  let bestGap = Infinity;
-  for (let i = 0; i < segments.length; i++) {
-    const s = segments[i];
-    if (tMs >= s.startMs && tMs < s.endMs) return i;
-    const gap = tMs < s.startMs ? s.startMs - tMs : tMs - s.endMs;
-    if (gap < bestGap) {
-      bestGap = gap;
-      best = i;
-    }
-  }
-  return best;
-}
+// Cue resolution lives in lib/transcript/active.ts as pure, unit-tested helpers:
+//   • findActiveIndex  — tightest CONTAINING cue (or -1), for the follow-along
+//     highlight; shortest-span-wins so it advances phrase-by-phrase through a
+//     multi-track transcript instead of sticking on a long track-level block.
+//   • nearestCueIndex  — containing-or-nearest, for live flags (every flag attaches
+//     to some text even when its time lands in an inter-cue gap).
+// `CloudSegment` is assignable to their `TimedCue` shape.
 
 /**
  * Resolve the current `window.getSelection()` to a (possibly multi-segment) raw
