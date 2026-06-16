@@ -466,8 +466,23 @@ export default function SessionPlayer({
         Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null;
       let t = Math.max(0, targetMs / 1000);
       if (dur !== null) t = Math.min(t, Math.max(0, dur - 0.3));
+
+      // Clicking a marker means "play from here". Assigning currentTime while the
+      // element is ACTIVELY playing a streamed source makes it reload from the start
+      // ("starts over"); paused, the same assignment seeks fine. So PAUSE first, set
+      // the target, and resume once the seek completes. A no-op seek (target ≈ now)
+      // fires no 'seeked', so just play in place.
+      if (Math.abs(video.currentTime - t) < 0.05) {
+        void video.play();
+        return;
+      }
+      video.pause();
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked);
+        void video.play();
+      };
+      video.addEventListener('seeked', onSeeked);
       video.currentTime = t;
-      void video.play();
     };
     // Seeking before metadata is loaded is unreliable (currentTime can be ignored
     // or snap to 0/end), which is the other half of the intermittent "sometimes it
