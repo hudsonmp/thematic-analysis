@@ -34,6 +34,7 @@ import {
 } from '@/lib/transcript/selection';
 import { groupIntoTurns } from '@/lib/transcript/turns';
 import { findActiveIndex, nearestCueIndex } from '@/lib/transcript/active';
+import { findPhraseMatches } from '@/lib/transcript/search';
 import { cardsByTurn, type RailCard } from '@/lib/transcript/rail';
 import { useRealtimeAnnotations } from './useRealtimeAnnotations';
 
@@ -385,6 +386,33 @@ export default function SessionPlayer({
 
   // --- Text selection (Google-Docs style, sub-segment) --------------------
   const [textSel, setTextSel] = useState<TextSelection | null>(null);
+
+  // --- Transcript phrase search -------------------------------------------
+  const [searchQuery, setSearchQuery] = useState('');
+  // Index into `searchMatches` of the "current" match (the one we scroll to and
+  // paint brighter). Reset to 0 whenever the query changes (handled during render
+  // below, not in an effect — the repo bans set-state-in-effect).
+  const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
+  const [prevSearchQuery, setPrevSearchQuery] = useState('');
+  // In CODING mode there is no comment gutter, so a clicked commented highlight
+  // shows its thread in a floating popover at the click point (null = closed).
+  const [commentPopoverPos, setCommentPopoverPos] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+  // Phrase-search matches over the current (ordered) segments, in reading order.
+  const searchMatches = useMemo(
+    () => findPhraseMatches(segments, searchQuery),
+    [segments, searchQuery],
+  );
+  // Reset to the first match whenever the query changes — during render, not in an
+  // effect (the repo bans set-state-in-effect). `safeMatchIdx` then clamps a stale
+  // index if the match set shrank; -1 means "no matches".
+  if (searchQuery !== prevSearchQuery) {
+    setPrevSearchQuery(searchQuery);
+    setCurrentMatchIdx(0);
+  }
+  const safeMatchIdx =
+    searchMatches.length === 0 ? -1 : Math.min(currentMatchIdx, searchMatches.length - 1);
 
   // --- Per-excerpt comments (margin cards) --------------------------------
   // The annotation whose comment thread is OPEN (its card shows in the margin).
@@ -886,13 +914,37 @@ export default function SessionPlayer({
     [openCommentAnnId, afterAnnotationMutation],
   );
 
-  // Clicking a yellow span opens its excerpt's comment card in the margin.
+  // Clicking a highlighted span opens its comment thread. In REVIEW mode the card
+  // shows in the margin rail; in CODING mode (no gutter) it pops up in a floating
+  // popover anchored at the click point.
   const openThreadForAnnotation = useCallback(
-    (ann: MyAnnotationView) => {
+    (ann: MyAnnotationView, e?: React.MouseEvent) => {
       void openCommentThread(ann.id);
+      if (mode === 'coding' && e) {
+        setCommentPopoverPos({ x: e.clientX, y: e.clientY });
+      }
     },
-    [openCommentThread],
+    [openCommentThread, mode],
   );
+
+  // --- Phrase-search navigation -------------------------------------------
+  const gotoMatch = useCallback(
+    (delta: number) => {
+      const n = searchMatches.length;
+      if (n === 0) return;
+      const base = safeMatchIdx < 0 ? 0 : safeMatchIdx;
+      setCurrentMatchIdx(((base + delta) % n + n) % n);
+    },
+    [searchMatches.length, safeMatchIdx],
+  );
+
+  // Scroll the current match's cue into view as the user steps through matches.
+  // scrollIntoView (not setState) in an effect is fine — only setState is banned.
+  useEffect(() => {
+    if (safeMatchIdx < 0) return;
+    const mt = searchMatches[safeMatchIdx];
+    if (mt) rowRefs.current[mt.segIdx]?.scrollIntoView({ block: 'center' });
+  }, [safeMatchIdx, searchMatches]);
 
   // --- Keyboard control (⌘⌥M comment · ⌘⇧J quote · Esc close) -------------
   //
@@ -903,6 +955,7 @@ export default function SessionPlayer({
       if (e.code === 'Escape') {
         setComposerOpen(false);
         setOpenCommentAnnId(null);
+        setCommentPopoverPos(null);
         clearSelection();
         return;
       }
@@ -1063,8 +1116,23 @@ export default function SessionPlayer({
         ...(highlightsBySegment.get(segId) ?? []),
       ]);
     }
+    // Phrase-search matches paint orange (the current match brighter), like flags:
+    // non-clickable, background-only. Layered ON TOP so a match is visible even over
+    // an annotated span's non-overlapping chars.
+    searchMatches.forEach((mt, i) => {
+      const seg = segments[mt.segIdx];
+      if (!seg) return;
+      const list = m.get(seg.id) ?? [];
+      list.push({
+        annotationId: `search:${i}`,
+        charStart: mt.charStart,
+        charEnd: mt.charEnd,
+        kind: i === safeMatchIdx ? 'search-current' : 'search',
+      });
+      m.set(seg.id, list);
+    });
     return m;
-  }, [highlightsBySegment, flagHighlightsBySegment]);
+  }, [highlightsBySegment, flagHighlightsBySegment, searchMatches, safeMatchIdx, segments]);
 
   const annById = useMemo(() => {
     const m = new Map<string, MyAnnotationView>();
@@ -1151,6 +1219,7 @@ export default function SessionPlayer({
     setCommentError(null);
     setCommentDraft('');
     setSelectionCommentDraft('');
+    setCommentPopoverPos(null);
     clearSelection();
   }, [clearSelection]);
 
@@ -1623,6 +1692,63 @@ export default function SessionPlayer({
             </p>
           )}
 
+          {/* Phrase search over the transcript: paints matches orange (current one
+              brighter), steps through with ↑/↓ / Enter, scrolls the match into view. */}
+          <div className="mb-2 flex items-center gap-2">
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  gotoMatch(e.shiftKey ? -1 : 1);
+                } else if (e.key === 'Escape') {
+                  setSearchQuery('');
+                }
+              }}
+              placeholder="Search transcript…"
+              aria-label="Search the transcript for a phrase"
+              className="min-w-0 flex-1 rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
+            />
+            {searchQuery.trim().length >= 2 && (
+              <>
+                <span className="shrink-0 font-mono text-xs text-foreground/50" aria-live="polite">
+                  {searchMatches.length === 0 ? '0/0' : `${safeMatchIdx + 1}/${searchMatches.length}`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => gotoMatch(-1)}
+                  disabled={searchMatches.length === 0}
+                  aria-label="Previous match"
+                  title="Previous match (⇧⏎)"
+                  className="rounded border border-foreground/20 px-1.5 py-1 text-xs text-foreground/70 hover:text-foreground disabled:opacity-30"
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  onClick={() => gotoMatch(1)}
+                  disabled={searchMatches.length === 0}
+                  aria-label="Next match"
+                  title="Next match (⏎)"
+                  className="rounded border border-foreground/20 px-1.5 py-1 text-xs text-foreground/70 hover:text-foreground disabled:opacity-30"
+                >
+                  ↓
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Clear search"
+                  title="Clear"
+                  className="rounded border border-foreground/20 px-1.5 py-1 text-xs text-foreground/50 hover:text-foreground"
+                >
+                  ✕
+                </button>
+              </>
+            )}
+          </div>
+
           {isCleanedActive && !versionId ? (
             <div className="rounded border border-foreground/15 p-4 text-sm text-foreground/70">
               <p className="mb-3">
@@ -1679,6 +1805,55 @@ export default function SessionPlayer({
           )}
         </div>
       </div>
+
+      {/* CODING-mode comment popover: clicking a highlighted span opens its thread in
+          a floating card at the click point (coding mode has no comment gutter). A
+          transparent backdrop closes it on an outside click. */}
+      {mode === 'coding' && openCommentAnn && commentPopoverPos && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={closeCard} aria-hidden />
+          <div
+            className="fixed z-50 w-60"
+            style={{
+              left: Math.min(
+                commentPopoverPos.x,
+                (typeof window !== 'undefined' ? window.innerWidth : 9999) - 248,
+              ),
+              top: Math.min(
+                commentPopoverPos.y,
+                (typeof window !== 'undefined' ? window.innerHeight : 9999) - 120,
+              ),
+            }}
+          >
+            <CommentCard
+              composerMode={false}
+              pendingQuote={null}
+              openCommentAnn={openCommentAnn}
+              openThread={comments[openCommentAnn.id] ?? []}
+              commentError={commentError}
+              commentDraft={commentDraft}
+              selectionCommentDraft={selectionCommentDraft}
+              commentBusy={commentBusy}
+              commentRowBusyId={commentRowBusyId}
+              canCommentOnSelection={canCommentOnSelection}
+              composerTextareaRef={composerTextareaRef}
+              busyId={busyId}
+              formatTime={formatTime}
+              formatCommentTime={formatCommentTime}
+              onClose={closeCard}
+              onSeek={seekTo}
+              onChangeCommentDraft={setCommentDraft}
+              onChangeSelectionDraft={setSelectionCommentDraft}
+              onAddComment={handleAddComment}
+              onCommentOnSelection={handleCommentOnSelection}
+              onMarkQuote={handleMarkQuote}
+              onResolveComment={handleResolveComment}
+              onDeleteComment={handleDeleteComment}
+              onDeleteAnnotation={handleDeleteAnnotation}
+            />
+          </div>
+        </>
+      )}
     </main>
   );
 }
@@ -1728,7 +1903,7 @@ function TranscriptBody({
   pendingAnnId: string;
   rowRefs: React.RefObject<(HTMLElement | null)[]>;
   onSeek: (ms: number) => void;
-  onFocusAnnotation: (ann: MyAnnotationView) => void;
+  onFocusAnnotation: (ann: MyAnnotationView, e: React.MouseEvent) => void;
   onSegmentTextCommit: (segmentId: string, text: string) => void;
   /** Review mode: render the comment card into a turn's right gutter (the anchor
    *  turn returns the card, others null). Omitted in coding mode (no gutter). */
@@ -1916,8 +2091,8 @@ function CommentCard({
       {composerMode ? (
         <>
           {pendingQuote && (
-            <div className="mb-2 rounded border border-foreground/10 bg-background/40 px-2 py-1.5 text-sm italic text-foreground/80">
-              “{pendingQuote.length > 120 ? pendingQuote.slice(0, 120) + '…' : pendingQuote}”
+            <div className="mb-1.5 rounded border border-foreground/10 bg-background/40 px-2 py-1 text-xs italic text-foreground/80">
+              “{pendingQuote.length > 100 ? pendingQuote.slice(0, 100) + '…' : pendingQuote}”
             </div>
           )}
           {commentError && (
@@ -1952,7 +2127,7 @@ function CommentCard({
               onClick={onMarkQuote}
               disabled={commentBusy}
               title="Mark this selection as an important quote (⌘⇧J)"
-              className="rounded border border-amber-500/60 px-3 py-1 text-sm text-amber-700 hover:bg-amber-500/10 disabled:opacity-40 dark:text-amber-300"
+              className="rounded border border-amber-500/60 px-2.5 py-1 text-xs text-amber-700 hover:bg-amber-500/10 disabled:opacity-40 dark:text-amber-300"
             >
               Mark quote ❝
             </button>
@@ -1960,7 +2135,7 @@ function CommentCard({
               type="button"
               onClick={onCommentOnSelection}
               disabled={!canCommentOnSelection}
-              className="rounded bg-sky-600 px-3 py-1 text-sm text-white disabled:opacity-40"
+              className="rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
             >
               {commentBusy ? 'Commenting…' : 'Comment'}
             </button>
@@ -1968,7 +2143,7 @@ function CommentCard({
         </>
       ) : openCommentAnn ? (
         <>
-          <div className="mb-2 rounded border border-foreground/10 bg-background/40 px-2 py-1.5 text-sm">
+          <div className="mb-1.5 rounded border border-foreground/10 bg-background/40 px-2 py-1 text-xs">
             <button
               type="button"
               onClick={() => onSeek(openCommentAnn.tStartMs)}
@@ -1999,9 +2174,9 @@ function CommentCard({
           {openThread.length === 0 ? (
             <p className="mb-2 text-sm text-foreground/50">No comments yet. Start the thread below.</p>
           ) : (
-            <ul className="mb-2 divide-y divide-foreground/10">
+            <ul className="mb-1.5 divide-y divide-foreground/10">
               {openThread.map((c) => (
-                <li key={c.id} className="py-1.5 text-sm">
+                <li key={c.id} className="py-1 text-xs">
                   <div className="flex items-baseline gap-2">
                     <span className="font-semibold">{c.authorName}</span>
                     <span className="font-mono text-xs text-foreground/40">
@@ -2056,9 +2231,9 @@ function CommentCard({
                   if (commentDraft.trim() !== '' && !commentBusy) onAddComment();
                 }
               }}
-              placeholder="Add a comment… (Enter to send · Shift+Enter newline)"
+              placeholder="Add a comment… (Enter to send · ⇧⏎ newline)"
               rows={2}
-              className="flex-1 resize-none rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
+              className="flex-1 resize-none rounded border border-foreground/20 bg-transparent px-2 py-1 text-xs"
               aria-label="Add a comment"
             />
             <button
@@ -2194,7 +2369,7 @@ function renderHighlightedText(
   text: string,
   highlights: Highlight[],
   annById: Map<string, MyAnnotationView>,
-  onFocus: (ann: MyAnnotationView) => void,
+  onFocus: (ann: MyAnnotationView, e: React.MouseEvent) => void,
   commentedAnnIds: Set<string>,
   openCommentAnnId: string | null,
   pendingAnnId: string,
@@ -2208,12 +2383,34 @@ function renderHighlightedText(
     if (piece.highlightIds.length === 0) {
       return <span key={idx}>{piece.text}</span>;
     }
-    // Real annotation ids = not pending, not a flag (`flag:` sentinel prefix).
+    // Real annotation ids = not pending, not a flag, not a search match (all sentinel
+    // prefixes). Those three are non-clickable background tints; an annotation wins
+    // the click/style when it overlaps one.
     const realIds = piece.highlightIds.filter(
-      (hid) => hid !== pendingAnnId && !hid.startsWith('flag:'),
+      (hid) =>
+        hid !== pendingAnnId &&
+        !hid.startsWith('flag:') &&
+        !hid.startsWith('search:'),
     );
 
     if (realIds.length === 0) {
+      // Search match → orange (the current match brighter). Checked before flags so
+      // the active search hit is always visible. Background only (no padding/glyph) so
+      // it never shifts text.
+      if (piece.kinds.includes('search-current')) {
+        return (
+          <mark key={idx} className="rounded-sm bg-orange-400/80 text-foreground" title="Current match">
+            {piece.text}
+          </mark>
+        );
+      }
+      if (piece.kinds.includes('search')) {
+        return (
+          <mark key={idx} className="rounded-sm bg-orange-300/55 text-foreground" title="Search match">
+            {piece.text}
+          </mark>
+        );
+      }
       // Pure flag piece → swatch-colored, non-clickable tint. Background only (no
       // padding) so the tint never changes the cue's width or shifts later text.
       const flagId = piece.highlightIds.find((hid) => hid.startsWith('flag:'));
@@ -2250,7 +2447,7 @@ function renderHighlightedText(
         key={idx}
         onClick={(e) => {
           e.stopPropagation();
-          if (ann) onFocus(ann);
+          if (ann) onFocus(ann, e);
         }}
         title={title}
         className={`cursor-pointer rounded-sm ${
