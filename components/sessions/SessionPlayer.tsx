@@ -25,6 +25,7 @@ import {
 import { type SessionEpisodeView } from '@/app/actions/episodes';
 import type { ObservationView } from '@/app/actions/observations';
 import type { FacetWithValues } from '@/app/actions/codebook';
+import type { Tables } from '@/lib/types/cb-db';
 import SessionCodeCreator from './SessionCodeCreator';
 import CodingPanel from './CodingPanel';
 import {
@@ -266,6 +267,7 @@ export default function SessionPlayer({
   recordingStartedAt = null,
   codebookId,
   facets,
+  labels = [],
   collection,
   compareHref = null,
 }: {
@@ -299,6 +301,8 @@ export default function SessionPlayer({
   codebookId: string;
   /** The codebook's facets (each with its enum values) for the new-code panel. */
   facets: FacetWithValues[];
+  /** The codebook's labels (themes) for OPTIONAL tagging in the new-code panel. */
+  labels?: Tables<'cb_labels'>[];
   /** This session's `cb_sessions.collection` — the per-code authoring study. */
   collection: string | null;
   /** Link to the post-hoc, read-only Compare tab. */
@@ -1599,6 +1603,7 @@ export default function SessionPlayer({
             <SessionCodeCreator
               codebookId={codebookId}
               facets={facets}
+              labels={labels}
               studyLabel={collection}
               onCreated={() => router.refresh()}
             />

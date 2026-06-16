@@ -143,6 +143,7 @@ export default async function SessionPage({
       recordingStartedAt={effectiveAnchor}
       codebookId={codebook.id}
       facets={tree.facets}
+      labels={tree.labels}
       collection={session.collection ?? null}
       compareHref={`/sessions/${session.id}/compare`}
     />
