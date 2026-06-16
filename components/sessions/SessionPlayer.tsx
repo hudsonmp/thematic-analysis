@@ -630,7 +630,13 @@ export default function SessionPlayer({
 
   // --- Selection capture --------------------------------------------------
 
-  const handleTranscriptMouseUp = useCallback(() => {
+  const handleTranscriptMouseUp = useCallback((e: React.MouseEvent) => {
+    // The comment cards live INSIDE this container's onMouseUp. A mouseup inside a
+    // card (e.g. clicking into the composer textarea to type) carries no transcript
+    // text selection, so resolving it would clear `textSel` — which unanchors and
+    // HIDES the composer mid-comment. Ignore those; only transcript-text mouseups
+    // update the selection.
+    if ((e.target as HTMLElement | null)?.closest?.('[data-comment-card]')) return;
     const r = resolveSelection(transcriptRef.current);
     if (!r || r.startSegIdx < 0 || r.endSegIdx >= segments.length || r.startSegIdx > r.endSegIdx) {
       setTextSel(null);
@@ -2017,7 +2023,10 @@ function TranscriptBody({
                  scroll with the transcript (the cell is in flow). */
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,42rem)_16rem]">
                 {turnInner}
-                <div className="relative hidden lg:block">{gutterNode}</div>
+                {/* data-comment-card: the selection mouseup handler ignores events
+                    from inside the gutter so clicking the composer doesn't clear the
+                    pending selection (which would unanchor + hide the composer). */}
+                <div data-comment-card className="relative hidden lg:block">{gutterNode}</div>
               </div>
             ) : (
               turnInner
