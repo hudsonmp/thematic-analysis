@@ -421,11 +421,35 @@ export default function SessionPlayer({
     rowRefs.current[activeIdx]?.scrollIntoView({ block: 'nearest' });
   }, [activeIdx]);
 
-  const seekTo = useCallback((startMs: number) => {
+  const seekTo = useCallback((targetMs: number) => {
     const video = videoRef.current;
     if (!video) return;
-    video.currentTime = startMs / 1000;
-    void video.play();
+    const doSeek = () => {
+      // Clamp into the seekable range. A flag/episode offset can land AT or just
+      // PAST the end (the recording anchor is approximate), and assigning an
+      // out-of-range currentTime makes the browser snap the playhead to the very
+      // end — the "jumps to end of video" symptom. Pull back a hair from the exact
+      // end so we land on a real frame, not the ended state.
+      const dur =
+        Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null;
+      let t = Math.max(0, targetMs / 1000);
+      if (dur !== null) t = Math.min(t, Math.max(0, dur - 0.3));
+      video.currentTime = t;
+      void video.play();
+    };
+    // Seeking before metadata is loaded is unreliable (currentTime can be ignored
+    // or snap to 0/end), which is the other half of the intermittent "sometimes it
+    // works" behavior. Defer the seek until we at least have duration/seekable
+    // ranges (preload="metadata" usually means this is already true).
+    if (video.readyState >= 1 /* HAVE_METADATA */) {
+      doSeek();
+    } else {
+      const onReady = () => {
+        video.removeEventListener('loadedmetadata', onReady);
+        doSeek();
+      };
+      video.addEventListener('loadedmetadata', onReady);
+    }
   }, []);
 
   // --- Version switching (Original / Cleaned tabs) ------------------------
@@ -1161,7 +1185,7 @@ export default function SessionPlayer({
         nodes.push(
           <div
             key={card.annId}
-            className="absolute left-0 w-72"
+            className="absolute left-0 w-60"
             style={{ top: `${top}rem`, zIndex: z }}
           >
             {isOpen ? (
@@ -1205,7 +1229,7 @@ export default function SessionPlayer({
 
       if (showComposerHere) {
         nodes.push(
-          <div key="__composer__" className="absolute left-0 top-0 w-72" style={{ zIndex: 50 }}>
+          <div key="__composer__" className="absolute left-0 top-0 w-60" style={{ zIndex: 50 }}>
             <CommentCard
               composerMode
               pendingQuote={pending?.quoteText ?? null}
@@ -1796,7 +1820,7 @@ function TranscriptBody({
                  turn's cards already absolutely positioned inside this relative
                  cell, so they never grow the row (text stays aligned) and they
                  scroll with the transcript (the cell is in flow). */
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,42rem)_19rem]">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,42rem)_16rem]">
                 {turnInner}
                 <div className="relative hidden lg:block">{gutterNode}</div>
               </div>
@@ -1871,9 +1895,9 @@ function CommentCard({
   onDeleteAnnotation: (id: string) => void;
 }) {
   return (
-    <div className="max-h-[78vh] overflow-auto rounded-lg border border-foreground/20 bg-background shadow-lg p-3">
-      <div className="mb-2 flex items-start gap-2">
-        <h2 className="text-sm font-semibold">
+    <div className="max-h-[70vh] overflow-auto rounded-lg border border-foreground/20 bg-background shadow-lg p-2">
+      <div className="mb-1.5 flex items-start gap-2">
+        <h2 className="text-xs font-semibold">
           {composerMode ? 'Comment' : 'Comments'}
           <span className="ml-1 font-normal text-foreground/40">
             on {composerMode ? 'selection' : 'excerpt'}
@@ -1917,8 +1941,8 @@ function CommentCard({
                 if (canCommentOnSelection) onCommentOnSelection();
               }
             }}
-            placeholder="Comment… (Enter to send · Shift+Enter newline · ⌘⇧J = important quote)"
-            rows={3}
+            placeholder="Comment… (Enter to send · ⇧⏎ newline)"
+            rows={2}
             className="mb-2 w-full resize-none rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
             aria-label="Comment on selection"
           />
