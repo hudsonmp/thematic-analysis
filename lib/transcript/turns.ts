@@ -37,6 +37,12 @@ export type Turn = {
  * overlapping time ranges (see {@link parseSrt} in `./srt`), so position, not
  * time, defines turn boundaries. `startMs` is the first cue's start and `endMs`
  * is the last cue's end of each turn. Returns `[]` for `[]`.
+ *
+ * INVARIANT — pass TEMPORALLY-ORDERED cues: callers must order `segments` by time
+ * (see {@link orderByTime} in `./order`) BEFORE grouping. Because grouping is
+ * position-based, raw SRT block order (which clusters a multi-track file by speaker)
+ * would collapse a speaker's interleaved cues into one turn and lose the interjection
+ * structure. The session loaders apply `orderByTime` first; any new caller must too.
  */
 export function groupIntoTurns(segments: TurnSegment[]): Turn[] {
   const turns: Turn[] = [];
