@@ -132,6 +132,34 @@ function findActiveIndex(segments: CloudSegment[], tMs: number): number {
 }
 
 /**
+ * Index of the cue a flag at `tMs` should attach to. Unlike {@link findActiveIndex}
+ * (which returns -1 when `tMs` falls in a gap between cues), this ALWAYS resolves to
+ * a real cue so EVERY flag maps onto some transcript text — a flag's record-relative
+ * time rarely lands exactly inside a cue's span, but it always has a nearest one.
+ *
+ * Resolution: a cue whose [startMs, endMs) CONTAINS `tMs` wins (distance 0);
+ * otherwise the cue with the smallest time GAP to `tMs` (the gap to its start if
+ * `tMs` precedes it, else to its end). Ties resolve to the EARLIER cue (array order),
+ * giving a stable ordering. Works for multi-track transcripts too, where spans
+ * overlap and aren't monotonic, because it minimizes an absolute time distance rather
+ * than assuming order. Returns -1 only for an empty transcript.
+ */
+function nearestCueIndex(segments: CloudSegment[], tMs: number): number {
+  let best = -1;
+  let bestGap = Infinity;
+  for (let i = 0; i < segments.length; i++) {
+    const s = segments[i];
+    if (tMs >= s.startMs && tMs < s.endMs) return i;
+    const gap = tMs < s.startMs ? s.startMs - tMs : tMs - s.endMs;
+    if (gap < bestGap) {
+      bestGap = gap;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/**
  * Resolve the current `window.getSelection()` to a (possibly multi-segment) raw
  * char range over the transcript.
  *
@@ -993,10 +1021,16 @@ export default function SessionPlayer({
   // FLAG → TEXT highlights (Change R4): each flag tints the cue playing at its
   // offset with the flag's swatch color, so a flag connects to the words it was
   // logged against. Synthetic, non-clickable highlights keyed `flag:<obsId>`.
+  //
+  // We use `nearestCueIndex` (NOT `findActiveIndex`): a flag's record-relative time
+  // rarely lands exactly inside a cue's span, so containment-only mapping silently
+  // dropped flags that fell in inter-cue gaps. EVERY flag must map onto some text, so
+  // a gap-falling flag attaches to its nearest cue by time. Only an empty transcript
+  // yields no mapping (idx < 0).
   const flagHighlightsBySegment = useMemo(() => {
     const m = new Map<string, Highlight[]>();
     for (const { obs, offsetMs } of flagMarkers) {
-      const idx = findActiveIndex(segments, offsetMs);
+      const idx = nearestCueIndex(segments, offsetMs);
       if (idx < 0) continue;
       const seg = segments[idx];
       const list = m.get(seg.id) ?? [];
