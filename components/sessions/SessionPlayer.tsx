@@ -1434,6 +1434,23 @@ export default function SessionPlayer({
     onSegmentTextCommit: handleSegmentTextCommit,
   };
 
+  // Hoisted once so the 50/50 split is defined in ONE place and rendered
+  // identically in both the review and coding transcript branches: the
+  // transcript's height (full vs. half when the chat pane is open) and the
+  // chat-replay pane element itself.
+  const transcriptHeightClass = showChat ? 'h-[40vh]' : 'h-[80vh]';
+  const chatPane = showChat ? (
+    <ChatReplayPane
+      turns={chatTurns}
+      activeIndex={chatActiveIndex}
+      onSeek={seekTo}
+      fmtTime={formatTime}
+      hasMessages={chatMessages.length > 0}
+      anchorResolved={anchorMs != null}
+      className="mt-2 h-[40vh] overflow-y-auto pr-3"
+    />
+  ) : null;
+
   return (
     <main className="px-6 py-6">
       <header className="mb-4">
@@ -1852,24 +1869,14 @@ export default function SessionPlayer({
                 ref={transcriptRef}
                 onMouseUp={codingEnabled && !editing ? handleTranscriptMouseUp : undefined}
                 style={{ scrollbarGutter: 'stable' }}
-                className={`relative overflow-y-auto pr-3 ${showChat ? 'h-[40vh]' : 'h-[80vh]'}`}
+                className={`relative overflow-y-auto pr-3 ${transcriptHeightClass}`}
               >
                 <TranscriptBody
                   {...commonTranscriptProps}
                   renderGutter={renderGutter}
                 />
               </div>
-              {showChat && (
-                <ChatReplayPane
-                  turns={chatTurns}
-                  activeIndex={chatActiveIndex}
-                  onSeek={seekTo}
-                  fmtTime={formatTime}
-                  hasMessages={chatMessages.length > 0}
-                  anchorResolved={anchorMs != null}
-                  className="mt-2 h-[40vh] overflow-y-auto pr-3"
-                />
-              )}
+              {chatPane}
             </>
           ) : (
             /* CODING: full-width transcript column, no comment gutter. */
@@ -1878,21 +1885,11 @@ export default function SessionPlayer({
                 ref={transcriptRef}
                 onMouseUp={codingEnabled && !editing ? handleTranscriptMouseUp : undefined}
                 style={{ scrollbarGutter: 'stable' }}
-                className={`relative overflow-y-auto pr-3 ${showChat ? 'h-[40vh]' : 'h-[80vh]'}`}
+                className={`relative overflow-y-auto pr-3 ${transcriptHeightClass}`}
               >
                 <TranscriptBody {...commonTranscriptProps} />
               </div>
-              {showChat && (
-                <ChatReplayPane
-                  turns={chatTurns}
-                  activeIndex={chatActiveIndex}
-                  onSeek={seekTo}
-                  fmtTime={formatTime}
-                  hasMessages={chatMessages.length > 0}
-                  anchorResolved={anchorMs != null}
-                  className="mt-2 h-[40vh] overflow-y-auto pr-3"
-                />
-              )}
+              {chatPane}
             </>
           )}
         </div>

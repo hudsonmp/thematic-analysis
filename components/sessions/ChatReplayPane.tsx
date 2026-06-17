@@ -111,7 +111,11 @@ export default function ChatReplayPane({
                   {roleLabel(turn.role)}
                 </span>
                 <span className="shrink-0 font-mono text-xs text-foreground/40">
-                  [{fmtTime(turn.offsetMs)}]
+                  {/* Clamp the LABEL at 0: align.ts preserves negative offsets for a
+                      turn before the recording anchor, but formatTime(-1500) → "-1:-2".
+                      Show 0:00 (the flags' pre-record convention); seek stays exact
+                      because seekTo clamps to the seekable range itself. */}
+                  [{fmtTime(Math.max(0, turn.offsetMs))}]
                 </span>
               </div>
               <p className="whitespace-pre-wrap break-words text-foreground/90">
