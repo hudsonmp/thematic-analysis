@@ -24,10 +24,13 @@ import {
 } from '@/app/actions/annotations';
 import { type SessionEpisodeView } from '@/app/actions/episodes';
 import type { ObservationView } from '@/app/actions/observations';
+import type { ChatMessage } from '@/app/actions/chat';
+import { alignChat, activeChatIndex } from '@/lib/chat/align';
 import type { FacetWithValues } from '@/app/actions/codebook';
 import type { Tables } from '@/lib/types/cb-db';
 import SessionCodeCreator from './SessionCodeCreator';
 import CodingPanel from './CodingPanel';
+import ChatReplayPane from './ChatReplayPane';
 import {
   buildMultiAnchor,
   splitIntoPieces,
@@ -264,6 +267,7 @@ export default function SessionPlayer({
   myUid = null,
   sessionEpisodes = [],
   observations = [],
+  chatMessages = [],
   recordingStartedAt = null,
   codebookId,
   facets,
@@ -293,6 +297,9 @@ export default function SessionPlayer({
   sessionEpisodes?: SessionEpisodeView[];
   /** The live co-observation flags logged for this session's participant (Task 5). */
   observations?: ObservationView[];
+  /** The participant's LLM-assistant chat (chat-replay) — aligned client-side to
+   *  the SAME `anchorMs` the flags use, so chat/flags/transcript share one clock. */
+  chatMessages?: ChatMessage[];
   /** The EFFECTIVE recording anchor (ISO) — t=0 for turning an observation's
    *  absolute `createdAt` into a video offset. Null only when even the task start
    *  can't be derived (the flag surfaces then render nothing, silently). */
@@ -383,6 +390,11 @@ export default function SessionPlayer({
   const [currentMs, setCurrentMs] = useState(0);
 
   const [synced, setSynced] = useState(true);
+  // Whether the time-aligned AI-chat replay pane is open (chat-replay feature).
+  // Default hidden — the split shrinks the transcript, so opt-in. When on, the
+  // transcript container goes h-[80vh] → h-[40vh] and ChatReplayPane fills the
+  // other 40vh below it, in BOTH the review and coding branches.
+  const [showChat, setShowChat] = useState(false);
   const syncedRef = useRef(true);
   useEffect(() => {
     syncedRef.current = synced;
@@ -1070,6 +1082,23 @@ export default function SessionPlayer({
     return Number.isNaN(ms) ? null : ms;
   }, [recordingStartedAt]);
 
+  // --- AI-chat replay alignment (chat-replay feature) ---------------------
+  // ONE CLOCK: the chat reuses the SAME `anchorMs` the flags above derive — it
+  // does NOT re-parse `recordingStartedAt`, so chat/flags/transcript share one
+  // timeline. A null anchor (recording never anchored) yields no turns; the pane
+  // then renders its "anchor not set" hint (gated on `anchorMs != null` below).
+  const chatTurns = useMemo(
+    () => (anchorMs == null ? [] : alignChat(chatMessages, anchorMs)),
+    [chatMessages, anchorMs],
+  );
+  // The turn current at the playhead. `currentMs` is the existing second-rounded
+  // playhead state (handleTimeUpdate), so the active turn advances ≤1×/s in lock-
+  // step with the transcript's active cue — same playhead, same cadence.
+  const chatActiveIndex = useMemo(
+    () => activeChatIndex(chatTurns, currentMs),
+    [chatTurns, currentMs],
+  );
+
   // MEANINGFUL flags only (Change R3 drops empty "Note"/stale-event rows), each at
   // `createdAt − anchor` (pre-record flags clamp to 0), in time order.
   const flagMarkers = useMemo(() => {
@@ -1709,6 +1738,19 @@ export default function SessionPlayer({
               >
                 {synced ? 'Sync: on' : 'Sync: off'}
               </button>
+              <button
+                type="button"
+                onClick={() => setShowChat((c) => !c)}
+                aria-pressed={showChat}
+                title={showChat ? 'Hide the AI-chat replay (click to hide)' : 'Show the participant’s AI chat aligned to the timeline'}
+                className={`rounded border px-2 py-1 text-xs ${
+                  showChat
+                    ? 'border-foreground bg-foreground text-background'
+                    : 'border-foreground/30 text-foreground/70 hover:text-foreground'
+                }`}
+              >
+                Chat
+              </button>
             </div>
           </div>
 
@@ -1810,24 +1852,48 @@ export default function SessionPlayer({
                 ref={transcriptRef}
                 onMouseUp={codingEnabled && !editing ? handleTranscriptMouseUp : undefined}
                 style={{ scrollbarGutter: 'stable' }}
-                className="relative h-[80vh] overflow-y-auto pr-3"
+                className={`relative overflow-y-auto pr-3 ${showChat ? 'h-[40vh]' : 'h-[80vh]'}`}
               >
                 <TranscriptBody
                   {...commonTranscriptProps}
                   renderGutter={renderGutter}
                 />
               </div>
+              {showChat && (
+                <ChatReplayPane
+                  turns={chatTurns}
+                  activeIndex={chatActiveIndex}
+                  onSeek={seekTo}
+                  fmtTime={formatTime}
+                  hasMessages={chatMessages.length > 0}
+                  anchorResolved={anchorMs != null}
+                  className="mt-2 h-[40vh] overflow-y-auto pr-3"
+                />
+              )}
             </>
           ) : (
             /* CODING: full-width transcript column, no comment gutter. */
-            <div
-              ref={transcriptRef}
-              onMouseUp={codingEnabled && !editing ? handleTranscriptMouseUp : undefined}
-              style={{ scrollbarGutter: 'stable' }}
-              className="relative h-[80vh] overflow-y-auto pr-3"
-            >
-              <TranscriptBody {...commonTranscriptProps} />
-            </div>
+            <>
+              <div
+                ref={transcriptRef}
+                onMouseUp={codingEnabled && !editing ? handleTranscriptMouseUp : undefined}
+                style={{ scrollbarGutter: 'stable' }}
+                className={`relative overflow-y-auto pr-3 ${showChat ? 'h-[40vh]' : 'h-[80vh]'}`}
+              >
+                <TranscriptBody {...commonTranscriptProps} />
+              </div>
+              {showChat && (
+                <ChatReplayPane
+                  turns={chatTurns}
+                  activeIndex={chatActiveIndex}
+                  onSeek={seekTo}
+                  fmtTime={formatTime}
+                  hasMessages={chatMessages.length > 0}
+                  anchorResolved={anchorMs != null}
+                  className="mt-2 h-[40vh] overflow-y-auto pr-3"
+                />
+              )}
+            </>
           )}
         </div>
       </div>

@@ -11,6 +11,7 @@ import {
 import { taskStartForPid } from '@/app/actions/live';
 import { getRecordingStart } from '@/app/actions/recording';
 import { listObservationsForSession } from '@/app/actions/observations';
+import { listSessionAssistantChat } from '@/app/actions/chat';
 import { getAuthUser } from '@/lib/auth/supabase-auth';
 import SessionPlayer from '@/components/sessions/SessionPlayer';
 
@@ -83,6 +84,18 @@ export default async function SessionPage({
       getAuthUser(),
     ]);
 
+  // The participant's LLM-assistant chat (chat-replay feature), aligned
+  // client-side to the SAME recording anchor the flags use. NON-FATAL: a
+  // chat-load failure (a study-table read error / RLS-empty edge) must not 500
+  // the page — it falls back to [], and the replay pane renders its empty state,
+  // exactly as episodes/observations failures are tolerated above.
+  let chatMessages: Awaited<ReturnType<typeof listSessionAssistantChat>> = [];
+  try {
+    chatMessages = await listSessionAssistantChat(id);
+  } catch {
+    // Non-fatal: no chat replay rather than a broken page.
+  }
+
   // Initial (server-rendered) annotations are the ORIGINAL version's own
   // annotations — version-scoped so highlights anchor to the loaded text. A
   // session with no original version (pathological half-ingest) has no version
@@ -140,6 +153,7 @@ export default async function SessionPage({
       myUid={user?.id ?? null}
       sessionEpisodes={sessionEpisodes}
       observations={observations.observations}
+      chatMessages={chatMessages}
       recordingStartedAt={effectiveAnchor}
       codebookId={codebook.id}
       facets={tree.facets}
