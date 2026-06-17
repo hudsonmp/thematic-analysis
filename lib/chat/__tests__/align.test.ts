@@ -41,6 +41,12 @@ describe('alignChat', () => {
     expect(out.map((t) => t.offsetMs)).toEqual([1_000, 2_000, 3_000]);
   });
 
+  it('breaks offsetMs ties by id for a stable, reproducible order', () => {
+    // A fast user+assistant pair can share a created_at millisecond → equal offset.
+    const out = alignChat([msg('b', 1_000), msg('a', 1_000)], ANCHOR_MS);
+    expect(out.map((t) => t.id)).toEqual(['a', 'b']);
+  });
+
   it('drops rows whose createdAt is unparseable (no NaN offsets)', () => {
     const bad: ChatMessage = {
       id: 'bad',
@@ -96,5 +102,14 @@ describe('activeChatIndex', () => {
 
   it('returns -1 for an empty turn list', () => {
     expect(activeChatIndex([], 5_000)).toBe(-1);
+  });
+
+  it('selects a pre-anchor (negative-offset) turn once the playhead reaches it', () => {
+    // A turn before the recording anchor has a negative offset; it becomes active
+    // as soon as the playhead is at or past it, even while still negative.
+    const straddle = alignChat([msg('pre', -2_000), msg('post', 1_000)], ANCHOR_MS);
+    expect(straddle.map((t) => t.id)).toEqual(['pre', 'post']);
+    expect(activeChatIndex(straddle, 0)).toBe(0); // 0 ≥ pre's -2000, < post's 1000
+    expect(activeChatIndex(straddle, -3_000)).toBe(-1); // before even the pre-anchor turn
   });
 });

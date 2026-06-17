@@ -62,7 +62,10 @@ export function alignChat(messages: AlignableMessage[], anchorMs: number): ChatT
       offsetMs: t - anchorMs,
     });
   }
-  turns.sort((a, b) => a.offsetMs - b.offsetMs);
+  // Deterministic order: by timeline position, then by id, so two turns sharing an
+  // `offsetMs` (a fast user+assistant pair on the same millisecond) have a stable,
+  // reproducible order instead of depending on the engine's sort stability.
+  turns.sort((a, b) => a.offsetMs - b.offsetMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return turns;
 }
 

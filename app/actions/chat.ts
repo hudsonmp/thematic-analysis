@@ -90,6 +90,8 @@ export async function listSessionAssistantChat(
   //       empty yields [] (no chat for this participant).
   const studySb = createServiceRoleClient();
 
+  // `pid` is expected unique; a duplicate surfaces as a `.maybeSingle()` error
+  // (caught below → throw), never a silently wrong user.
   const userRes = await studySb
     .from('users')
     .select('id')
@@ -107,7 +109,10 @@ export async function listSessionAssistantChat(
     .from('study_assistant_messages')
     .select('id, role, content, created_at, module_id, scenario_idx')
     .eq('user_id', userId)
-    .order('created_at', { ascending: true });
+    // created_at is the timeline key; id is a deterministic tiebreaker for two
+    // turns sharing a millisecond (matches alignChat's stable sort).
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true });
   if (msgRes.error) {
     throw new Error(
       `listSessionAssistantChat: study_assistant_messages read failed: ${msgRes.error.message}`,
