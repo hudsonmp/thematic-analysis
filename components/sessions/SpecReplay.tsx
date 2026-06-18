@@ -84,15 +84,49 @@ function ReadOnlyEntityGrid({ entities }: { entities: Entity[] }) {
 export default function SpecReplay({
   spec,
   entities,
+  hasSpecData,
+  anchorResolved,
   className,
 }: {
   /** The reconstructed spec text at the current instant (`''` before any edit). */
   spec: string;
   /** The reconstructed entity table at the current instant (`[]` before any). */
   entities: Entity[];
-  /** Layout classes from the host (e.g. `h-[40vh] overflow-y-auto`). */
+  /** Whether the participant recorded ANY spec/entity edits — distinguishes
+   *  "no data" from "have data but can't place it on the timeline". */
+  hasSpecData: boolean;
+  /** Whether the recording anchor resolved. When false, offsets can't be computed
+   *  so the spec can't be aligned to the playhead — show a hint instead of a
+   *  silently-empty replay (mirrors ChatReplayPane). */
+  anchorResolved: boolean;
+  /** Optional layout classes from the host (height/scroll come from the wrapping
+   *  container today; accepted for parity with the chat pane). */
   className?: string;
 }) {
+  // Distinct empty states (mirror ChatReplayPane). Without this, a null anchor
+  // makes specStateAt resolve to the pre-first-edit empty state for the WHOLE
+  // video — visually identical to a participant who wrote nothing. Surface the
+  // reason instead of silently showing an empty spec.
+  if (!hasSpecData) {
+    return (
+      <section className={`flex flex-col gap-2 pl-3 ${className ?? ''}`}>
+        <PanelLabel>Specifications</PanelLabel>
+        <p className="p-3 text-sm italic text-[var(--muted)]">
+          No specification recorded for this participant.
+        </p>
+      </section>
+    );
+  }
+  if (!anchorResolved) {
+    return (
+      <section className={`flex flex-col gap-2 pl-3 ${className ?? ''}`}>
+        <PanelLabel>Specifications</PanelLabel>
+        <p className="p-3 text-sm italic text-[var(--muted)]">
+          Recording anchor not set — can&rsquo;t align the specification to the timeline.
+        </p>
+      </section>
+    );
+  }
   return (
     <section className={`flex flex-col gap-2 pl-3 ${className ?? ''}`}>
       <PanelLabel>Specifications</PanelLabel>

@@ -1134,14 +1134,20 @@ export default function SessionPlayer({
   // ONE CLOCK: the spec replay projects onto the SAME `anchorMs` (the flags'
   // anchor) + the SAME `currentMs` playhead the chat/transcript use — it does NOT
   // re-parse `recordingStartedAt` or keep its own tick. `specStateAt` takes an
-  // ABSOLUTE epoch instant, so we pass `(anchorMs ?? 0) + currentMs`: a null
-  // anchor degrades to playhead-relative (the spec still scrubs monotonically;
-  // it just can't be absolutely placed — acceptable, and matches how a null
-  // anchor leaves chat unanchored). Recomputes once per second-rounded tick.
+  // ABSOLUTE epoch instant = `anchorMs + currentMs`. When `anchorMs` is null the
+  // spec CANNOT be placed on the timeline — `(null ?? 0) + currentMs` is a tiny
+  // epoch that precedes every edit, so specState resolves to the empty
+  // pre-first-edit state for the WHOLE video. We still compute it, but the pane
+  // gates the DISPLAY on `anchorResolved` (below) and shows a hint instead of a
+  // misleading empty spec — mirroring the chat pane. Recomputes per tick.
   const specState = useMemo(
     () => specStateAt(specTimeline, (anchorMs ?? 0) + currentMs),
     [specTimeline, anchorMs, currentMs],
   );
+  // Whether the participant recorded ANY spec/entity edits (distinct from "have
+  // edits but no anchor to place them"). Drives SpecReplay's two empty states.
+  const hasSpecData =
+    specTimeline.specEdits.length > 0 || specTimeline.entityEdits.length > 0;
 
   // MEANINGFUL flags only (Change R3 drops empty "Note"/stale-event rows), each at
   // `createdAt − anchor` (pre-record flags clamp to 0), in time order.
@@ -1495,7 +1501,12 @@ export default function SessionPlayer({
   // container as the transcript, so the chat 50/50 split (transcriptHeightClass)
   // applies unchanged whether the user is viewing the transcript or the spec.
   const specPane = (
-    <SpecReplay spec={specState.spec} entities={specState.entities} />
+    <SpecReplay
+      spec={specState.spec}
+      entities={specState.entities}
+      hasSpecData={hasSpecData}
+      anchorResolved={anchorMs != null}
+    />
   );
   const chatPane = showChat ? (
     <ChatReplayPane
