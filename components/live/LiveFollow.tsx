@@ -115,6 +115,16 @@ export default function LiveFollow({
   // (correctly) forbids.
   const [nowMs, setNowMs] = useState(() => Date.now());
 
+  // Hydration guard for the time-derived clocks. `nowMs` (lazy `Date.now()`) is
+  // evaluated INDEPENDENTLY during SSR and during client hydration (~1 s apart),
+  // so the elapsed/task/total text mismatches (e.g. server 04:47 vs client 04:46)
+  // → a hydration error. `mounted` is false on BOTH the server render and the
+  // first client render (effects don't run in either), so both emit a stable
+  // placeholder and agree; the effect flips it true post-mount and the live
+  // values take over. Gate every time-derived clock leaf on `mounted`.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   // Inline-create UI: whether the flag composer is open, and its draft text.
   const [newFlagOpen, setNewFlagOpen] = useState(false);
   const [newFlagLabel, setNewFlagLabel] = useState('');
@@ -599,8 +609,10 @@ export default function LiveFollow({
                 {clockStart.source === 'manual' ? 'recording clock' : 'task clock'}
               </div>
               <div className="flex items-center gap-2 font-mono text-sm">
-                {elapsedLabel ?? (
-                  <span className="text-foreground/40">not started</span>
+                {!mounted ? (
+                  <span className="text-foreground/40">··:··</span>
+                ) : (
+                  elapsedLabel ?? <span className="text-foreground/40">not started</span>
                 )}
                 {finished && (
                   <span
@@ -627,14 +639,15 @@ export default function LiveFollow({
                   </div>
                   <div
                     className={`font-mono text-sm ${
-                      timer.taskRemainingMs < 0
+                      mounted && timer.taskRemainingMs < 0
                         ? 'text-red-700 dark:text-red-400'
                         : ''
                     }`}
                     title="Time remaining in the participant's CURRENT phase (hard bucket; over-budget shows negative)"
                   >
-                    {timer.taskRemainingMs < 0 ? '-' : ''}
-                    {formatRemaining(timer.taskRemainingMs)}
+                    {!mounted
+                      ? '··:··'
+                      : `${timer.taskRemainingMs < 0 ? '-' : ''}${formatRemaining(timer.taskRemainingMs)}`}
                   </div>
                 </div>
                 <div>
@@ -645,7 +658,7 @@ export default function LiveFollow({
                     className="font-mono text-sm"
                     title="Overall (cumulative) time remaining across all phases still ahead (floored at 0; forfeits unused time at phase boundaries)"
                   >
-                    {formatRemaining(timer.cumulativeRemainingMs)}
+                    {!mounted ? '··:··' : formatRemaining(timer.cumulativeRemainingMs)}
                   </div>
                 </div>
               </>
