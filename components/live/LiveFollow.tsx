@@ -16,12 +16,51 @@ import {
   observationTime,
   resolveClockStart,
 } from '@/lib/live/clock';
+import {
+  computeTimer,
+  formatRemaining,
+  REQUIREMENTS_BUDGET_MS,
+  SCENARIO_BUDGET_MS,
+} from '@/lib/live/countdown';
+import { createBrowser } from '@/lib/supabase/browser';
 import type { Tables } from '@/lib/types/cb-db';
 
 type FlagType = Tables<'cb_flag_types'>;
 
 const POLL_MS = 3000;
 const DEFAULT_SWATCH = '#000000';
+
+// ---------------------------------------------------------------------------
+// Researcher → participant push (T2). CROSS-REPO CONTRACT — the spec-study-app
+// receiver subscribes to a PUBLIC broadcast channel `live:participant:<pid>` and
+// listens for exactly these event names. Do NOT rename either.
+//
+// PUBLIC (not private) broadcast: on this project `realtime.messages` has RLS
+// enabled with zero policies, so AUTHORIZED channels are blocked; public
+// broadcast does not consult that RLS and works for both the authed researcher
+// client and the anon participant client. A broadcast send writes NO DB row, so
+// the study-table read-only invariant (check-no-study-writes) is preserved.
+// ---------------------------------------------------------------------------
+
+/** The kinds of researcher-pushed popup. `show_time` → participant shows ITS OWN
+ *  computed cumulative remaining; `offer_help` → participant gets an "open
+ *  assistant" popup. */
+export type PushKind = 'show_time' | 'offer_help';
+
+/** The broadcast channel a participant `pid` listens on. */
+function participantChannel(pid: string): string {
+  return `live:participant:${pid}`;
+}
+
+/** PURE seam (tested): the `{ event, payload }` for a push. The event name is the
+ *  cross-repo contract; the payload is intentionally empty — the participant
+ *  computes the number locally, so nothing sensitive crosses the wire. */
+export function buildPushPayload(kind: PushKind): {
+  event: PushKind;
+  payload: Record<string, never>;
+} {
+  return { event: kind, payload: {} };
+}
 
 /**
  * Live Follow (client). The whole in-the-moment interaction: pick a PID, hit
@@ -69,9 +108,12 @@ export default function LiveFollow({
   // the note. Tapping a flag button still fires immediately (tap = flag-only).
   const [armedFlagId, setArmedFlagId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Local clock tick — a counter incremented each second to force a re-render so
-  // the elapsed time advances between 3 s polls.
-  const [, setTick] = useState(0);
+  // Local clock tick — the current wall-clock instant (ms), re-stamped each
+  // second to force a re-render so the elapsed clock AND the countdown mirror
+  // advance between 3 s polls. Held in state (lazy-initialized once) rather than
+  // read via `Date.now()` during render, which the react-hooks/purity rule
+  // (correctly) forbids.
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   // Inline-create UI: whether the flag composer is open, and its draft text.
   const [newFlagOpen, setNewFlagOpen] = useState(false);
@@ -79,6 +121,10 @@ export default function LiveFollow({
   // True while a "Start recording" / reset / clear write is in flight (so the
   // button can't be double-fired).
   const [recBusy, setRecBusy] = useState(false);
+  // True while a researcher→participant push broadcast is in flight (so a button
+  // can't be double-fired). A small transient confirmation of the last push.
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushedKind, setPushedKind] = useState<PushKind | null>(null);
 
   const noteInputRef = useRef<HTMLInputElement>(null);
 
@@ -112,13 +158,34 @@ export default function LiveFollow({
   const clockStart = resolveClockStart(status.recordingStartedAt, status.taskStartedAt);
   const clockStartedAt = clockStart.startedAt;
 
+  // Hard-bucket countdown mirror (T1). A DETERMINISTIC recompute off the SAME
+  // phase boundaries the participant's clock uses (derived server-side from
+  // study_events), via the copied `computeTimer` — not a trust-the-broadcast
+  // mirror, so there is no drift from the participant's authoritative display.
+  // `now` comes from the 1 s tick state (`nowMs`) so the countdown advances
+  // between 3 s polls. Once the participant has FINISHED (`taskEndedAt`), freeze
+  // `now` at that instant so the countdown stops with the elapsed clock. (Falls
+  // back to the ticking `nowMs` if `taskEndedAt` is unparseable.)
+  const now = status.taskEndedAt ? Date.parse(status.taskEndedAt) || nowMs : nowMs;
+  const timer = computeTimer({
+    budgets: {
+      requirementsMs: REQUIREMENTS_BUDGET_MS,
+      scenarioMs: SCENARIO_BUDGET_MS,
+    },
+    scenarioCount: status.scenarioCount,
+    phaseStartsMs: status.phaseStartsMs,
+    nowMs: now,
+  });
+  // The timer is meaningful only once a phase has actually been entered.
+  const timerStarted = timer.currentPhase !== null;
+
   // 1 s local clock tick — only while running: it needs a start anchor and must
   // stop once the participant has finished (`taskEndedAt` set), at which point the
   // elapsed FREEZES. (A manual recording mark also drives the clock; it has no
   // "ended" event, so it ticks until the participant's `study_complete`.)
   useEffect(() => {
     if (!clockStartedAt || status.taskEndedAt) return;
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, [clockStartedAt, status.taskEndedAt]);
 
@@ -155,6 +222,48 @@ export default function LiveFollow({
       setRecBusy(false);
     }
   }, [pid, recBusy]);
+
+  // --- Researcher → participant push (T2) -----------------------------------
+  // Open a PUBLIC broadcast channel on the participant's contract channel and
+  // fire one ephemeral event. Each press is its own short-lived channel: we
+  // subscribe, send on SUBSCRIBED, then tear down — no long-lived socket needed
+  // for a fire-and-forget trigger. This is a RESEARCHER INTERVENTION: it changes
+  // the participant's screen, so firing is an uncontrolled variable (see the
+  // protocol's standardized firing rule); the participant logs every receipt as
+  // a study_event on their side.
+  const onPush = useCallback(
+    async (kind: PushKind) => {
+      if (!pid || pushBusy) return;
+      setError(null);
+      setPushBusy(true);
+      try {
+        const { event, payload } = buildPushPayload(kind);
+        const sb = createBrowser();
+        const channel = sb.channel(participantChannel(pid), {
+          config: { broadcast: { self: false } },
+        });
+        await new Promise<void>((resolve, reject) => {
+          channel.subscribe((statusStr) => {
+            if (statusStr === 'SUBSCRIBED') resolve();
+            else if (
+              statusStr === 'CHANNEL_ERROR' ||
+              statusStr === 'TIMED_OUT' ||
+              statusStr === 'CLOSED'
+            )
+              reject(new Error(`channel ${statusStr}`));
+          });
+        });
+        await channel.send({ type: 'broadcast', event, payload });
+        await sb.removeChannel(channel);
+        setPushedKind(kind);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to send push.');
+      } finally {
+        setPushBusy(false);
+      }
+    },
+    [pid, pushBusy],
+  );
 
   // --- Logging an observation (flag tap, quote, note) -----------------------
 
@@ -425,6 +534,43 @@ export default function LiveFollow({
             )}
           </section>
 
+          {/* Researcher → participant push (T2). Two manual triggers that change
+              the participant's screen. Each fires a PUBLIC broadcast on the
+              participant's contract channel; firing is a RESEARCHER INTERVENTION
+              (an uncontrolled variable) — follow the protocol's firing rule. */}
+          <section className="flex flex-wrap items-center gap-3 border border-foreground/15 px-4 py-3">
+            <div className="text-[11px] uppercase tracking-wider text-foreground/50">
+              push
+            </div>
+            <button
+              type="button"
+              onClick={() => void onPush('show_time')}
+              disabled={!pid || pushBusy}
+              className="border border-foreground/25 px-3 py-1.5 text-sm transition hover:bg-foreground/5 disabled:opacity-40"
+              title="Push a popup to the participant showing their overall (cumulative) time remaining"
+            >
+              Show time remaining
+            </button>
+            <button
+              type="button"
+              onClick={() => void onPush('offer_help')}
+              disabled={!pid || pushBusy}
+              className="border border-foreground/25 px-3 py-1.5 text-sm transition hover:bg-foreground/5 disabled:opacity-40"
+              title="Push a popup to the participant offering to open the assistant"
+            >
+              Offer help
+            </button>
+            {pushedKind && (
+              <span className="text-xs text-foreground/50">
+                sent {pushedKind === 'show_time' ? 'time remaining' : 'help offer'}
+              </span>
+            )}
+            <span className="text-[11px] text-foreground/40">
+              firing is a researcher intervention — it changes the participant&apos;s
+              screen
+            </span>
+          </section>
+
           {/* Current step + running clock */}
           <section className="flex flex-wrap items-center gap-6 border border-foreground/15 px-4 py-3">
             <div>
@@ -466,6 +612,44 @@ export default function LiveFollow({
                 )}
               </div>
             </div>
+
+            {/* Hard-bucket countdown MIRROR (T1) — the same per-task + cumulative
+                remaining the participant sees, recomputed deterministically from
+                their phase boundaries. `Task` is the current phase's bucket
+                (over-budget → red, leading `-`); `Total` is the floored
+                cumulative across phases still ahead. Shown only once a phase has
+                been entered. */}
+            {timerStarted && (
+              <>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider text-foreground/50">
+                    task
+                  </div>
+                  <div
+                    className={`font-mono text-sm ${
+                      timer.taskRemainingMs < 0
+                        ? 'text-red-700 dark:text-red-400'
+                        : ''
+                    }`}
+                    title="Time remaining in the participant's CURRENT phase (hard bucket; over-budget shows negative)"
+                  >
+                    {timer.taskRemainingMs < 0 ? '-' : ''}
+                    {formatRemaining(timer.taskRemainingMs)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider text-foreground/50">
+                    total
+                  </div>
+                  <div
+                    className="font-mono text-sm"
+                    title="Overall (cumulative) time remaining across all phases still ahead (floored at 0; forfeits unused time at phase boundaries)"
+                  >
+                    {formatRemaining(timer.cumulativeRemainingMs)}
+                  </div>
+                </div>
+              </>
+            )}
           </section>
 
           {/* Flag bar */}
