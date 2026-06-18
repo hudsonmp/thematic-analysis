@@ -385,7 +385,10 @@ export async function liveStatusForPid(pid: string): Promise<LiveStatus> {
  * here and is ignored. Events are expected ordered by `created_at` ascending
  * (the order `taskBoundaryEventsForPid` returns).
  */
-export function derivePhaseStartsMs(
+// NOTE: NOT exported. This file is `'use server'`, where every export must be an
+// async Server Action — a sync export breaks the Next build. `derivePhaseStartsMs`
+// is pure and only used by `liveStatusForPid` below, so it stays private here.
+function derivePhaseStartsMs(
   events: TaskBoundaryEvent[],
 ): PhaseStartsMs {
   const out: PhaseStartsMs = { scenarios: [] };
