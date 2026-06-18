@@ -57,6 +57,8 @@ export default async function LiveFollowPage({
           taskStartedAt: null,
           taskEndedAt: null,
           recordingStartedAt: null,
+          scenarioCount: 0,
+          phaseStartsMs: { scenarios: [] },
         },
       ];
 

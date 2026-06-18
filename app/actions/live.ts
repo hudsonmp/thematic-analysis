@@ -229,8 +229,17 @@ export async function taskBoundaryEventsForPid(
 }
 
 /** The active study's authored modules, for the humanizer's `module_start`
- *  → title resolution. READ-ONLY (derived from `getShownStudy`). */
-export type LiveModuleMeta = { id: string; type: string; title: string };
+ *  → title resolution. READ-ONLY (derived from `getShownStudy`). `scenarioCount`
+ *  is the AUTHORED `scenarios.length` for a `type:'task'` module (0 for other
+ *  module types) — the live timer mirror sums the budgets of phases still ahead
+ *  off the AUTHORED count, since a participant who has not yet reached the last
+ *  scenario still has its budget in front of them. */
+export type LiveModuleMeta = {
+  id: string;
+  type: string;
+  title: string;
+  scenarioCount: number;
+};
 
 /**
  * The active study's modules as `{id, type, title}`, parsed from the shown
@@ -264,6 +273,28 @@ export type LiveStatus = {
    *  live clock counts from THIS (the exact record start) rather than
    *  `taskStartedAt`. Polled so a mark set elsewhere shows up within a tick. */
   recordingStartedAt: string | null;
+  /** The AUTHORED task's `scenarios.length` (the number of SCENARIO phases). Fed
+   *  to the `/live` timer mirror's `computeTimer` so it can sum the budgets of
+   *  scenarios still ahead — taken from the authored study, not the observed
+   *  events, since unreached scenarios still count toward cumulative remaining.
+   *  0 when the study has no task module. */
+  scenarioCount: number;
+  /** Each ENTERED phase's start instant (ms epoch), derived from the
+   *  participant's task `step_advance` events: `requirements` = the
+   *  `initial_spec` step; `scenarios[idx]` = the `scenario_<idx>_read` step. An
+   *  absent field/slot means that phase has not been entered. This is the
+   *  `phaseStartsMs` input to `computeTimer` — the hard-bucket timer recomputes
+   *  deterministically off these boundaries (no trust-the-broadcast drift). */
+  phaseStartsMs: PhaseStartsMs;
+};
+
+/** Each entered phase's start instant (ms epoch). Mirrors the participant
+ *  timer's `TimerInput.phaseStartsMs` (lib/live/countdown.ts). `scenarios` is
+ *  sparse by index: `scenarios[idx]` is scenario idx's `scenario_<idx>_read`
+ *  entry instant; an absent slot means that scenario has not been entered. */
+export type PhaseStartsMs = {
+  requirements?: number;
+  scenarios: (number | undefined)[];
 };
 
 /**
@@ -283,18 +314,29 @@ export async function liveStatusForPid(pid: string): Promise<LiveStatus> {
       taskStartedAt: null,
       taskEndedAt: null,
       recordingStartedAt: null,
+      scenarioCount: 0,
+      phaseStartsMs: { scenarios: [] },
     };
 
-  const [latest, taskStartedAt, taskEndedAt, modules, recordingStartedAt] =
-    await Promise.all([
-      latestEventForPid(trimmed),
-      taskStartForPid(trimmed),
-      taskEndedForPid(trimmed),
-      listStudyModules(),
-      // The MANUAL recording mark (a cb_ read). Folded into the polled status so a
-      // mark set on the live page (or elsewhere) surfaces within a poll tick.
-      getRecordingStart(trimmed),
-    ]);
+  const [
+    latest,
+    taskStartedAt,
+    taskEndedAt,
+    modules,
+    recordingStartedAt,
+    boundaryEvents,
+  ] = await Promise.all([
+    latestEventForPid(trimmed),
+    taskStartForPid(trimmed),
+    taskEndedForPid(trimmed),
+    listStudyModules(),
+    // The MANUAL recording mark (a cb_ read). Folded into the polled status so a
+    // mark set on the live page (or elsewhere) surfaces within a poll tick.
+    getRecordingStart(trimmed),
+    // The ordered task `module_start`/`step_advance` events — the source the
+    // hard-bucket timer mirror keys phase boundaries off.
+    taskBoundaryEventsForPid(trimmed),
+  ]);
 
   const stepLabel = latest
     ? humanizeEvent(
@@ -307,13 +349,80 @@ export async function liveStatusForPid(pid: string): Promise<LiveStatus> {
       )
     : null;
 
+  // scenarioCount from the AUTHORED task (not the observed events): a participant
+  // mid-study still has the budget of unreached scenarios ahead of them.
+  const taskModule = modules.find((m) => m.type === 'task');
+  const scenarioCount = taskModule?.scenarioCount ?? 0;
+  const phaseStartsMs = derivePhaseStartsMs(boundaryEvents);
+
   return {
     stepLabel,
     latestAt: latest?.createdAt ?? null,
     taskStartedAt,
     taskEndedAt,
     recordingStartedAt,
+    scenarioCount,
+    phaseStartsMs,
   };
+}
+
+/**
+ * Derive each entered phase's start instant from a participant's ordered task
+ * boundary events — the `phaseStartsMs` input to the `/live` timer mirror's
+ * `computeTimer` (lib/live/countdown.ts). PURE.
+ *
+ * Keys EXACTLY the `step_advance` destination steps the participant emits (see
+ * spec-study-app ParticipantFlow.tsx:stepLabel, confirmed against live
+ * study_events):
+ *   - `{ to: 'initial_spec' }`        → requirements phase entry
+ *   - `{ to: 'scenario_<idx>_read' }` → scenario idx phase entry (idx 0-based)
+ *
+ * The requirements clock starts at `initial_spec` (NOT `module_start`/`intro`) —
+ * the design grants the requirements budget at the `initial_spec` beat, mirroring
+ * the participant's `onPhaseEnter` grant. Each phase's FIRST entry wins (a
+ * re-entry via back-navigation does not re-stamp), matching the idempotent
+ * per-key grant on the participant side. `module_start` carries no phase budget
+ * here and is ignored. Events are expected ordered by `created_at` ascending
+ * (the order `taskBoundaryEventsForPid` returns).
+ */
+export function derivePhaseStartsMs(
+  events: TaskBoundaryEvent[],
+): PhaseStartsMs {
+  const out: PhaseStartsMs = { scenarios: [] };
+
+  for (const event of events) {
+    if (event.eventType !== 'step_advance') continue;
+    const to = stepDestination(event.payload);
+    if (to === null) continue;
+
+    const at = Date.parse(event.createdAt);
+    if (Number.isNaN(at)) continue;
+
+    if (to === 'initial_spec') {
+      // First entry wins (idempotent, matches participant grant).
+      if (typeof out.requirements !== 'number') out.requirements = at;
+      continue;
+    }
+
+    const scenarioRead = to.match(/^scenario_(\d+)_read$/);
+    if (scenarioRead) {
+      const idx = Number(scenarioRead[1]);
+      if (!Number.isInteger(idx) || idx < 0) continue;
+      if (typeof out.scenarios[idx] !== 'number') out.scenarios[idx] = at;
+    }
+  }
+
+  return out;
+}
+
+/** The `step_advance` payload's `to` step key, or null if absent/non-string.
+ *  Defensive against a malformed payload (mirrors humanize.ts's narrowing). */
+function stepDestination(payload: Json): string | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return null;
+  }
+  const to = (payload as Record<string, unknown>).to;
+  return typeof to === 'string' ? to : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +476,10 @@ function parseModules(authoredData: Json | null): LiveModuleMeta[] {
       id: rec.id,
       type: rec.type,
       title: typeof rec.title === 'string' ? rec.title : '',
+      // `scenarios` is a top-level array on the authored task module
+      // (lib/types/study.ts:TaskContent). Count it for the timer's
+      // phases-after-current budget; 0 when absent or not a task module.
+      scenarioCount: Array.isArray(rec.scenarios) ? rec.scenarios.length : 0,
     });
   }
   return out;
