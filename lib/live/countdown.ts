@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// `/live` timer MIRROR — HARD PER-PHASE BUCKETS, NO CARRYOVER (pure; no
+// `/live` timer MIRROR — advisory per-phase buckets + CARRYOVER pool (pure; no
 // React/DOM, so it can be unit-reasoned independently of the component).
 //
 // This is a VERBATIM port of the participant timer model in spec-study-app's
@@ -26,19 +26,20 @@
 //                                                  revise → [retro × q]
 //   Phase sequence = [requirements, scenario0, …, scenario(N-1)], N = scenarios.
 //
-// HARD BUCKETS, NO CARRYOVER. Each phase is walled off:
-//   • overrunning a task never touches another task's budget;
-//   • finishing early FORFEITS the unused time (it is NOT rolled forward).
+// HYBRID: per-task buckets are ADVISORY pacing; the TOTAL is one POOL with
+// CARRYOVER. Each task shows its own bucket (10 / 15 min) and drives the 2-min
+// warning + at-0 popup, but unused per-task time is NOT forfeited — the
+// cumulative is the whole study budget counting down from the first phase entry,
+// so the participant gets the full pool (e.g. 70 min) however they spread it.
 //
 //   phaseStart(p)        = wall-clock instant phase p was ENTERED (requirements
 //                          = initial_spec entry; scenario idx = that scenario's
 //                          scenario_read entry).
 //   currentPhase         = the phase of the latest entry.
-//   taskRemainingMs      = B_current − (now − phaseStart(current))   // MAY be < 0
-//   cumulativeRemainingMs= max(0, taskRemainingMs)
-//                          + Σ B_p over phases STRICTLY AFTER current
-//                          // completed phases contribute 0 (no carryover); an
-//                          // overrun is floored at 0, never refunded.
+//   taskRemainingMs      = B_current − (now − phaseStart(current))   // MAY be < 0 (advisory)
+//   cumulativeRemainingMs= totalBudget − (now − firstPhaseStart)
+//                          // totalBudget = requirements + every scenario; the
+//                          // POOL carries unused task time forward. Signed.
 //
 // Logic keeps the sign of taskRemainingMs (the participant's 2-min warning and
 // at-0 popup read it). The mm:ss DISPLAY clamps at 0 via `formatRemaining`; the
@@ -77,8 +78,9 @@ export type TimerOutput = {
   // entered, this is the requirements budget at rest (the first thing the
   // participant will spend).
   taskRemainingMs: number;
-  // max(0, taskRemainingMs) + Σ budgets of phases strictly after current. Never
-  // negative. When no phase has been entered, this is the whole study budget.
+  // CARRYOVER pool: totalBudget − (now − firstPhaseStart). Unused per-task time
+  // carries forward; signed (display clamps at 0). When no phase has been
+  // entered, this is the whole study budget.
   cumulativeRemainingMs: number;
 };
 
@@ -89,20 +91,20 @@ export function budgetOf(phase: TimerPhase, budgets: TimerInput['budgets']): num
     : budgets.scenarioMs;
 }
 
-// Sum of budgets for the phases STRICTLY AFTER `current` in the canonical
-// sequence [requirements, scenario0, …, scenario(N-1)].
-export function budgetAfter(
-  current: TimerPhase,
-  scenarioCount: number,
-  budgets: TimerInput['budgets'],
-): number {
-  if (current.kind === 'requirements') {
-    // All N scenarios are still ahead.
-    return scenarioCount * budgets.scenarioMs;
-  }
-  // Scenarios with index > current.idx are still ahead.
-  const remainingScenarios = Math.max(0, scenarioCount - 1 - current.idx);
-  return remainingScenarios * budgets.scenarioMs;
+// The EARLIEST entered phase's start instant — the moment the whole timer began
+// (the requirements entry in the normal flow). The cumulative POOL counts down
+// from here, so unused per-task time carries forward (see computeTimer). Null
+// when no phase has been entered.
+export function firstPhaseStartMs(
+  phaseStartsMs: TimerInput['phaseStartsMs'],
+): number | null {
+  let min: number | null = null;
+  const consider = (s: number | undefined) => {
+    if (typeof s === 'number' && (min === null || s < min)) min = s;
+  };
+  consider(phaseStartsMs.requirements);
+  phaseStartsMs.scenarios.forEach(consider);
+  return min;
 }
 
 // Pick the latest-entered phase from the recorded start instants. Ties (equal
@@ -149,9 +151,14 @@ export function computeTimer(input: TimerInput): TimerOutput {
 
   const elapsed = nowMs - current.startedAt;
   const taskRemainingMs = budgetOf(current.phase, budgets) - elapsed;
-  const cumulativeRemainingMs =
-    Math.max(0, taskRemainingMs) +
-    budgetAfter(current.phase, scenarioCount, budgets);
+  // CARRYOVER total: ONE pool of (requirements + every scenario) counting down
+  // from the first phase entry, so unused per-task time is NOT forfeited — the
+  // participant gets the full study budget however they spread it across tasks.
+  // Signed (goes negative once the whole pool is spent); the display clamps at 0.
+  const totalBudget =
+    budgets.requirementsMs + scenarioCount * budgets.scenarioMs;
+  const firstStart = firstPhaseStartMs(phaseStartsMs) ?? current.startedAt;
+  const cumulativeRemainingMs = totalBudget - (nowMs - firstStart);
 
   return { currentPhase: current.phase, taskRemainingMs, cumulativeRemainingMs };
 }
