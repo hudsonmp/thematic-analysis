@@ -12,6 +12,7 @@ import { taskStartForPid } from '@/app/actions/live';
 import { getRecordingStart } from '@/app/actions/recording';
 import { listObservationsForSession } from '@/app/actions/observations';
 import { listSessionAssistantChat } from '@/app/actions/chat';
+import { listSessionSpecTimeline } from '@/app/actions/spec';
 import { getAuthUser } from '@/lib/auth/supabase-auth';
 import SessionPlayer from '@/components/sessions/SessionPlayer';
 
@@ -96,6 +97,21 @@ export default async function SessionPage({
     // Non-fatal: no chat replay rather than a broken page.
   }
 
+  // The participant's evolving spec/entities edit streams (spec-mode), for the
+  // Specification tab's replay. NON-FATAL like chat: a study-table read error
+  // falls back to the empty timeline, and the spec pane renders its empty state
+  // rather than 500-ing the page. Reconstruction + clock alignment happen
+  // client-side (specStateAt), so the page just hands over the raw streams.
+  let specTimeline: Awaited<ReturnType<typeof listSessionSpecTimeline>> = {
+    specEdits: [],
+    entityEdits: [],
+  };
+  try {
+    specTimeline = await listSessionSpecTimeline(id);
+  } catch {
+    // Non-fatal: no spec replay rather than a broken page.
+  }
+
   // Initial (server-rendered) annotations are the ORIGINAL version's own
   // annotations — version-scoped so highlights anchor to the loaded text. A
   // session with no original version (pathological half-ingest) has no version
@@ -154,6 +170,7 @@ export default async function SessionPage({
       sessionEpisodes={sessionEpisodes}
       observations={observations.observations}
       chatMessages={chatMessages}
+      specTimeline={specTimeline}
       recordingStartedAt={effectiveAnchor}
       codebookId={codebook.id}
       facets={tree.facets}

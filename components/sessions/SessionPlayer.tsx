@@ -26,11 +26,14 @@ import { type SessionEpisodeView } from '@/app/actions/episodes';
 import type { ObservationView } from '@/app/actions/observations';
 import type { ChatMessage } from '@/app/actions/chat';
 import { alignChat, activeChatIndex } from '@/lib/chat/align';
+import type { SpecTimelineResult } from '@/app/actions/spec';
+import { specStateAt } from '@/lib/spec/reconstruct';
 import type { FacetWithValues } from '@/app/actions/codebook';
 import type { Tables } from '@/lib/types/cb-db';
 import SessionCodeCreator from './SessionCodeCreator';
 import CodingPanel from './CodingPanel';
 import ChatReplayPane from './ChatReplayPane';
+import SpecReplay from './SpecReplay';
 import {
   buildMultiAnchor,
   splitIntoPieces,
@@ -268,6 +271,7 @@ export default function SessionPlayer({
   sessionEpisodes = [],
   observations = [],
   chatMessages = [],
+  specTimeline = { specEdits: [], entityEdits: [] },
   recordingStartedAt = null,
   codebookId,
   facets,
@@ -300,6 +304,10 @@ export default function SessionPlayer({
   /** The participant's LLM-assistant chat (chat-replay) — aligned client-side to
    *  the SAME `anchorMs` the flags use, so chat/flags/transcript share one clock. */
   chatMessages?: ChatMessage[];
+  /** The participant's evolving spec/entities edit streams (spec-mode, Task SV1).
+   *  Reconstructed + projected onto the SAME `anchorMs`/playhead clock client-side
+   *  (specStateAt) so the Specification tab replays the spec as the video scrubs. */
+  specTimeline?: SpecTimelineResult;
   /** The EFFECTIVE recording anchor (ISO) — t=0 for turning an observation's
    *  absolute `createdAt` into a video offset. Null only when even the task start
    *  can't be derived (the flag surfaces then render nothing, silently). */
@@ -322,7 +330,13 @@ export default function SessionPlayer({
 
   // --- Transcript layers (feature #20): original (verbatim) vs cleaned --------
   const cleanedVersionFromList = versions.find((v) => v.kind === 'cleaned') ?? null;
-  const [activeTab, setActiveTab] = useState<'original' | 'cleaned'>('original');
+  // Three transcript-pane modes: the two transcript versions (original/cleaned),
+  // plus the segment-LESS "specification" replay (spec-mode). The first two load
+  // segments via the version mechanism; 'specification' reconstructs from
+  // `specTimeline` independently and never touches `versionId`/`segments`.
+  const [activeTab, setActiveTab] = useState<
+    'original' | 'cleaned' | 'specification'
+  >('original');
   const [versionId, setVersionId] = useState<string | null>(originalVersionId);
   const [cleanedVersionId, setCleanedVersionId] = useState<string | null>(
     cleanedVersionFromList?.id ?? null,
@@ -588,6 +602,23 @@ export default function SessionPlayer({
       setActiveIdx(-1);
     }
   }, [activeTab, cleanedVersionId, loadVersion]);
+
+  // Switch to the segment-LESS "Specification" replay. Unlike the transcript
+  // tabs, this does NOT load a version: the spec view reconstructs from
+  // `specTimeline` independently (specState memo), so `versionId`/`segments` stay
+  // EXACTLY as they were — switching back to a transcript tab restores the same
+  // loaded text without a refetch. We DO clear the transcript-bound interaction
+  // state (text selection, composer, open comment, edit mode) so none of it
+  // bleeds into the read-only spec surface.
+  const handleSelectSpecification = useCallback(() => {
+    if (activeTab === 'specification') return;
+    setActiveTab('specification');
+    setEditing(false);
+    setTextSel(null);
+    setComposerOpen(false);
+    setActiveIdx(-1);
+    setOpenCommentAnnId(null);
+  }, [activeTab]);
 
   const handleCreateCleaned = useCallback(async () => {
     setVersionBusy(true);
@@ -1099,6 +1130,19 @@ export default function SessionPlayer({
     [chatTurns, currentMs],
   );
 
+  // --- Spec replay reconstruction (spec-mode) -----------------------------
+  // ONE CLOCK: the spec replay projects onto the SAME `anchorMs` (the flags'
+  // anchor) + the SAME `currentMs` playhead the chat/transcript use — it does NOT
+  // re-parse `recordingStartedAt` or keep its own tick. `specStateAt` takes an
+  // ABSOLUTE epoch instant, so we pass `(anchorMs ?? 0) + currentMs`: a null
+  // anchor degrades to playhead-relative (the spec still scrubs monotonically;
+  // it just can't be absolutely placed — acceptable, and matches how a null
+  // anchor leaves chat unanchored). Recomputes once per second-rounded tick.
+  const specState = useMemo(
+    () => specStateAt(specTimeline, (anchorMs ?? 0) + currentMs),
+    [specTimeline, anchorMs, currentMs],
+  );
+
   // MEANINGFUL flags only (Change R3 drops empty "Note"/stale-event rows), each at
   // `createdAt − anchor` (pre-record flags clamp to 0), in time order.
   const flagMarkers = useMemo(() => {
@@ -1439,6 +1483,20 @@ export default function SessionPlayer({
   // transcript's height (full vs. half when the chat pane is open) and the
   // chat-replay pane element itself.
   const transcriptHeightClass = showChat ? 'h-[40vh]' : 'h-[80vh]';
+  // The spec-replay pane, hoisted so BOTH the review and coding branches render
+  // an identical surface (they only differ in the transcript's gutter). Its
+  // CONTENT is time-derived (specState = specStateAt(anchorMs + currentMs)) — but
+  // HYDRATION-SAFE WITHOUT a mount gate: at the first render `currentMs === 0` on
+  // both the server and the client and `anchorMs` is deterministic from props, so
+  // `specState` is identical across server/first-client render (exactly the
+  // property the un-gated chatPane below relies on — one shared clock, same
+  // cadence). No `mounted` flag is needed (and the repo bans set-state-in-effect,
+  // so adding one would introduce a lint error). Placed in the SAME scroll
+  // container as the transcript, so the chat 50/50 split (transcriptHeightClass)
+  // applies unchanged whether the user is viewing the transcript or the spec.
+  const specPane = (
+    <SpecReplay spec={specState.spec} entities={specState.entities} />
+  );
   const chatPane = showChat ? (
     <ChatReplayPane
       turns={chatTurns}
@@ -1715,12 +1773,29 @@ export default function SessionPlayer({
             >
               Cleaned
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'specification'}
+              onClick={handleSelectSpecification}
+              disabled={versionBusy}
+              title="The participant’s evolving specification, replayed in sync with the video"
+              className={`rounded px-2 py-1 disabled:opacity-50 ${
+                activeTab === 'specification'
+                  ? 'bg-foreground text-background'
+                  : 'border border-foreground/30 text-foreground/70 hover:text-foreground'
+              }`}
+            >
+              Specification
+            </button>
           </div>
 
           <div className="mb-2 flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold">
-              Transcript
-              {isVerbatim ? (
+              {activeTab === 'specification' ? 'Specification' : 'Transcript'}
+              {activeTab === 'specification' ? (
+                <span className="ml-1 font-normal text-foreground/40">· replayed, read-only</span>
+              ) : isVerbatim ? (
                 <span className="ml-1 font-normal text-foreground/40">· verbatim, read-only</span>
               ) : (
                 <span className="ml-1 font-normal text-foreground/40">· cleaned</span>
@@ -1778,7 +1853,9 @@ export default function SessionPlayer({
           )}
 
           {/* Phrase search over the transcript: paints matches orange (current one
-              brighter), steps through with ↑/↓ / Enter, scrolls the match into view. */}
+              brighter), steps through with ↑/↓ / Enter, scrolls the match into view.
+              Hidden in spec mode — it searches transcript segments, not the spec. */}
+          {activeTab !== 'specification' && (
           <div className="mb-2 flex items-center gap-2">
             <input
               type="search"
@@ -1833,6 +1910,7 @@ export default function SessionPlayer({
               </>
             )}
           </div>
+          )}
 
           {isCleanedActive && !versionId ? (
             <div className="rounded border border-foreground/15 p-4 text-sm text-foreground/70">
@@ -1867,14 +1945,22 @@ export default function SessionPlayer({
               )}
               <div
                 ref={transcriptRef}
-                onMouseUp={codingEnabled && !editing ? handleTranscriptMouseUp : undefined}
+                onMouseUp={
+                  codingEnabled && !editing && activeTab !== 'specification'
+                    ? handleTranscriptMouseUp
+                    : undefined
+                }
                 style={{ scrollbarGutter: 'stable' }}
                 className={`relative overflow-y-auto pr-3 ${transcriptHeightClass}`}
               >
-                <TranscriptBody
-                  {...commonTranscriptProps}
-                  renderGutter={renderGutter}
-                />
+                {activeTab === 'specification' ? (
+                  specPane
+                ) : (
+                  <TranscriptBody
+                    {...commonTranscriptProps}
+                    renderGutter={renderGutter}
+                  />
+                )}
               </div>
               {chatPane}
             </>
@@ -1883,11 +1969,19 @@ export default function SessionPlayer({
             <>
               <div
                 ref={transcriptRef}
-                onMouseUp={codingEnabled && !editing ? handleTranscriptMouseUp : undefined}
+                onMouseUp={
+                  codingEnabled && !editing && activeTab !== 'specification'
+                    ? handleTranscriptMouseUp
+                    : undefined
+                }
                 style={{ scrollbarGutter: 'stable' }}
                 className={`relative overflow-y-auto pr-3 ${transcriptHeightClass}`}
               >
-                <TranscriptBody {...commonTranscriptProps} />
+                {activeTab === 'specification' ? (
+                  specPane
+                ) : (
+                  <TranscriptBody {...commonTranscriptProps} />
+                )}
               </div>
               {chatPane}
             </>
