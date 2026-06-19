@@ -6,9 +6,36 @@
 // question for a scenario; the participant receives it on the broadcast contract
 // (`retro_question` event, payload `{ text, scenarioIdx }` — see
 // spec-study-app/lib/study/push.ts) and queues it for that scenario's retro step.
-// The same send PERSISTS to cb_observations as a RETRO-QUESTION row (a row whose
-// `retro_question_scenario_idx` is non-null; the question text lives in `body`).
+// The send PERSISTS to cb_observations as a RETRO-QUESTION row (a row whose
+// `retro_question_scenario_idx` is non-null; the question text lives in `body`)
+// — but ONLY when the broadcast actually delivered. A persisted row asserts "this
+// question WAS asked"; persisting one for an undelivered broadcast (a concurrent
+// push was in flight, or the send failed) would mislead spec-mode analysis. The
+// persist-vs-error decision is the pure `retroPersistDecision` seam below.
 // Migration 31_observation_retro_question.
+
+/** The error shown when a retro question could NOT be delivered to the
+ *  participant (a concurrent push was in flight, or the broadcast send/subscribe
+ *  failed). The companion invariant: when delivery fails we do NOT persist a
+ *  `cb_observations` retro-question row, so the coding tool never renders a
+ *  spec-mode "asked" question the participant never received. */
+export const RETRO_NOT_DELIVERED_MSG = 'Question not delivered — try again.';
+
+/** The decision the live retro composer makes AFTER attempting the broadcast: a
+ *  PURE seam over the delivery signal so the persist-vs-error branch is unit-
+ *  testable without React/Supabase/DOM. `delivered` is `onPush`'s boolean return
+ *  (`true` only when the broadcast actually sent). DATA FIDELITY: persist ONLY on
+ *  a true delivery; otherwise surface the not-delivered error and write nothing,
+ *  so a question the participant never received is never recorded as "asked". */
+export type RetroPersistDecision =
+  | { persist: true; error: null }
+  | { persist: false; error: string };
+
+export function retroPersistDecision(delivered: boolean): RetroPersistDecision {
+  return delivered
+    ? { persist: true, error: null }
+    : { persist: false, error: RETRO_NOT_DELIVERED_MSG };
+}
 
 /** A participant's `phaseStartsMs` (mirrors live.ts `PhaseStartsMs` /
  *  countdown.ts `TimerInput.phaseStartsMs`): `scenarios` is sparse by 0-based

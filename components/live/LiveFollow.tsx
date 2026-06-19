@@ -8,7 +8,7 @@ import {
   deleteObservation,
   type ObservationView,
 } from '@/app/actions/observations';
-import { currentScenarioIdx } from '@/lib/live/retro';
+import { currentScenarioIdx, retroPersistDecision } from '@/lib/live/retro';
 import { liveStatusForPid, type LiveStatus, type LiveParticipant } from '@/app/actions/live';
 import { markRecordingStart, clearRecordingStart } from '@/app/actions/recording';
 import { createFlagType } from '@/app/actions/flag-types';
@@ -276,9 +276,16 @@ export default function LiveFollow({
   // the participant's screen, so firing is an uncontrolled variable (see the
   // protocol's standardized firing rule); the participant logs every receipt as
   // a study_event on their side.
+  //
+  // Returns whether the broadcast ACTUALLY SENT: `true` only after `channel.send`
+  // resolves; `false` on the `pushBusy` early-return (a concurrent push is in
+  // flight) and on any caught send/subscribe error (the UX still surfaces via
+  // setError). Callers that PERSIST a side-effect of the push (the retro-question
+  // row) MUST gate that write on a `true` result, so a question the participant
+  // never received is never recorded as "asked" (data-fidelity invariant).
   const onPush = useCallback(
-    async (kind: PushKind, retro?: RetroQuestionPushPayload) => {
-      if (!pid || pushBusy) return;
+    async (kind: PushKind, retro?: RetroQuestionPushPayload): Promise<boolean> => {
+      if (!pid || pushBusy) return false;
       setError(null);
       setPushBusy(true);
       try {
@@ -301,8 +308,10 @@ export default function LiveFollow({
         await channel.send({ type: 'broadcast', event, payload });
         await sb.removeChannel(channel);
         setPushedKind(kind);
+        return true;
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to send push.');
+        return false;
       } finally {
         setPushBusy(false);
       }
@@ -321,11 +330,18 @@ export default function LiveFollow({
   // coding tool can later surface the question that was asked). The target is the
   // override (`retroScenario`, a 0-based index) when provided, else the
   // participant's current scenario; an empty/non-numeric override falls back to
-  // the current scenario (`null` ⇒ resolved on the participant). Both sides must
-  // succeed-ish: the broadcast is fire-and-forget; if PERSIST fails we surface the
-  // error but the participant has already received the live question.
+  // the current scenario (`null` ⇒ resolved on the participant).
+  //
+  // DATA FIDELITY: the persisted row means "this question WAS asked of the
+  // participant" — the coding tool renders it in spec-mode as an asked question.
+  // So PERSIST is gated on the broadcast ACTUALLY SENDING. `onPush` returns
+  // `false` when it silently early-returns (a concurrent show_time/offer_help is
+  // in flight → `pushBusy`) or when the send/subscribe throws; in EITHER case the
+  // participant may never have received the question, so we surface a clear
+  // "not delivered" error and DO NOT persist a phantom row. We also gate the whole
+  // handler on `pushBusy` so it never fires while another push is mid-flight.
   const onQueueRetro = useCallback(async () => {
-    if (!pid || retroBusy) return;
+    if (!pid || retroBusy || pushBusy) return;
     const text = retroText.trim();
     if (!text) return;
 
@@ -343,8 +359,16 @@ export default function LiveFollow({
     setRetroSent(false);
     try {
       // (a) BROADCAST — reuse the shared push sender with the retro payload.
-      await onPush('retro_question', { text, scenarioIdx });
-      // (b) PERSIST — own-write cb_observations row (RLS created_by = auth.uid()).
+      const delivered = await onPush('retro_question', { text, scenarioIdx });
+      // (b) The participant may NEVER have received it (busy / send error). The
+      //     pure seam decides persist-vs-error; on no-delivery we surface the
+      //     not-delivered error and write NO phantom "asked" row.
+      const decision = retroPersistDecision(delivered);
+      if (!decision.persist) {
+        setError(decision.error);
+        return;
+      }
+      // (c) PERSIST — own-write cb_observations row (RLS created_by = auth.uid()).
       await addRetroQuestion({ pid, text, scenarioIdx });
       setRetroText('');
       setRetroScenario('');
@@ -354,7 +378,7 @@ export default function LiveFollow({
     } finally {
       setRetroBusy(false);
     }
-  }, [pid, retroBusy, retroText, retroScenario, defaultRetroScenarioIdx, onPush]);
+  }, [pid, retroBusy, pushBusy, retroText, retroScenario, defaultRetroScenarioIdx, onPush]);
 
   // --- Logging an observation (flag tap, quote, note) -----------------------
 
@@ -702,7 +726,7 @@ export default function LiveFollow({
               <button
                 type="button"
                 onClick={() => void onQueueRetro()}
-                disabled={!pid || retroBusy || !retroText.trim()}
+                disabled={!pid || retroBusy || pushBusy || !retroText.trim()}
                 className="border border-foreground px-3 py-1.5 text-sm transition hover:bg-foreground hover:text-background disabled:opacity-40"
                 title="Broadcast a custom retrospective question to the participant for the target scenario and save it"
               >

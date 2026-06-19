@@ -1,9 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import {
   currentScenarioIdx,
+  retroPersistDecision,
   retroQuestionsAt,
+  RETRO_NOT_DELIVERED_MSG,
   type RetroQuestionRow,
 } from '@/lib/live/retro';
+
+describe('retroPersistDecision (gate persistence on actual delivery)', () => {
+  it('persists with no error when the broadcast DELIVERED', () => {
+    expect(retroPersistDecision(true)).toEqual({ persist: true, error: null });
+  });
+
+  it('does NOT persist and surfaces the not-delivered error when undelivered', () => {
+    // Covers BOTH the pushBusy early-return and a caught send/subscribe error:
+    // onPush returns false in either case → no phantom "asked" row is written.
+    expect(retroPersistDecision(false)).toEqual({
+      persist: false,
+      error: RETRO_NOT_DELIVERED_MSG,
+    });
+  });
+
+  it('never reports persist:true alongside an error (mutually exclusive branch)', () => {
+    for (const delivered of [true, false]) {
+      const d = retroPersistDecision(delivered);
+      expect(d.persist).toBe(d.error === null);
+    }
+  });
+});
 
 describe('currentScenarioIdx (live sender default target)', () => {
   it('returns null before any scenario has been entered', () => {
