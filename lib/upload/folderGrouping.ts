@@ -113,6 +113,66 @@ export function groupFolderFiles(pid: string, items: FolderFile[]): FolderGroup 
 }
 
 /**
+ * The Zoom recording-SEGMENT suffix encoded in a `video*.mp4` filename.
+ *
+ * Zoom writes a NEW numbered recording every time the host stops/starts. Each
+ * file name carries the segment number + meeting id as a trailing digit run:
+ *   `video<seg><meetingID>.mp4` — e.g. `video2639780501.mp4` → `"2639780501"`.
+ * The matching per-speaker tracks share the SAME `<seg><meetingID>` tail (see
+ * {@link scopeAudioTracks}), so this suffix is the join key between a chosen
+ * session video and its own segment's tracks.
+ *
+ * Rule: take the BASENAME, strip a leading `video` prefix and a trailing
+ * `.mp4` extension, then return the trailing run of digits (`\d+$`). Returns
+ * null when there is no trailing digit run (e.g. a non-Zoom `video_session.mp4`).
+ * Pure / I/O-free.
+ */
+export function sessionVideoSuffix(videoName: string): string | null {
+  const leaf = leafName(videoName);
+  // Strip a leading `video` prefix and a trailing `.mp4` (case-insensitive),
+  // then read the trailing run of digits. We do NOT require the `video` prefix
+  // or the extension — only the trailing digit run matters for the join.
+  const withoutPrefix = leaf.replace(/^video/i, '');
+  const withoutExt = withoutPrefix.replace(/\.mp4$/i, '');
+  const m = withoutExt.match(/(\d+)$/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Scope per-speaker audio tracks to the chosen SESSION recording's segment.
+ *
+ * The bug this fixes: a participant who stopped after consent and rejoined for
+ * the task has per-speaker tracks from MULTIPLE Zoom segments in one folder.
+ * Sending EVERY `Audio Record/*.m4a` to `/api/transcribe` splices audio from the
+ * wrong recordings (consent clip + fragments) into the transcript. A track
+ * belongs to the session iff its basename (without `.m4a`) ENDS WITH the session
+ * video's trailing segment suffix.
+ *
+ * Fallback (NEVER send other-segment tracks): if the session suffix is null
+ * (un-suffixed session video) OR zero tracks match it, return `[]`. With no
+ * per-speaker tracks the route transcribes the session video's OWN audio —
+ * unlabeled, but correctly scoped to the session.
+ *
+ * The match is ANCHORED at the end of the basename, so a speaker name that
+ * happens to end in another segment's digits (e.g. `…c21639780501.m4a` ends in
+ * `1639780501`, NOT `2639780501`) does not cause a false match.
+ *
+ * Pure / I/O-free. Preserves input order.
+ */
+export function scopeAudioTracks(
+  sessionVideoName: string,
+  audioRecordTracks: FolderMember[],
+): FolderMember[] {
+  const suffix = sessionVideoSuffix(sessionVideoName);
+  if (suffix === null) return [];
+  const scoped = audioRecordTracks.filter((t) => {
+    const base = leafName(t.relPath || t.leaf || t.file.name).replace(/\.m4a$/i, '');
+    return base.endsWith(suffix);
+  });
+  return scoped.length > 0 ? scoped : [];
+}
+
+/**
  * The distinct PID folders present in a pool, ordered numerically-then-lexically.
  * A PID is the FIRST path segment that is followed by at least one more segment
  * (i.e. `<…>/<pid>/<…>`). We anchor on the LAST two segments' parent so a single

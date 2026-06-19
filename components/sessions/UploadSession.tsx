@@ -12,8 +12,10 @@ import {
 import {
   groupFolderFiles,
   pidsInPool,
+  scopeAudioTracks,
   type FolderFile,
   type FolderGroup,
+  type FolderMember,
 } from '@/lib/upload/folderGrouping';
 import { pickSessionVideo, type SessionPick } from '@/lib/upload/sessionVideo';
 import {
@@ -145,6 +147,15 @@ type FolderPlan = {
   pid: string;
   group: FolderGroup;
   pick: SessionPick;
+  /**
+   * Per-speaker tracks SCOPED to the chosen session video's Zoom segment (via
+   * `scopeAudioTracks`). Zoom writes a new numbered recording each stop/start, so
+   * a folder can hold tracks from consent + task + fragment segments; only the
+   * session segment's tracks may be transcribed. Drives BOTH the transcribe POST
+   * and the displayed "N speaker tracks" count. `[]` when the session has no
+   * matching tracks → the route transcribes the session video's own audio.
+   */
+  scopedTracks: FolderMember[];
   /** Pre-made SRT present → legacy path; else we will generate via /api/transcribe. */
   willGenerate: boolean;
   /** A blocking issue computed up front (no video at all). */
@@ -277,10 +288,17 @@ export default function UploadSession() {
           })),
         );
         const pick = pickSessionVideo(candidates);
+        // Scope the per-speaker tracks to the chosen session's Zoom segment so we
+        // never transcribe consent/fragment audio. `[]` (no session, or no
+        // matching tracks) → the route transcribes the session video's own audio.
+        const scopedTracks = pick.session
+          ? scopeAudioTracks(pick.session.name, group.audioTracks)
+          : [];
         next.push({
           pid,
           group,
           pick,
+          scopedTracks,
           willGenerate: group.srt === null,
           blockedReason: pick.session === null ? 'no video file in folder' : null,
         });
@@ -378,8 +396,11 @@ export default function UploadSession() {
       }
     }
 
-    // Generate path: send the chosen session video + per-speaker tracks.
-    const entries = buildTranscribeEntries(sessionFile, plan.group.audioTracks);
+    // Generate path: send the chosen session video + ONLY the per-speaker tracks
+    // that belong to its Zoom segment (`plan.scopedTracks`). Sending every
+    // `Audio Record/*.m4a` would splice consent/fragment audio into the transcript;
+    // the top-level mixed `audio*.m4a` is likewise never sent to /api/transcribe.
+    const entries = buildTranscribeEntries(sessionFile, plan.scopedTracks);
     let res: Response;
     try {
       res = await fetch('/api/transcribe', { method: 'POST', body: toFormData(entries) });
@@ -607,7 +628,12 @@ export default function UploadSession() {
                   const ap = progress[`${p.pid}:audio`];
                   const sessionName = p.pick.session?.name ?? '—';
                   const consentCount = p.pick.consent.length;
-                  const trackCount = p.group.audioTracks.length;
+                  // Tracks that will actually be TRANSCRIBED: the session segment's
+                  // tracks only (so 742 shows 2, not all 9 across segments).
+                  const trackCount = p.scopedTracks.length;
+                  // Whether ANY audio is uploaded for playback (separate concern:
+                  // the first available track → audio_path, unchanged by scoping).
+                  const hasPlaybackAudio = p.group.audioTracks.length > 0;
                   return (
                     <tr key={p.pid} className="border-b border-foreground/10 align-top">
                       <td className="py-2 px-3 font-mono">{p.pid}</td>
@@ -655,7 +681,7 @@ export default function UploadSession() {
                         {p.pick.session && (
                           <span className="mr-3">video {vp ?? 0}%</span>
                         )}
-                        {trackCount > 0 && <span>audio {ap ?? 0}%</span>}
+                        {hasPlaybackAudio && <span>audio {ap ?? 0}%</span>}
                         {activePid === p.pid && (
                           <span className="ml-2 text-foreground/40">…</span>
                         )}
