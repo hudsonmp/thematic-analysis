@@ -47,15 +47,13 @@ export type TranscribePaths = {
 const HOME = os.homedir();
 
 export const DEFAULT_TRANSCRIBE_PATHS: TranscribePaths = {
-  scriptPath: path.join(
-    HOME,
-    'Desktop',
-    'Research',
-    'Season 2',
-    'CHI Formative:SIGCSE TS',
-    'scripts',
-    'transcribe.sh',
-  ),
+  // Vendored into the repo (scripts/transcribe.sh), NOT the original under
+  // ~/Desktop: macOS TCC denies the dev-server process execution of files in
+  // protected folders (Desktop/Documents/Downloads) → EPERM "Operation not
+  // permitted". The repo dir is unprotected, so the script runs there. The
+  // script is location-independent (operates on its folder arg + absolute
+  // whisper.cpp paths). Override with TRANSCRIBE_SCRIPT if the repo lives elsewhere.
+  scriptPath: path.join(HOME, 'thematic-analysis', 'scripts', 'transcribe.sh'),
   whisperBin: path.join(HOME, 'whisper.cpp', 'build', 'bin', 'whisper-cli'),
   model: path.join(HOME, 'whisper.cpp', 'models', 'ggml-large-v3-turbo.bin'),
 };
