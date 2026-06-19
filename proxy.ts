@@ -92,9 +92,14 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Run on every request EXCEPT Next.js internals and static metadata files.
-  // Server Functions (POST to a route) are still covered because they share the
-  // route's pathname. Excluding _next and favicon avoids running auth logic on
-  // asset requests.
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  // Run on every request EXCEPT Next.js internals, static metadata, AND route
+  // handlers under /api. The Supabase cookie-propagation `NextResponse.next({
+  // request })` above STRIPS the request body from a downstream route handler,
+  // breaking `req.formData()` on body-carrying POSTs (e.g. /api/transcribe's
+  // multipart upload → "expected multipart/form-data body"). /api routes do
+  // their own auth (requireAuthUser) or are local-only, and the (protected)
+  // layout still gates pages — so excluding /api is safe and is the canonical
+  // Supabase-on-Next fix. Server Actions live under page pathnames, so they stay
+  // covered.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|api/).*)'],
 };
