@@ -28,6 +28,7 @@ import type { ChatMessage } from '@/app/actions/chat';
 import { alignChat, activeChatIndex } from '@/lib/chat/align';
 import type { SpecTimelineResult } from '@/app/actions/spec';
 import { specStateAt } from '@/lib/spec/reconstruct';
+import { retroQuestionsAt } from '@/lib/live/retro';
 import type { FacetWithValues } from '@/app/actions/codebook';
 import type { Tables } from '@/lib/types/cb-db';
 import SessionCodeCreator from './SessionCodeCreator';
@@ -106,7 +107,13 @@ function isMeaningfulObservation(o: {
   flagLabel: string | null;
   body: string | null;
   isQuote: boolean;
+  retroQuestionScenarioIdx?: number | null;
 }): boolean {
+  // A RETRO-QUESTION row (retro_question_scenario_idx non-null) is its OWN kind —
+  // its `body` is the researcher's queued question, not a flag/note. It is surfaced
+  // in the Specification panel (retroQuestionsAt), NOT on the flags surfaces, so
+  // exclude it here even though it carries a non-empty body.
+  if (typeof o.retroQuestionScenarioIdx === 'number') return false;
   return !!o.flagLabel || !!(o.body && o.body.trim()) || o.isQuote;
 }
 
@@ -1149,6 +1156,17 @@ export default function SessionPlayer({
   const hasSpecData =
     specTimeline.specEdits.length > 0 || specTimeline.entityEdits.length > 0;
 
+  // --- Dynamic retrospective questions (spec-mode display) ----------------
+  // The custom retrospective questions the researcher QUEUED on /live, surfaced in
+  // SPECIFICATION mode. ONE CLOCK: same `anchorMs` (the flags' anchor) + same
+  // `currentMs` playhead the spec/chat use — a question appears exactly when the
+  // playhead reaches the instant it was asked. Each is a `cb_observations` row whose
+  // `retroQuestionScenarioIdx` is non-null (its `body` is the question text).
+  const retroQuestions = useMemo(
+    () => retroQuestionsAt(observations, anchorMs, currentMs),
+    [observations, anchorMs, currentMs],
+  );
+
   // MEANINGFUL flags only (Change R3 drops empty "Note"/stale-event rows), each at
   // `createdAt − anchor` (pre-record flags clamp to 0), in time order.
   const flagMarkers = useMemo(() => {
@@ -1501,12 +1519,49 @@ export default function SessionPlayer({
   // container as the transcript, so the chat 50/50 split (transcriptHeightClass)
   // applies unchanged whether the user is viewing the transcript or the spec.
   const specPane = (
-    <SpecReplay
-      spec={specState.spec}
-      entities={specState.entities}
-      hasSpecData={hasSpecData}
-      anchorResolved={anchorMs != null}
-    />
+    <>
+      {/* Dynamic retrospective questions asked BY the playhead (spec-mode), beside
+          the reconstructed spec — so the analyst sees, in scenario/time context,
+          the custom question the researcher queued for the participant. Each row is
+          a retro-question `cb_observations` row (retroQuestionScenarioIdx non-null);
+          its `body` is the question text. Hidden until at least one is reached. */}
+      {retroQuestions.length > 0 && (
+        <section className="flex flex-col gap-2 pl-3 pb-3">
+          <h3 className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)]">
+            Retrospective questions
+          </h3>
+          <ul className="flex flex-col gap-1.5">
+            {retroQuestions.map((q) => (
+              <li
+                key={q.id}
+                className="border border-[var(--rule)] bg-[var(--rule-soft)] p-2 text-sm"
+              >
+                <button
+                  type="button"
+                  onClick={() => seekTo(q.offsetMs)}
+                  className="mb-1 font-mono text-[11px] text-[var(--muted)] hover:underline"
+                  title="Seek to when this question was asked"
+                >
+                  {formatTime(q.offsetMs)} · scenario {q.scenarioIdx + 1}
+                </button>
+                <p className="break-words">
+                  <span className="text-[var(--muted)]">
+                    Retrospective question asked:{' '}
+                  </span>
+                  {q.body}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      <SpecReplay
+        spec={specState.spec}
+        entities={specState.entities}
+        hasSpecData={hasSpecData}
+        anchorResolved={anchorMs != null}
+      />
+    </>
   );
   const chatPane = showChat ? (
     <ChatReplayPane

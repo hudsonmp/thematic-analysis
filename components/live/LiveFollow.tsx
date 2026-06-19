@@ -4,9 +4,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   addObservation,
+  addRetroQuestion,
   deleteObservation,
   type ObservationView,
 } from '@/app/actions/observations';
+import { currentScenarioIdx, retroPersistDecision } from '@/lib/live/retro';
 import { liveStatusForPid, type LiveStatus, type LiveParticipant } from '@/app/actions/live';
 import { markRecordingStart, clearRecordingStart } from '@/app/actions/recording';
 import { createFlagType } from '@/app/actions/flag-types';
@@ -42,10 +44,21 @@ const DEFAULT_SWATCH = '#000000';
 // the study-table read-only invariant (check-no-study-writes) is preserved.
 // ---------------------------------------------------------------------------
 
-/** The kinds of researcher-pushed popup. `show_time` → participant shows ITS OWN
+/** The kinds of researcher-pushed event. `show_time` → participant shows ITS OWN
  *  computed cumulative remaining; `offer_help` → participant gets an "open
- *  assistant" popup. */
-export type PushKind = 'show_time' | 'offer_help';
+ *  assistant" popup; `retro_question` → participant QUEUES a custom retrospective
+ *  question for a scenario (shown at that scenario's retro step, not a popup). The
+ *  first two carry an EMPTY payload; `retro_question` carries `{ text, scenarioIdx }`. */
+export type PushKind = 'show_time' | 'offer_help' | 'retro_question';
+
+/** The `retro_question` wire payload. CROSS-REPO CONTRACT — must match
+ *  spec-study-app/lib/study/push.ts `RetroQuestionPayload`: the participant parses
+ *  `{ text, scenarioIdx }` and queues the question for `scenarioIdx` (or the
+ *  CURRENT scenario when null). */
+export type RetroQuestionPushPayload = {
+  text: string;
+  scenarioIdx: number | null;
+};
 
 /** The broadcast channel a participant `pid` listens on. */
 function participantChannel(pid: string): string {
@@ -53,12 +66,23 @@ function participantChannel(pid: string): string {
 }
 
 /** PURE seam (tested): the `{ event, payload }` for a push. The event name is the
- *  cross-repo contract; the payload is intentionally empty — the participant
- *  computes the number locally, so nothing sensitive crosses the wire. */
-export function buildPushPayload(kind: PushKind): {
+ *  cross-repo contract. `show_time`/`offer_help` carry an EMPTY payload — the
+ *  participant computes the number locally, so nothing crosses the wire.
+ *  `retro_question` is the FIRST payload-carrying push: it carries the researcher's
+ *  `{ text, scenarioIdx }` (the participant queues it per scenario). */
+export function buildPushPayload(
+  kind: PushKind,
+  retro?: RetroQuestionPushPayload,
+): {
   event: PushKind;
-  payload: Record<string, never>;
+  payload: Record<string, never> | RetroQuestionPushPayload;
 } {
+  if (kind === 'retro_question') {
+    return {
+      event: kind,
+      payload: { text: retro?.text ?? '', scenarioIdx: retro?.scenarioIdx ?? null },
+    };
+  }
   return { event: kind, payload: {} };
 }
 
@@ -135,6 +159,17 @@ export default function LiveFollow({
   // can't be double-fired). A small transient confirmation of the last push.
   const [pushBusy, setPushBusy] = useState(false);
   const [pushedKind, setPushedKind] = useState<PushKind | null>(null);
+
+  // --- Dynamic retrospective question composer (T2 retro) -------------------
+  // The custom question text, and the target scenario OVERRIDE. `retroScenario`
+  // holds the override as a string (so an empty field = "use the current
+  // scenario"); `''` defers to the participant's CURRENT scenario derived from the
+  // live status (see `defaultRetroScenarioIdx`). True while the queue write is in
+  // flight; transient confirmation after a successful queue.
+  const [retroText, setRetroText] = useState('');
+  const [retroScenario, setRetroScenario] = useState('');
+  const [retroBusy, setRetroBusy] = useState(false);
+  const [retroSent, setRetroSent] = useState(false);
 
   const noteInputRef = useRef<HTMLInputElement>(null);
 
@@ -241,13 +276,20 @@ export default function LiveFollow({
   // the participant's screen, so firing is an uncontrolled variable (see the
   // protocol's standardized firing rule); the participant logs every receipt as
   // a study_event on their side.
+  //
+  // Returns whether the broadcast ACTUALLY SENT: `true` only after `channel.send`
+  // resolves; `false` on the `pushBusy` early-return (a concurrent push is in
+  // flight) and on any caught send/subscribe error (the UX still surfaces via
+  // setError). Callers that PERSIST a side-effect of the push (the retro-question
+  // row) MUST gate that write on a `true` result, so a question the participant
+  // never received is never recorded as "asked" (data-fidelity invariant).
   const onPush = useCallback(
-    async (kind: PushKind) => {
-      if (!pid || pushBusy) return;
+    async (kind: PushKind, retro?: RetroQuestionPushPayload): Promise<boolean> => {
+      if (!pid || pushBusy) return false;
       setError(null);
       setPushBusy(true);
       try {
-        const { event, payload } = buildPushPayload(kind);
+        const { event, payload } = buildPushPayload(kind, retro);
         const sb = createBrowser();
         const channel = sb.channel(participantChannel(pid), {
           config: { broadcast: { self: false } },
@@ -266,14 +308,77 @@ export default function LiveFollow({
         await channel.send({ type: 'broadcast', event, payload });
         await sb.removeChannel(channel);
         setPushedKind(kind);
+        return true;
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to send push.');
+        return false;
       } finally {
         setPushBusy(false);
       }
     },
     [pid, pushBusy],
   );
+
+  // The participant's CURRENT scenario (0-based) from the live status — the default
+  // retro-question target. Null before any scenario is entered (then a queued
+  // question with no override carries `scenarioIdx: null`, which the participant
+  // resolves to its current scenario at receipt).
+  const defaultRetroScenarioIdx = currentScenarioIdx(status.phaseStartsMs);
+
+  // Queue a custom retrospective question: BROADCAST it live (the participant
+  // queues it for the target scenario) AND PERSIST it to cb_observations (so the
+  // coding tool can later surface the question that was asked). The target is the
+  // override (`retroScenario`, a 0-based index) when provided, else the
+  // participant's current scenario; an empty/non-numeric override falls back to
+  // the current scenario (`null` ⇒ resolved on the participant).
+  //
+  // DATA FIDELITY: the persisted row means "this question WAS asked of the
+  // participant" — the coding tool renders it in spec-mode as an asked question.
+  // So PERSIST is gated on the broadcast ACTUALLY SENDING. `onPush` returns
+  // `false` when it silently early-returns (a concurrent show_time/offer_help is
+  // in flight → `pushBusy`) or when the send/subscribe throws; in EITHER case the
+  // participant may never have received the question, so we surface a clear
+  // "not delivered" error and DO NOT persist a phantom row. We also gate the whole
+  // handler on `pushBusy` so it never fires while another push is mid-flight.
+  const onQueueRetro = useCallback(async () => {
+    if (!pid || retroBusy || pushBusy) return;
+    const text = retroText.trim();
+    if (!text) return;
+
+    const override = retroScenario.trim();
+    let scenarioIdx: number | null;
+    if (override === '') {
+      scenarioIdx = defaultRetroScenarioIdx;
+    } else {
+      const n = Number(override);
+      scenarioIdx = Number.isInteger(n) && n >= 0 ? n : defaultRetroScenarioIdx;
+    }
+
+    setError(null);
+    setRetroBusy(true);
+    setRetroSent(false);
+    try {
+      // (a) BROADCAST — reuse the shared push sender with the retro payload.
+      const delivered = await onPush('retro_question', { text, scenarioIdx });
+      // (b) The participant may NEVER have received it (busy / send error). The
+      //     pure seam decides persist-vs-error; on no-delivery we surface the
+      //     not-delivered error and write NO phantom "asked" row.
+      const decision = retroPersistDecision(delivered);
+      if (!decision.persist) {
+        setError(decision.error);
+        return;
+      }
+      // (c) PERSIST — own-write cb_observations row (RLS created_by = auth.uid()).
+      await addRetroQuestion({ pid, text, scenarioIdx });
+      setRetroText('');
+      setRetroScenario('');
+      setRetroSent(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to queue question.');
+    } finally {
+      setRetroBusy(false);
+    }
+  }, [pid, retroBusy, pushBusy, retroText, retroScenario, defaultRetroScenarioIdx, onPush]);
 
   // --- Logging an observation (flag tap, quote, note) -----------------------
 
@@ -323,6 +428,7 @@ export default function LiveFollow({
           episodeName: null,
           body: null,
           isQuote: false,
+          retroQuestionScenarioIdx: null,
           createdAt: new Date().toISOString(),
         },
         { flagTypeId: flag.id },
@@ -348,6 +454,7 @@ export default function LiveFollow({
         episodeName: null,
         body: null,
         isQuote: true,
+        retroQuestionScenarioIdx: null,
         createdAt: new Date().toISOString(),
       },
       { isQuote: true },
@@ -376,6 +483,7 @@ export default function LiveFollow({
         episodeName: null,
         body: body || null,
         isQuote: false,
+        retroQuestionScenarioIdx: null,
         createdAt: new Date().toISOString(),
       },
       { flagTypeId: flag?.id ?? null, body: body || null },
@@ -570,7 +678,7 @@ export default function LiveFollow({
             >
               Offer help
             </button>
-            {pushedKind && (
+            {pushedKind && pushedKind !== 'retro_question' && (
               <span className="text-xs text-foreground/50">
                 sent {pushedKind === 'show_time' ? 'time remaining' : 'help offer'}
               </span>
@@ -579,6 +687,55 @@ export default function LiveFollow({
               firing is a researcher intervention — it changes the participant&apos;s
               screen
             </span>
+
+            {/* Dynamic retrospective question composer. Broadcasts the custom
+                question live (the participant queues it for the target scenario)
+                AND persists it to cb_observations. Targets the participant's
+                CURRENT scenario by default; the small override sets a specific
+                0-based scenario. Disabled with no pid or empty text. */}
+            <div className="flex w-full flex-wrap items-center gap-2 border-t border-foreground/10 pt-3">
+              <input
+                value={retroText}
+                onChange={(e) => setRetroText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void onQueueRetro();
+                  }
+                }}
+                placeholder="Retrospective question for this scenario…"
+                aria-label="Retrospective question text"
+                className="min-w-64 flex-1 border border-foreground/20 bg-background px-2 py-1.5 text-sm"
+              />
+              <label className="flex items-center gap-1.5 text-[11px] text-foreground/50">
+                scenario
+                <input
+                  type="number"
+                  min={0}
+                  value={retroScenario}
+                  onChange={(e) => setRetroScenario(e.target.value)}
+                  placeholder={
+                    defaultRetroScenarioIdx === null
+                      ? 'current'
+                      : String(defaultRetroScenarioIdx)
+                  }
+                  aria-label="Target scenario index (default: current scenario)"
+                  className="w-16 border border-foreground/20 bg-background px-2 py-1.5 font-mono text-sm"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => void onQueueRetro()}
+                disabled={!pid || retroBusy || pushBusy || !retroText.trim()}
+                className="border border-foreground px-3 py-1.5 text-sm transition hover:bg-foreground hover:text-background disabled:opacity-40"
+                title="Broadcast a custom retrospective question to the participant for the target scenario and save it"
+              >
+                Queue
+              </button>
+              {retroSent && (
+                <span className="text-xs text-foreground/50">queued question</span>
+              )}
+            </div>
           </section>
 
           {/* Current step + running clock */}

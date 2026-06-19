@@ -871,6 +871,7 @@ export type Database = {
           id: string
           is_quote: boolean
           pid: string
+          retro_question_scenario_idx: number | null
           session_id: string | null
         }
         Insert: {
@@ -882,6 +883,7 @@ export type Database = {
           id?: string
           is_quote?: boolean
           pid: string
+          retro_question_scenario_idx?: number | null
           session_id?: string | null
         }
         Update: {
@@ -893,6 +895,7 @@ export type Database = {
           id?: string
           is_quote?: boolean
           pid?: string
+          retro_question_scenario_idx?: number | null
           session_id?: string | null
         }
         Relationships: [
