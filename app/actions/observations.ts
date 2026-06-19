@@ -60,6 +60,10 @@ export type ObservationView = {
    *  exact words are grabbed later from the recording at this row's timestamp, so
    *  the row may legitimately carry no flag/episode/body. */
   isQuote: boolean;
+  /** A RETRO-QUESTION: when non-null, this row is a custom retrospective question
+   *  the researcher queued on /live for that 0-based scenario; the question TEXT is
+   *  in `body`. Null on every other observation (migration 31). */
+  retroQuestionScenarioIdx: number | null;
   createdAt: string;
 };
 
@@ -135,6 +139,69 @@ export async function addObservation({
 }
 
 /**
+ * Queue a custom RETROSPECTIVE QUESTION for a participant — the PERSIST half of the
+ * /live "dynamic retrospective questions" feature (the BROADCAST half fires on the
+ * `retro_question` contract channel from LiveFollow). A retro-question is stored as
+ * a `cb_observations` row discriminated by a non-null `retro_question_scenario_idx`
+ * (migration 31): the QUESTION TEXT goes in `body`, the 0-based target scenario in
+ * `retro_question_scenario_idx`. No flag/episode/quote.
+ *
+ * Mirrors `addObservation`'s auth/RLS posture EXACTLY: `requireAuthUser()` then a
+ * `createUserServerClient()` (the anon key bound to the signed-in JWT, NOT the
+ * service-role client) so the insert RLS `with check (created_by = auth.uid())`
+ * admits it; `created_by` is set explicitly to the caller's uid. `pid` is required
+ * and `text` must be non-empty (post-trim) — the broadcast contract carries a
+ * NON-EMPTY question, so an empty one is a no-op the action rejects. Returns the
+ * inserted row.
+ */
+export async function addRetroQuestion({
+  pid,
+  text,
+  scenarioIdx,
+}: {
+  pid: string;
+  text: string;
+  scenarioIdx: number | null;
+}): Promise<Observation> {
+  const user = await requireAuthUser();
+
+  const trimmedPid = (pid ?? '').trim();
+  if (!trimmedPid) throw new Error('addRetroQuestion: pid is required.');
+
+  const trimmedText = typeof text === 'string' ? text.trim() : '';
+  if (!trimmedText) throw new Error('addRetroQuestion: question text is required.');
+
+  // A finite integer index, or null (target the participant's CURRENT scenario at
+  // receipt — the cross-repo payload's `scenarioIdx: null` convention). Anything
+  // non-finite is coerced to null rather than rejected: a garbled index must not
+  // block queuing the question (it simply targets the current scenario).
+  const idx =
+    typeof scenarioIdx === 'number' && Number.isFinite(scenarioIdx)
+      ? Math.trunc(scenarioIdx)
+      : null;
+
+  const sb = await createUserServerClient();
+  const { data, error } = await sb
+    .from('cb_observations')
+    .insert({
+      pid: trimmedPid,
+      body: trimmedText,
+      retro_question_scenario_idx: idx,
+      // Set explicitly to the caller's uid: RLS `with check (created_by =
+      // auth.uid())` admits only the signed-in user's own id.
+      created_by: user.id,
+    })
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(
+      `addRetroQuestion failed: ${error?.message ?? 'no row returned'}`,
+    );
+  }
+  return data;
+}
+
+/**
  * List a participant's observations NEWEST-FIRST (`created_at` desc) — the live
  * page shows the most recent mark on top, and live-added rows prepend, so the
  * seed order must match. Each row is left-joined to its
@@ -151,7 +218,7 @@ export async function listObservationsForPid(pid: string): Promise<ObservationVi
   const { data, error } = await sb
     .from('cb_observations')
     .select(
-      'id, pid, flag_type_id, episode_id, body, is_quote, created_at, cb_flag_types(label, color), cb_episodes(name)',
+      'id, pid, flag_type_id, episode_id, body, is_quote, retro_question_scenario_idx, created_at, cb_flag_types(label, color), cb_episodes(name)',
     )
     .eq('pid', pid)
     .order('created_at', { ascending: false });
@@ -262,6 +329,7 @@ function toObservationViews(data: unknown): ObservationView[] {
     episode_id: string | null;
     body: string | null;
     is_quote: boolean;
+    retro_question_scenario_idx: number | null;
     created_at: string;
     cb_flag_types: { label: string; color: string | null } | null;
     cb_episodes: { name: string } | null;
@@ -283,6 +351,7 @@ function toObservationViews(data: unknown): ObservationView[] {
       r.episode_id === null ? null : (r.cb_episodes?.name ?? '(deleted event)'),
     body: r.body,
     isQuote: r.is_quote === true,
+    retroQuestionScenarioIdx: r.retro_question_scenario_idx,
     createdAt: r.created_at,
   }));
 }
