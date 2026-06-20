@@ -18,6 +18,7 @@ import {
 import { taskStartForPid } from '@/app/actions/live';
 import { getRecordingStart } from '@/app/actions/recording';
 import { resolveRecordingAnchorMs } from '@/lib/live/anchor';
+import { mergeDoneSet } from '@/lib/sessions/coding-status';
 
 /**
  * Begin a browser-direct video upload to Google Drive.
@@ -211,17 +212,24 @@ export type SessionListRow = {
   collection: string;
   durationMs: number | null;
   trackMode: string;
+  /** Whether the SIGNED-IN coder has marked this session done (a present
+   *  cb_session_coding_status row for (this session, this coder)). Per-coder:
+   *  reflects only the current user's mark, not anyone else's. */
+  done: boolean;
 };
 
 /**
- * List all cloud sessions for the index, ordered by collection then created_at.
+ * List all cloud sessions for the index, ordered by collection then created_at,
+ * each flagged with whether the SIGNED-IN coder has marked it done.
  *
  * Reads through `createUserServerClient()` (the researcher's JWT), so the
- * `authenticated` RLS read policy on `cb_sessions` admits the select. Returns
- * the minimal shape the index needs — annotation counts come after Task 8.
+ * `authenticated` RLS read policy on `cb_sessions` admits the select. The
+ * per-coder done flag comes from a second read of cb_session_coding_status
+ * filtered to `coder_id = user.id` (the read-all RLS would otherwise return every
+ * coder's marks): we build that coder's done-set and merge it onto the rows.
  */
 export async function listSessionsCloud(): Promise<SessionListRow[]> {
-  await requireAuthUser();
+  const user = await requireAuthUser();
   const sb = await createUserServerClient();
 
   const { data, error } = await sb
@@ -233,13 +241,74 @@ export async function listSessionsCloud(): Promise<SessionListRow[]> {
     throw new Error(`listSessionsCloud: cb_sessions select failed: ${error.message}`);
   }
 
-  return (data ?? []).map((r) => ({
+  // The CURRENT coder's done marks (RLS read-all returns all coders' rows, so we
+  // filter to this user). Build a Set of done session_ids to merge onto the rows.
+  const { data: statusRows, error: statusErr } = await sb
+    .from('cb_session_coding_status')
+    .select('session_id')
+    .eq('coder_id', user.id);
+  if (statusErr) {
+    throw new Error(
+      `listSessionsCloud: cb_session_coding_status select failed: ${statusErr.message}`,
+    );
+  }
+  const doneIds = new Set<string>((statusRows ?? []).map((r) => r.session_id));
+
+  const rows = (data ?? []).map((r) => ({
     id: r.id,
     pidLabel: r.pid_label,
     collection: r.collection,
     durationMs: r.duration_ms,
     trackMode: r.track_mode,
   }));
+  return mergeDoneSet(rows, doneIds);
+}
+
+/**
+ * Mark or unmark a session as coded BY THE SIGNED-IN CODER (per-coder, binary).
+ *
+ * `done: true` upserts the (session, coder) row (`onConflict: 'session_id,
+ * coder_id'`, `done_at` server default) — idempotent re-marking. `done: false`
+ * deletes that coder's row. Both write through `createUserServerClient()` (the
+ * anon key bound to the signed-in JWT, NOT the service-role client), with
+ * `coder_id` set explicitly to `user.id`: the insert RLS `with check (coder_id =
+ * auth.uid())` admits only the caller's own mark, and the delete RLS
+ * `using (coder_id = auth.uid())` confines the unmark to the caller's own row
+ * (an unmark of another coder's mark matches zero rows — silent no-op). cb_ table
+ * only; no study table is touched.
+ */
+export async function setSessionCodingDone(
+  sessionId: string,
+  done: boolean,
+): Promise<void> {
+  const user = await requireAuthUser();
+  const id = (sessionId ?? '').trim();
+  if (!id) throw new Error('setSessionCodingDone: sessionId is required.');
+
+  const sb = await createUserServerClient();
+
+  if (done) {
+    // Set explicitly to the caller's uid: RLS `with check (coder_id =
+    // auth.uid())` admits only the signed-in user's own mark. `done_at` defaults.
+    const { error } = await sb
+      .from('cb_session_coding_status')
+      .upsert(
+        { session_id: id, coder_id: user.id },
+        { onConflict: 'session_id,coder_id' },
+      );
+    if (error) {
+      throw new Error(`setSessionCodingDone: mark failed: ${error.message}`);
+    }
+  } else {
+    const { error } = await sb
+      .from('cb_session_coding_status')
+      .delete()
+      .eq('session_id', id)
+      .eq('coder_id', user.id);
+    if (error) {
+      throw new Error(`setSessionCodingDone: unmark failed: ${error.message}`);
+    }
+  }
 }
 
 /**

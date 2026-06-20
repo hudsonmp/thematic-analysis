@@ -1129,6 +1129,39 @@ export type Database = {
           },
         ]
       }
+      cb_session_coding_status: {
+        Row: {
+          coder_id: string
+          done_at: string
+          session_id: string
+        }
+        Insert: {
+          coder_id: string
+          done_at?: string
+          session_id: string
+        }
+        Update: {
+          coder_id?: string
+          done_at?: string
+          session_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_session_coding_status_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_session_coding_status_coder_id_fkey"
+            columns: ["coder_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_session_episodes: {
         Row: {
           created_at: string
