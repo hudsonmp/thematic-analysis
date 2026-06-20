@@ -795,6 +795,7 @@ export type Database = {
           created_at: string
           id: string
           name: string
+          parent_id: string | null
           position: number
         }
         Insert: {
@@ -803,6 +804,7 @@ export type Database = {
           created_at?: string
           id?: string
           name: string
+          parent_id?: string | null
           position?: number
         }
         Update: {
@@ -811,6 +813,7 @@ export type Database = {
           created_at?: string
           id?: string
           name?: string
+          parent_id?: string | null
           position?: number
         }
         Relationships: [
@@ -819,6 +822,13 @@ export type Database = {
             columns: ["codebook_id"]
             isOneToOne: false
             referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_labels_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "cb_labels"
             referencedColumns: ["id"]
           },
         ]
