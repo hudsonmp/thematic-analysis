@@ -4,6 +4,7 @@ import {
   uniqueMnemonic,
   isRowEmpty,
   resolveRows,
+  writeOnlyRowErrors,
   type CodebookRow,
 } from '@/lib/codebook/mnemonic';
 
@@ -99,5 +100,56 @@ describe('resolveRows', () => {
     );
     // Row 2 has content but no name → error keyed to its ORIGINAL index 2.
     expect(errors).toEqual([{ index: 2, message: 'Name is required.' }]);
+  });
+});
+
+describe('writeOnlyRowErrors (state-3: write-bearing but core-empty rows)', () => {
+  it('errors a label-only / facet-only row that resolveRows dropped silently', () => {
+    // Index 0 carries label/facet writes but its core is all-blank, so resolveRows
+    // dropped it as empty: NOT resolved, NOT errored. It must surface here, never
+    // be a silent no-op that loses the tags.
+    const { resolved, errors } = resolveRows([row('', '', '')], new Set());
+    expect(resolved).toEqual([]);
+    expect(errors).toEqual([]); // resolveRows alone gives no feedback → the bug
+
+    const out = writeOnlyRowErrors([0], resolved, errors);
+    expect(out).toEqual([{ index: 0, message: 'Name is required to save its labels/facets.' }]);
+  });
+
+  it('does NOT error a write-bearing row that DID yield a created code', () => {
+    // Named row → resolved (its labels/facets are applied to the created code), so a
+    // write on that index must not produce a spurious "Name is required" error.
+    const { resolved, errors } = resolveRows([row('Alpha')], new Set());
+    expect(resolved).toHaveLength(1);
+    expect(writeOnlyRowErrors([0], resolved, errors)).toEqual([]);
+  });
+
+  it('does NOT double-report an index resolveRows already errored', () => {
+    // A nameless row WITH a core cell (mnemonic) is already a "Name is required."
+    // error from resolveRows; even if it also bore writes, do not add a second one.
+    const { resolved, errors } = resolveRows([row('', 'MN', '')], new Set());
+    expect(errors).toEqual([{ index: 0, message: 'Name is required.' }]);
+    expect(writeOnlyRowErrors([0], resolved, errors)).toEqual([]);
+  });
+
+  it('reports only the unaccounted write-bearing indices, de-duped + sorted', () => {
+    // Batch: 0 = named (resolved), 1 = label-only core-empty (state 3),
+    // 2 = named (resolved), 3 = facet-only core-empty (state 3).
+    const { resolved, errors } = resolveRows(
+      [row('A'), row('', '', ''), row('C'), row('', '', '')],
+      new Set(),
+    );
+    expect(resolved.map((r) => r.index)).toEqual([0, 2]);
+    // Pass indices out of order + a duplicate to assert sort + de-dup.
+    const out = writeOnlyRowErrors([3, 1, 1], resolved, errors);
+    expect(out).toEqual([
+      { index: 1, message: 'Name is required to save its labels/facets.' },
+      { index: 3, message: 'Name is required to save its labels/facets.' },
+    ]);
+  });
+
+  it('is a no-op when no row bears writes', () => {
+    const { resolved, errors } = resolveRows([row('A')], new Set());
+    expect(writeOnlyRowErrors([], resolved, errors)).toEqual([]);
   });
 });

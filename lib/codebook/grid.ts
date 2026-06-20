@@ -102,9 +102,12 @@ export function isFacetCellSet(cell: FacetCell | undefined): boolean {
  * A row is empty iff its three core cells are blank AND no facet cell is set AND
  * no label is tagged. The always-present trailing buffer rows are empty by this
  * test and skipped on commit. (A row with ONLY facet data or ONLY labels but no
- * name is NOT empty — it is surfaced by `resolveRows` as a "Name is required"
- * error rather than silently dropped, so the researcher does not lose the facet
- * selections or label tags they made on a nameless row.)
+ * name is NOT empty here, so the client submits it. Server-side, `resolveRows`
+ * judges it empty by its CORE cells alone and drops it — so `createCodesBulkWith-
+ * Facets` cross-references the write-bearing indices and surfaces a "Name is
+ * required" error for it via `writeOnlyRowErrors` (mnemonic.ts). The row is then
+ * kept in the grid with that error rather than silently cleared, so the researcher
+ * does not lose the facet selections or label tags they made on a nameless row.)
  */
 export function isGridRowEmpty(row: RowData): boolean {
   if (!isRowEmpty(row.core)) return false;

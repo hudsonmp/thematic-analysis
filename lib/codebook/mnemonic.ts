@@ -125,3 +125,45 @@ export function resolveRows(
 
   return { resolved, errors };
 }
+
+/**
+ * Detect "state 3" rows: a row that carries SIDE-CAR writes (label tags and/or
+ * facet selections) but whose three CORE cells (name/mnemonic/definition) are all
+ * blank, so `resolveRows` judged it empty and dropped it SILENTLY — neither
+ * resolved nor errored.
+ *
+ * Such a row was submitted by the client (its `isGridRowEmpty` counts labels /
+ * facets, so the row is non-empty there) but produces NO code server-side, and —
+ * without this check — no error either, so the researcher's label / facet tags
+ * vanish on the success reset with zero feedback. This helper closes that gap: it
+ * returns the original-index errors the bulk-create action must append so the
+ * write-bearing-but-nameless rows surface as "Name is required" and are kept in
+ * the grid for the researcher to name and resubmit.
+ *
+ * It is the PURE decision core (no I/O) so it unit-tests cleanly; the action
+ * computes `writeBearingIndices` from `labelWritesByIndex` ∪ keys of
+ * `facetWritesByIndex` and feeds it the `resolved` + `errors` of `resolveRows`.
+ *
+ * An index counts as needing the error iff it bears writes AND is neither resolved
+ * (a code was created — labels/facets applied) NOR already errored (e.g. a content
+ * row missing a name, or a duplicate mnemonic — already surfaced). De-duped + in
+ * ascending index order for stable reporting.
+ */
+export function writeOnlyRowErrors(
+  writeBearingIndices: Iterable<number>,
+  resolved: ResolvedRow[],
+  errors: ValidationError[],
+): ValidationError[] {
+  const accounted = new Set<number>();
+  for (const r of resolved) accounted.add(r.index);
+  for (const e of errors) accounted.add(e.index);
+
+  const out: ValidationError[] = [];
+  const seen = new Set<number>();
+  for (const index of writeBearingIndices) {
+    if (accounted.has(index) || seen.has(index)) continue;
+    seen.add(index);
+    out.push({ index, message: 'Name is required to save its labels/facets.' });
+  }
+  return out.sort((a, b) => a.index - b.index);
+}

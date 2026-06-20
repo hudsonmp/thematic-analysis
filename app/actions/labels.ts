@@ -167,6 +167,15 @@ export async function setLabelParent(
 export async function deleteLabel(id: string): Promise<void> {
   await requireAuthUser();
 
+  // NON-ATOMIC: the fetch-parent → promote-children → delete sequence below is
+  // three separate PostgREST statements, NOT a single transaction. A child label
+  // inserted (or re-parented under `id`) in the window BETWEEN the promote UPDATE
+  // and the DELETE would not be promoted to the grandparent; instead it would fall
+  // to the migration's `on delete set null` safety net on `cb_labels.parent_id`,
+  // orphaning it to root rather than collapsing it up one level. Acceptable for the
+  // single-researcher-per-codebook use here (no concurrent writers); flagged for a
+  // future transactional / RPC hardening (a `delete_label_promote_children` RPC).
+
   // Read this label's parent so its children can be re-parented to it (promote).
   const target = await cbFrom('cb_labels')
     .select('parent_id')

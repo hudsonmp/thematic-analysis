@@ -3,7 +3,7 @@
 import { cbFrom } from '@/lib/supabase/guard';
 import { linkCitation } from '@/app/actions/citations';
 import { setCodeLabels } from '@/app/actions/labels';
-import { resolveRows, type CodebookRow } from '@/lib/codebook/mnemonic';
+import { resolveRows, writeOnlyRowErrors, type CodebookRow } from '@/lib/codebook/mnemonic';
 import type { RowFacetWrites } from '@/lib/codebook/grid';
 import { CodeVersionInput, type CodeVersionInputT } from '@/lib/types/contracts';
 import type { Json, Tables, TablesInsert } from '@/lib/types/cb-db';
@@ -397,6 +397,15 @@ export async function createCodesBulk(
  * `setCodeLabels`, the replace-the-set label tagger). A row absent from the map
  * (or with an empty list) gets no `setCodeLabels` call. It defaults to `{}` so
  * existing callers that create codes without labels are unaffected.
+ *
+ * STATE-3 ROWS (write-bearing but nameless). A row may carry label / facet writes
+ * yet have all-blank core cells. `resolveRows` (core-only emptiness) drops it
+ * silently — no code, no error — so its tags would be lost with no feedback on the
+ * client's success reset. We cross-reference the write-bearing indices against
+ * `resolveRows`'s resolved + errored sets and append a "Name is required" error
+ * for any unaccounted write-bearing index (via `writeOnlyRowErrors`). The created
+ * count excludes them (no code was made) and the client keeps the errored rows in
+ * the grid for the researcher to name and resubmit — tags preserved.
  */
 export async function createCodesBulkWithFacets(
   codebookId: string,
@@ -410,6 +419,26 @@ export async function createCodesBulkWithFacets(
 
   const existing = await listCodebookMnemonics(codebookId);
   const { resolved, errors } = resolveRows(rows, existing);
+
+  // State-3 guard: a row that carries label / facet writes but has all-blank core
+  // cells is dropped SILENTLY by `resolveRows` (its `isRowEmpty` inspects only the
+  // three core cells). The client submits such rows (its `isGridRowEmpty` counts
+  // labels + facets), so without this they vanish on the success reset, losing the
+  // researcher's tags with no feedback. Collect the indices that actually bear a
+  // write — label ids present, or a facet write with at least one enum value / one
+  // field — and append a "Name is required" error for any that `resolveRows`
+  // neither resolved nor errored. This makes the row surface (and be kept in the
+  // grid for retry) instead of being a silent no-op. (Mirrors grid.ts's promise
+  // that a tagged-but-nameless row is "surfaced ... as a 'Name is required' error".)
+  const writeBearingIndices = new Set<number>();
+  for (const key of Object.keys(labelWritesByIndex)) {
+    if ((labelWritesByIndex[Number(key)] ?? []).length > 0) writeBearingIndices.add(Number(key));
+  }
+  for (const key of Object.keys(facetWritesByIndex)) {
+    const w = facetWritesByIndex[Number(key)];
+    if (w && (w.enumValueIds.length > 0 || w.fields.length > 0)) writeBearingIndices.add(Number(key));
+  }
+  errors.push(...writeOnlyRowErrors(writeBearingIndices, resolved, errors));
 
   let created = 0;
   for (const row of resolved) {
