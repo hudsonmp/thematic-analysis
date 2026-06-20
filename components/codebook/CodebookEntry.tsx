@@ -14,6 +14,7 @@ import {
   bufferedRowCount,
   lastFilledIndex,
   rowToFacetWrites,
+  assembleLabelWrites,
   isGridRowEmpty,
   arrowTargetCell,
   CORE_COL_COUNT,
@@ -23,10 +24,34 @@ import {
   type RowData,
   type FacetCell,
 } from '@/lib/codebook/grid';
+import { buildLabelTree, type LabelNode } from '@/lib/codebook/labelTree';
 import type { Tables } from '@/lib/types/cb-db';
 
 type Citation = Tables<'cb_citations'>;
 type FacetValue = Tables<'cb_facet_values'>;
+type Label = Tables<'cb_labels'>;
+
+// Fallback swatch color for a label with no color set (so the dot always reads;
+// matches LabelTagger / LabelManager).
+const DEFAULT_LABEL_SWATCH = '#000000';
+
+/** A label flattened from the nested tree for the indented picker: the label plus
+ *  its tree DEPTH, so a chip can be inset to read the nesting (Finder-style). */
+type FlatLabel = { label: Label; depth: number };
+
+/**
+ * Pre-order (depth-first) flatten of the label forest into picker rows, each
+ * carrying its `depth` for indentation. A parent is emitted immediately before
+ * its children — the same order LabelManager renders — so the per-row multi-
+ * select reads the nesting visually. PURE; built once from `buildLabelTree`.
+ */
+function flattenLabelTree(nodes: LabelNode[], depth = 0, out: FlatLabel[] = []): FlatLabel[] {
+  for (const node of nodes) {
+    out.push({ label: node, depth });
+    flattenLabelTree(node.children, depth + 1, out);
+  }
+  return out;
+}
 
 /** Session-mode options. The chosen origin applies to EVERY code in the batch. */
 const ORIGINS: { value: CodeOrigin; label: string }[] = [
@@ -74,13 +99,22 @@ export default function CodebookEntry({
   codebookId,
   facets,
   citations,
+  labels,
 }: {
   codebookId: string;
   facets: FacetWithValues[];
   citations: Citation[];
+  labels: Label[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+
+  // The codebook's LABEL vocabulary, flattened from its nesting into an indented
+  // picker (built once): the Labels column's per-row multi-select renders these so
+  // sub-labels read under their parents. A codebook with no labels hides the
+  // column entirely (nothing to tag), mirroring how empty facet sets add no column.
+  const labelPicker = useMemo(() => flattenLabelTree(buildLabelTree(labels)), [labels]);
+  const hasLabels = labelPicker.length > 0;
 
   // Facet COLUMNS derived from the scheme (the heart of "columns = the scheme").
   // We keep both the pure `FacetColumn` (for row→write mapping + render mode) and
@@ -153,7 +187,11 @@ export default function CodebookEntry({
   // the arrow TARGET via the pure `arrowTargetCell`, then focuses that cell's
   // element here — navigation never re-renders the grid (it only moves focus and,
   // on Down past the end, extends like Enter does).
-  const totalCols = CORE_COL_COUNT + columns.length;
+  // The Labels column (when present) is appended AFTER the facet columns, so its
+  // cell address is the last column index. `totalCols` includes it for arrow-nav
+  // bounds; `labelColIndex` is -1 when the codebook has no labels (no column).
+  const labelColIndex = hasLabels ? CORE_COL_COUNT + columns.length : -1;
+  const totalCols = CORE_COL_COUNT + columns.length + (hasLabels ? 1 : 0);
   const cellRefs = useRef<Map<string, HTMLElement>>(new Map());
   const setCellRef = useCallback(
     (row: number, col: number) => (el: HTMLElement | null) => {
@@ -225,6 +263,20 @@ export default function CodebookEntry({
       const row = rowsRef.current[index];
       if (!row) return;
       row.facets = { ...row.facets, [facetId]: cell };
+      reconcileFilled(index);
+      ensureBuffer();
+    },
+    [ensureBuffer, reconcileFilled],
+  );
+
+  /** Write-through for the row's LABEL set (the full id list after a toggle),
+   *  mirroring `writeFacet`: mutate the ref in place, then keep the filled count
+   *  + buffer live. A label-only row counts as filled (so its tags are not lost). */
+  const writeLabels = useCallback(
+    (index: number, labelIds: string[]) => {
+      const row = rowsRef.current[index];
+      if (!row) return;
+      row.labels = labelIds;
       reconcileFilled(index);
       ensureBuffer();
     },
@@ -391,6 +443,12 @@ export default function CodebookEntry({
     submitted.forEach((s, submitIdx) => {
       facetWritesByIndex[submitIdx] = rowToFacetWrites(s.row, columns);
     });
+    // Label writes keyed by the SAME submit index the facet writes use (position
+    // in `coreRows`), matching how `resolveRows` reports `row.index`. Rows with no
+    // labels are omitted by `assembleLabelWrites` → no `setCodeLabels` call.
+    const labelWritesByIndex = assembleLabelWrites(
+      submitted.map((s, submitIdx) => ({ index: submitIdx, row: s.row })),
+    );
 
     startTransition(async () => {
       try {
@@ -400,6 +458,7 @@ export default function CodebookEntry({
           facetWritesByIndex,
           origin,
           citationId || undefined,
+          labelWritesByIndex,
         );
 
         if (res.errors.length === 0) {
@@ -559,7 +618,7 @@ export default function CodebookEntry({
       {/* Scheme-derived spreadsheet grid. Horizontal scroll when wide. */}
       <section>
         <div className="overflow-x-auto border border-foreground/15">
-          <table className="w-full border-collapse text-sm" style={{ minWidth: tableMinWidth(columns) }}>
+          <table className="w-full border-collapse text-sm" style={{ minWidth: tableMinWidth(columns, hasLabels) }}>
             <thead>
               <tr className="border-b border-foreground/15 text-left">
                 <th className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-foreground/50" style={{ width: 220 }}>
@@ -580,6 +639,14 @@ export default function CodebookEntry({
                     {col.label}
                   </th>
                 ))}
+                {hasLabels && (
+                  <th
+                    className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-foreground/50"
+                    style={{ width: LABEL_COL_WIDTH }}
+                  >
+                    Labels
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -590,6 +657,8 @@ export default function CodebookEntry({
                   initial={seedRows.get(index) ?? emptySeed}
                   columns={columns}
                   facetValues={facetValues}
+                  labelPicker={labelPicker}
+                  labelColIndex={labelColIndex}
                   error={rowErrors[index]}
                   disabled={isPending}
                   setNameRef={setNameRef}
@@ -598,6 +667,7 @@ export default function CodebookEntry({
                   isTextCol={isTextCol}
                   writeCore={writeCore}
                   writeFacet={writeFacet}
+                  writeLabels={writeLabels}
                   focusName={focusName}
                   addFacetValue={addFacetValue}
                 />
@@ -646,8 +716,17 @@ function facetColWidth(mode: FacetColumn['mode']): number {
   }
 }
 
-function tableMinWidth(columns: FacetColumn[]): number {
-  return 220 + 150 + 260 + columns.reduce((sum, c) => sum + facetColWidth(c.mode), 0);
+/** Column width (px) for the Labels multi-select (a chip menu like enum-multi). */
+const LABEL_COL_WIDTH = 240;
+
+function tableMinWidth(columns: FacetColumn[], hasLabels: boolean): number {
+  return (
+    220 +
+    150 +
+    260 +
+    columns.reduce((sum, c) => sum + facetColWidth(c.mode), 0) +
+    (hasLabels ? LABEL_COL_WIDTH : 0)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -667,6 +746,10 @@ type GridRowProps = {
   initial: RowData;
   columns: FacetColumn[];
   facetValues: Map<string, FacetValue[]>;
+  /** The codebook's labels flattened (with depth) for the indented picker. */
+  labelPicker: FlatLabel[];
+  /** Cell column index of the Labels column, or -1 when there are no labels. */
+  labelColIndex: number;
   error?: string;
   disabled: boolean;
   setNameRef: (index: number) => (el: HTMLTextAreaElement | null) => void;
@@ -675,6 +758,7 @@ type GridRowProps = {
   isTextCol: (col: number) => boolean;
   writeCore: (index: number, patch: Partial<CodebookRow>) => void;
   writeFacet: (index: number, facetId: string, cell: FacetCell) => void;
+  writeLabels: (index: number, labelIds: string[]) => void;
   focusName: (index: number) => void;
   addFacetValue: (facetId: string, label: string) => Promise<FacetValue | null>;
 };
@@ -684,6 +768,8 @@ const GridRowView = memo(function GridRowView({
   initial,
   columns,
   facetValues,
+  labelPicker,
+  labelColIndex,
   error,
   disabled,
   setNameRef,
@@ -692,6 +778,7 @@ const GridRowView = memo(function GridRowView({
   isTextCol,
   writeCore,
   writeFacet,
+  writeLabels,
   focusName,
   addFacetValue,
 }: GridRowProps) {
@@ -700,6 +787,7 @@ const GridRowView = memo(function GridRowView({
   const [mnemonic, setMnemonic] = useState(initial.core.mnemonic);
   const [definition, setDefinition] = useState(initial.core.definition);
   const [facetState, setFacetState] = useState<Record<string, FacetCell>>(initial.facets);
+  const [labelState, setLabelState] = useState<string[]>(initial.labels);
 
   function commitName(v: string) {
     setName(v);
@@ -716,6 +804,16 @@ const GridRowView = memo(function GridRowView({
   function commitFacet(facetId: string, cell: FacetCell) {
     setFacetState((prev) => ({ ...prev, [facetId]: cell }));
     writeFacet(index, facetId, cell);
+  }
+  /** Toggle one label id in this row's set, recompute the full set, write through. */
+  function commitLabelToggle(labelId: string) {
+    setLabelState((prev) => {
+      const next = prev.includes(labelId)
+        ? prev.filter((id) => id !== labelId)
+        : [...prev, labelId];
+      writeLabels(index, next);
+      return next;
+    });
   }
 
   /** The Name cell registers with BOTH the name-ref map (Enter focus) and the
@@ -804,6 +902,20 @@ const GridRowView = memo(function GridRowView({
           </td>
         );
       })}
+      {labelColIndex >= 0 && (
+        <td className="align-top px-2 py-1">
+          <LabelMultiCell
+            picker={labelPicker}
+            selected={labelState}
+            disabled={disabled}
+            registerRef={setCellRef(index, labelColIndex)}
+            onArrowKeyDown={(e) =>
+              handleArrowNav(e, index, labelColIndex, { isText: isTextCol(labelColIndex) })
+            }
+            onToggle={commitLabelToggle}
+          />
+        </td>
+      )}
     </tr>
   );
 });
@@ -1046,6 +1158,65 @@ function EnumMultiCell({
           onCancel={() => setAdding(false)}
         />
       )}
+    </div>
+  );
+}
+
+/** Labels: a compact multi-select chip menu over the codebook's NESTED label
+ *  vocabulary. Modeled on `EnumMultiCell` (the enum-multi facet cell) — the same
+ *  toggle-chip UX and arrow-nav focus model (first chip is the cell's focusable
+ *  target) — but the chips are INDENTED by tree depth so sub-labels read under
+ *  their parents, each carries the label's color dot, and there is no inline
+ *  "Other…" add (the label vocabulary is curated on the Labels page, not here).
+ *  Each toggle reports the single id; the row recomputes the full set + writes it. */
+function LabelMultiCell({
+  picker,
+  selected,
+  disabled,
+  registerRef,
+  onArrowKeyDown,
+  onToggle,
+}: {
+  picker: FlatLabel[];
+  selected: string[];
+  disabled: boolean;
+  registerRef: (el: HTMLElement | null) => void;
+  onArrowKeyDown: (e: React.KeyboardEvent<HTMLElement>) => void;
+  onToggle: (labelId: string) => void;
+}) {
+  const sel = new Set(selected);
+  return (
+    <div className="flex flex-col gap-1">
+      {picker.length === 0 && <span className="text-xs text-foreground/30">no labels</span>}
+      {picker.map(({ label: lbl, depth }, i) => {
+        const on = sel.has(lbl.id);
+        const isFirst = i === 0;
+        return (
+          <button
+            key={lbl.id}
+            ref={isFirst ? registerRef : undefined}
+            type="button"
+            disabled={disabled}
+            aria-pressed={on}
+            onClick={() => onToggle(lbl.id)}
+            onKeyDown={isFirst ? onArrowKeyDown : undefined}
+            // Indent by depth so nesting reads at a glance (Finder-style).
+            style={{ marginLeft: depth * 12 }}
+            className={`inline-flex items-center gap-1 self-start border px-1.5 py-0.5 text-xs transition disabled:opacity-50 ${
+              on
+                ? 'border-foreground bg-foreground text-background'
+                : 'border-foreground/20 hover:border-foreground'
+            }`}
+          >
+            <span
+              className="inline-block h-2 w-2 rounded-full shrink-0"
+              style={{ backgroundColor: lbl.color ?? DEFAULT_LABEL_SWATCH }}
+              aria-hidden
+            />
+            {lbl.name}
+          </button>
+        );
+      })}
     </div>
   );
 }

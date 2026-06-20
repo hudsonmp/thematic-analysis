@@ -52,10 +52,16 @@ export type FacetCell =
   | { kind: 'boolean'; bool: boolean | null }
   | { kind: 'open_text'; text: string };
 
-/** A full grid row: the three core cells + a per-facet cell map keyed by facetId. */
+/** A full grid row: the three core cells + a per-facet cell map keyed by facetId
+ *  + the LABEL ids the row is tagged with (the categorical "what kind" axis,
+ *  cb_code_labels — independent of facets; see app/actions/labels.ts). Labels are
+ *  a flat id list rather than a per-column cell bag because they are one
+ *  multi-select over the codebook's (nested) label vocabulary, not one column per
+ *  facet. Empty (`[]`) is "untagged" and produces no write. */
 export type RowData = {
   core: CodebookRow;
   facets: Record<string, FacetCell>;
+  labels: string[];
 };
 
 /** Construct the empty (unset) cell for a column's render mode. */
@@ -72,11 +78,11 @@ export function emptyFacetCell(mode: FacetRenderMode): FacetCell {
   }
 }
 
-/** A fresh, fully-empty row for the given facet columns. */
+/** A fresh, fully-empty row for the given facet columns (no labels tagged). */
 export function emptyRow(columns: FacetColumn[]): RowData {
   const facets: Record<string, FacetCell> = {};
   for (const col of columns) facets[col.facetId] = emptyFacetCell(col.mode);
-  return { core: { name: '', mnemonic: '', definition: '' }, facets };
+  return { core: { name: '', mnemonic: '', definition: '' }, facets, labels: [] };
 }
 
 /** Whether a facet cell carries any value (would produce a write). */
@@ -93,14 +99,16 @@ export function isFacetCellSet(cell: FacetCell | undefined): boolean {
 }
 
 /**
- * A row is empty iff its three core cells are blank AND no facet cell is set.
- * The always-present trailing buffer rows are empty by this test and skipped on
- * commit. (A row with ONLY facet data but no name is NOT empty — it is surfaced
- * by `resolveRows` as a "Name is required" error rather than silently dropped,
- * so the researcher does not lose facet selections they made on a nameless row.)
+ * A row is empty iff its three core cells are blank AND no facet cell is set AND
+ * no label is tagged. The always-present trailing buffer rows are empty by this
+ * test and skipped on commit. (A row with ONLY facet data or ONLY labels but no
+ * name is NOT empty — it is surfaced by `resolveRows` as a "Name is required"
+ * error rather than silently dropped, so the researcher does not lose the facet
+ * selections or label tags they made on a nameless row.)
  */
 export function isGridRowEmpty(row: RowData): boolean {
   if (!isRowEmpty(row.core)) return false;
+  if (row.labels.length > 0) return false;
   for (const facetId in row.facets) {
     if (isFacetCellSet(row.facets[facetId])) return false;
   }
@@ -149,6 +157,28 @@ export function rowToFacetWrites(row: RowData, columns: FacetColumn[]): RowFacet
   }
 
   return { enumValueIds: [...new Set(enumValueIds)], fields };
+}
+
+/**
+ * Assemble the per-row LABEL writes the bulk-create action applies, keyed by each
+ * row's submit index (its 0-based position in the submitted batch — the SAME
+ * index `facetWritesByIndex` uses, so the two maps stay aligned). For each
+ * submitted row, the row's label ids are de-duped (the junction PK is
+ * (code_id, label_id)); a row with NO labels is OMITTED entirely (no key) so the
+ * action makes no `setCodeLabels` call for it. The result is the
+ * `labelWritesByIndex: Record<number, string[]>` `createCodesBulkWithFacets`
+ * expects. PURE (no I/O), mirroring `rowToFacetWrites` — the client builds it,
+ * the action just applies it.
+ */
+export function assembleLabelWrites(
+  submitted: { index: number; row: RowData }[],
+): Record<number, string[]> {
+  const out: Record<number, string[]> = {};
+  submitted.forEach(({ index, row }) => {
+    const ids = [...new Set(row.labels)];
+    if (ids.length > 0) out[index] = ids;
+  });
+  return out;
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import {
   isFacetCellSet,
   isGridRowEmpty,
   rowToFacetWrites,
+  assembleLabelWrites,
   bufferedRowCount,
   lastFilledIndex,
   nextRowFocusIndex,
@@ -27,7 +28,11 @@ const COLS: FacetColumn[] = [
 
 function row(over: Partial<RowData> = {}): RowData {
   const base = emptyRow(COLS);
-  return { core: { ...base.core, ...over.core }, facets: { ...base.facets, ...over.facets } };
+  return {
+    core: { ...base.core, ...over.core },
+    facets: { ...base.facets, ...over.facets },
+    labels: over.labels ?? base.labels,
+  };
 }
 
 describe('emptyFacetCell', () => {
@@ -45,6 +50,9 @@ describe('emptyRow', () => {
     expect(r.core).toEqual({ name: '', mnemonic: '', definition: '' });
     expect(Object.keys(r.facets).sort()).toEqual(['f-bool', 'f-enum1', 'f-enumN', 'f-text']);
     expect(r.facets['f-bool']).toEqual({ kind: 'boolean', bool: null });
+  });
+  it('starts with no labels tagged', () => {
+    expect(emptyRow(COLS).labels).toEqual([]);
   });
 });
 
@@ -73,6 +81,9 @@ describe('isGridRowEmpty', () => {
   it('is non-empty when only a facet cell is set (so facet-only rows are not silently dropped)', () => {
     expect(isGridRowEmpty(row({ facets: { 'f-bool': { kind: 'boolean', bool: true } } }))).toBe(false);
     expect(isGridRowEmpty(row({ facets: { 'f-enum1': { kind: 'enum', valueIds: ['v1'] } } }))).toBe(false);
+  });
+  it('is non-empty when only labels are tagged (so label-only rows are not silently dropped)', () => {
+    expect(isGridRowEmpty(row({ labels: ['lab-1'] }))).toBe(false);
   });
 });
 
@@ -107,6 +118,32 @@ describe('rowToFacetWrites', () => {
   it('ignores facet keys not present in columns (a removed facet cannot leak a write)', () => {
     const r = row({ facets: { 'f-ghost': { kind: 'enum', valueIds: ['gone'] } } });
     expect(rowToFacetWrites(r, COLS)).toEqual({ enumValueIds: [], fields: [] });
+  });
+});
+
+describe('assembleLabelWrites', () => {
+  it('is empty when no submitted row has labels', () => {
+    const submitted = [
+      { index: 0, row: row() },
+      { index: 1, row: row({ core: { name: 'Alpha', mnemonic: '', definition: '' } }) },
+    ];
+    expect(assembleLabelWrites(submitted)).toEqual({});
+  });
+
+  it('keys label ids by the submit index and omits rows with no labels', () => {
+    const submitted = [
+      { index: 0, row: row({ labels: ['l1', 'l2'] }) },
+      { index: 1, row: row() }, // no labels → absent (no setCodeLabels call)
+      { index: 2, row: row({ labels: ['l3'] }) },
+    ];
+    const out = assembleLabelWrites(submitted);
+    expect(out).toEqual({ 0: ['l1', 'l2'], 2: ['l3'] });
+    expect(1 in out).toBe(false); // empty selection → no key
+  });
+
+  it('de-dupes label ids within a row (junction PK is (code_id, label_id))', () => {
+    const submitted = [{ index: 0, row: row({ labels: ['l1', 'l1', 'l2'] }) }];
+    expect(assembleLabelWrites(submitted)[0]).toEqual(['l1', 'l2']);
   });
 });
 

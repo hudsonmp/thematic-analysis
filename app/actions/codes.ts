@@ -2,6 +2,7 @@
 
 import { cbFrom } from '@/lib/supabase/guard';
 import { linkCitation } from '@/app/actions/citations';
+import { setCodeLabels } from '@/app/actions/labels';
 import { resolveRows, type CodebookRow } from '@/lib/codebook/mnemonic';
 import type { RowFacetWrites } from '@/lib/codebook/grid';
 import { CodeVersionInput, type CodeVersionInputT } from '@/lib/types/contracts';
@@ -382,13 +383,20 @@ export async function createCodesBulk(
  *     boolean / open_text facet the row sets (unset cells are absent).
  *
  * Per-row transactional-ish: the code + version + citation link + every facet
- * write for ONE row run in sequence; if ANY step for that row throws, the row is
- * reported as an error (kept in the grid for retry) and the loop moves on. There
- * is no PostgREST multi-statement transaction, so a row that fails AFTER the code
- * insert can leave a code with partial facets — acceptable here because the code
- * stays fully editable on its anatomy page, and the row is surfaced (not lost).
- * The pure `rowToFacetWrites` (lib/codebook/grid.ts, unit-tested) produces these
- * `RowFacetWrites` on the client; this action just applies them.
+ * write + the label tags for ONE row run in sequence; if ANY step for that row
+ * throws, the row is reported as an error (kept in the grid for retry) and the
+ * loop moves on. There is no PostgREST multi-statement transaction, so a row that
+ * fails AFTER the code insert can leave a code with partial facets/labels —
+ * acceptable here because the code stays fully editable on its anatomy page, and
+ * the row is surfaced (not lost). The pure `rowToFacetWrites` /
+ * `assembleLabelWrites` (lib/codebook/grid.ts, unit-tested) produce these
+ * `RowFacetWrites` / label-id lists on the client; this action just applies them.
+ *
+ * `labelWritesByIndex` mirrors `facetWritesByIndex`: keyed by the row's ORIGINAL
+ * 0-based input index, it carries the label ids the new code is tagged with (via
+ * `setCodeLabels`, the replace-the-set label tagger). A row absent from the map
+ * (or with an empty list) gets no `setCodeLabels` call. It defaults to `{}` so
+ * existing callers that create codes without labels are unaffected.
  */
 export async function createCodesBulkWithFacets(
   codebookId: string,
@@ -396,6 +404,7 @@ export async function createCodesBulkWithFacets(
   facetWritesByIndex: Record<number, RowFacetWrites>,
   origin: CodeOrigin,
   citationId?: string,
+  labelWritesByIndex: Record<number, string[]> = {},
 ): Promise<BulkCreateResult> {
   if (!codebookId) throw new Error('createCodesBulkWithFacets: missing codebook id.');
 
@@ -433,6 +442,13 @@ export async function createCodesBulkWithFacets(
             text_value: field.text_value,
           });
         }
+      }
+
+      // Label tags for THIS row (same index key as the facet writes). An empty /
+      // absent list makes no call — the code is simply created untagged.
+      const labelIds = labelWritesByIndex[row.index];
+      if (labelIds && labelIds.length > 0) {
+        await setCodeLabels(newId, labelIds);
       }
 
       created += 1;

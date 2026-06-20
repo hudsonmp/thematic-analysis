@@ -7,11 +7,12 @@ import CodebookEntry from '@/components/codebook/CodebookEntry';
  * form.
  *
  * Server Component: it resolves the active codebook and reads the codebook tree
- * (for the facets that define the grid's COLUMNS and the citation library for
- * the session binding), then hands both to the client `CodebookEntry`. The grid
- * renders one column per facet, by the facet's TYPE. The bulk create is a Server
- * Action (`createCodesBulkWithFacets`) the client invokes from a handler — no
- * Server Action runs during client render. The session "mode" (origin) and
+ * (for the facets that define the grid's COLUMNS, the citation library for the
+ * session binding, and the LABEL vocabulary the grid's per-row label picker tags
+ * from), then hands them to the client `CodebookEntry`. The grid renders one
+ * column per facet, by the facet's TYPE, plus a Labels column. The bulk create is
+ * a Server Action (`createCodesBulkWithFacets`) the client invokes from a handler
+ * — no Server Action runs during client render. The session "mode" (origin) and
  * optional bound citation are client state that apply to every code created in
  * the session.
  */
@@ -20,6 +21,11 @@ export default async function CodebookPage() {
   const tree = await listCodebookTree(cb.id);
 
   return (
-    <CodebookEntry codebookId={cb.id} facets={tree.facets} citations={tree.citations} />
+    <CodebookEntry
+      codebookId={cb.id}
+      facets={tree.facets}
+      citations={tree.citations}
+      labels={tree.labels}
+    />
   );
 }
