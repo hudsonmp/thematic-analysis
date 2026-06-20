@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   deleteSessionCloud,
+  setSessionCodingDone,
   updateSessionCollection,
   type SessionListRow,
 } from '@/app/actions/sessions';
@@ -74,12 +75,14 @@ export default function SessionsIndex({ rows }: { rows: SessionListRow[] }) {
           {error}
         </p>
       )}
-      {Array.from(byCollection.entries()).map(([collection, group]) => (
+      {Array.from(byCollection.entries()).map(([collection, group]) => {
+        const codedCount = group.filter((r) => r.done).length;
+        return (
         <section key={collection}>
           <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-foreground/50">
             {collection}{' '}
             <span className="font-normal normal-case text-foreground/30">
-              · {group.length}
+              · {group.length} · {codedCount}/{group.length} coded
             </span>
           </h2>
           <table className="w-full max-w-2xl text-sm border-collapse">
@@ -88,13 +91,19 @@ export default function SessionsIndex({ rows }: { rows: SessionListRow[] }) {
                 <th className="py-2 pr-4 font-medium">PID</th>
                 <th className="py-2 pr-4 font-medium">Collection</th>
                 <th className="py-2 pr-4 font-medium">Duration</th>
+                <th className="py-2 pr-4 font-medium">Done</th>
                 <th className="py-2 pr-4 font-medium" />
                 <th className="py-2 font-medium" />
               </tr>
             </thead>
             <tbody>
               {group.map((row) => (
-                <tr key={row.id} className="border-b border-foreground/10">
+                <tr
+                  key={row.id}
+                  className={`border-b border-foreground/10${
+                    row.done ? ' text-foreground/40' : ''
+                  }`}
+                >
                   <td className="py-2 pr-4 font-mono">{row.pidLabel}</td>
                   <td className="py-2 pr-4">
                     <select
@@ -118,6 +127,19 @@ export default function SessionsIndex({ rows }: { rows: SessionListRow[] }) {
                   </td>
                   <td className="py-2 pr-4 font-mono text-foreground/70">
                     {formatDuration(row.durationMs)}
+                  </td>
+                  <td className="py-2 pr-4">
+                    <input
+                      type="checkbox"
+                      checked={row.done}
+                      disabled={isPending}
+                      onChange={(e) =>
+                        run(() => setSessionCodingDone(row.id, e.target.checked))
+                      }
+                      aria-label={`Mark session ${row.pidLabel} coded`}
+                      title={row.done ? 'Coded — click to unmark' : 'Mark as coded'}
+                      className="h-4 w-4 cursor-pointer accent-foreground/70 disabled:opacity-50"
+                    />
                   </td>
                   <td className="py-2 pr-4">
                     <Link
@@ -152,7 +174,8 @@ export default function SessionsIndex({ rows }: { rows: SessionListRow[] }) {
             </tbody>
           </table>
         </section>
-      ))}
+        );
+      })}
     </div>
   );
 }
