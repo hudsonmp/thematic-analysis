@@ -3,6 +3,7 @@
 import { cbFrom } from '@/lib/supabase/guard';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { autoColor } from '@/lib/codebook/color';
+import { wouldCreateCycle } from '@/lib/codebook/labelTree';
 import type { Tables } from '@/lib/types/cb-db';
 
 type Label = Tables<'cb_labels'>;
@@ -41,26 +42,30 @@ export async function listLabels(codebookId: string): Promise<Label[]> {
 }
 
 /**
- * Create a label under a codebook. `position` is appended after the current max
- * so a new label lands at the end of the ordered list. `color` is an optional
- * hex override; when omitted/empty it is AUTO-ASSIGNED from the within-codebook
- * `position` via `autoColor`, so the researcher never picks one and no two
- * labels in the codebook share (or sit perceptually close to) a color. Returns
- * the inserted row.
+ * Create a label under a codebook. `parentId` is optional — when given, the new
+ * label nests under that label (a sub-label); when omitted/null it is a top-level
+ * label. `position` is appended after the current max OF THE SIBLING GROUP (labels
+ * sharing this `parent_id`) so a new label lands at the end of its own folder.
+ * `color` is an optional hex override; when omitted/empty it is AUTO-ASSIGNED from
+ * the sibling-group `position` via `autoColor`, so the researcher never picks one.
+ * A brand-new node can never form a cycle, so no cycle check is needed here.
+ * Returns the inserted row.
  */
 export async function createLabel(
   codebookId: string,
-  { name, color }: { name: string; color?: string },
+  { name, color, parentId }: { name: string; color?: string; parentId?: string | null },
 ): Promise<Label> {
   await requireAuthUser();
   const trimmed = (name ?? '').trim();
   if (!trimmed) throw new Error('createLabel: name is required.');
 
-  const position = await nextPosition(codebookId);
+  const parent_id = parentId ?? null;
+  const position = await nextPosition(codebookId, parent_id);
   const { data, error } = await cbFrom('cb_labels')
     .insert({
       codebook_id: codebookId,
       name: trimmed,
+      parent_id,
       // Explicit caller color wins; otherwise auto-assign by group position.
       color: color?.trim() || autoColor(position),
       position,
@@ -102,11 +107,85 @@ export async function renameLabel(
 }
 
 /**
- * Delete a label. Its code tags cascade (cb_code_labels.label_id FK on delete
- * cascade), so no orphaned tag rows remain.
+ * Re-parent a label, moving it (and its whole subtree, which travels with it via
+ * the children's unchanged `parent_id`) under `newParentId`, or to the top level
+ * when `newParentId` is null. REJECTS the move when it would create a cycle —
+ * making a label its own ancestor (`newParentId === id` or a descendant of `id`)
+ * — checked in-memory via `wouldCreateCycle` over the codebook's current labels.
+ * The moved label is appended to the END of the destination sibling group, so it
+ * lands last in its new folder (the researcher can reorder afterwards).
+ */
+export async function setLabelParent(
+  id: string,
+  newParentId: string | null,
+): Promise<Label> {
+  await requireAuthUser();
+
+  // Resolve the codebook so we can load the sibling set and run the cycle check.
+  const target = await cbFrom('cb_labels')
+    .select('codebook_id')
+    .eq('id', id)
+    .single();
+  if (target.error || !target.data) {
+    throw new Error(
+      `setLabelParent failed: ${target.error?.message ?? 'label not found'}`,
+    );
+  }
+  const codebookId = target.data.codebook_id;
+
+  const all = await cbFrom('cb_labels').select('*').eq('codebook_id', codebookId);
+  if (all.error) {
+    throw new Error(`setLabelParent (load labels) failed: ${all.error.message}`);
+  }
+  if (wouldCreateCycle(all.data ?? [], id, newParentId)) {
+    throw new Error(
+      'setLabelParent: cannot move a label under itself or one of its descendants (would create a cycle).',
+    );
+  }
+
+  // Append to the end of the destination sibling group.
+  const position = await nextPosition(codebookId, newParentId);
+  const { data, error } = await cbFrom('cb_labels')
+    .update({ parent_id: newParentId, position })
+    .eq('id', id)
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(`setLabelParent failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
+/**
+ * Delete a label. Before deleting, PROMOTE its direct children up one level — set
+ * their `parent_id` to this label's own `parent_id` — so a deleted folder collapses
+ * up rather than orphaning its children to root or cascading the subtree away. The
+ * label's own code tags cascade (cb_code_labels.label_id FK on delete cascade), so
+ * no orphaned tag rows remain; the promoted children keep their tags. A no-op
+ * promotion (no children) is harmless.
  */
 export async function deleteLabel(id: string): Promise<void> {
   await requireAuthUser();
+
+  // Read this label's parent so its children can be re-parented to it (promote).
+  const target = await cbFrom('cb_labels')
+    .select('parent_id')
+    .eq('id', id)
+    .single();
+  if (target.error || !target.data) {
+    throw new Error(
+      `deleteLabel failed: ${target.error?.message ?? 'label not found'}`,
+    );
+  }
+
+  // Promote children up one level (safe no-op when the label has none).
+  const promote = await cbFrom('cb_labels')
+    .update({ parent_id: target.data.parent_id })
+    .eq('parent_id', id);
+  if (promote.error) {
+    throw new Error(`deleteLabel (promote children) failed: ${promote.error.message}`);
+  }
+
   const { error } = await cbFrom('cb_labels').delete().eq('id', id);
   if (error) throw new Error(`deleteLabel failed: ${error.message}`);
 }
@@ -156,13 +235,24 @@ export async function setCodeLabels(codeId: string, labelIds: string[]): Promise
 // ---------------------------------------------------------------------------
 
 /**
- * Compute the next append position for a label: (max existing position within
- * the codebook) + 1, or 0 if none exist. Mirrors flag-types.ts `nextPosition`.
+ * Compute the next append position for a label WITHIN ITS SIBLING GROUP: (max
+ * existing position among labels in `codebookId` sharing `parentId`) + 1, or 0 if
+ * the group is empty. `position` orders siblings under a common parent, not the
+ * whole codebook — a top-level group (`parentId == null`) and each parent's
+ * children each have their own 0..n sequence.
  */
-async function nextPosition(codebookId: string): Promise<number> {
-  const { data, error } = await cbFrom('cb_labels')
+async function nextPosition(
+  codebookId: string,
+  parentId: string | null,
+): Promise<number> {
+  let query = cbFrom('cb_labels')
     .select('position')
-    .eq('codebook_id', codebookId)
+    .eq('codebook_id', codebookId);
+  // Filter to the sibling group: roots match `parent_id IS NULL`, children match
+  // the exact parent id. (`.eq(..., null)` would emit `= null`, never true.)
+  query = parentId == null ? query.is('parent_id', null) : query.eq('parent_id', parentId);
+
+  const { data, error } = await query
     .order('position', { ascending: false })
     .limit(1)
     .maybeSingle();
