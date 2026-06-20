@@ -1153,13 +1153,6 @@ export type Database = {
             referencedRelation: "cb_sessions"
             referencedColumns: ["id"]
           },
-          {
-            foreignKeyName: "cb_session_coding_status_coder_id_fkey"
-            columns: ["coder_id"]
-            isOneToOne: false
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
         ]
       }
       cb_session_episodes: {
