@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   sessionVideoSuffix,
   scopeAudioTracks,
+  pickPlaybackAudio,
 } from '@/lib/upload/folderGrouping';
 import type { FolderMember } from '@/lib/upload/folderGrouping';
 
@@ -87,25 +88,98 @@ describe('scopeAudioTracks — single-segment folder (all tracks match)', () => 
   });
 });
 
-describe('scopeAudioTracks — fallback to [] (NEVER send other-segment tracks)', () => {
+describe('scopeAudioTracks — real long suffix with ZERO matches → [] (other-segment tracks dropped)', () => {
   const segment2 = [
     member('067/Audio Record/audioAlice2639780501.m4a'),
     member('067/Audio Record/audioBob2639780501.m4a'),
   ];
 
-  it('returns [] when ZERO tracks match the session suffix', () => {
-    // Session is segment 3, but every track is segment 2 → no match → fallback.
+  it('returns [] when ZERO tracks match a real (long) session suffix', () => {
+    // Session is segment 3, but every track is segment 2 → no match. The suffix
+    // IS a reliable join key, so the misses are genuine other-segment tracks and
+    // dropping them is correct (route transcribes the session video's own audio).
     const scoped = scopeAudioTracks('video3639780501.mp4', segment2);
-    expect(scoped).toEqual([]);
-  });
-
-  it('returns [] when the session suffix is null (un-suffixed session video)', () => {
-    const scoped = scopeAudioTracks('video_session.mp4', segment2);
     expect(scoped).toEqual([]);
   });
 
   it('returns [] for an empty track list', () => {
     expect(scopeAudioTracks('video2639780501.mp4', [])).toEqual([]);
+  });
+});
+
+describe('scopeAudioTracks — degenerate suffix → over-include ALL (never silently drop a speaker)', () => {
+  // A degenerate short-suffix folder: video1.mp4 → suffix "1" is too short to be a
+  // reliable join key. endsWith("1") would keep ONLY audioAlice1 and DROP audioBob2
+  // (a genuine co-segment speaker). FIX 2: over-include both instead.
+  const degenerate: FolderMember[] = [
+    member('123/Audio Record/audioAlice1.m4a'),
+    member('123/Audio Record/audioBob2.m4a'),
+  ];
+
+  it('includes BOTH speakers for a short numeric suffix (no silent drop)', () => {
+    const scoped = scopeAudioTracks('video1.mp4', degenerate);
+    expect(scoped.map((t) => t.leaf).sort()).toEqual([
+      'audioAlice1.m4a',
+      'audioBob2.m4a',
+    ]);
+  });
+
+  it('over-includes ALL tracks when the session suffix is null (un-suffixed video)', () => {
+    const tracks: FolderMember[] = [
+      member('067/Audio Record/audioAlice2639780501.m4a'),
+      member('067/Audio Record/audioBob2639780501.m4a'),
+    ];
+    const scoped = scopeAudioTracks('video_session.mp4', tracks);
+    expect(scoped.map((t) => t.leaf).sort()).toEqual([
+      'audioAlice2639780501.m4a',
+      'audioBob2639780501.m4a',
+    ]);
+  });
+
+  it('still scopes correctly for a NORMAL long suffix (regression)', () => {
+    const tracks: FolderMember[] = [
+      member('742/Audio Record/audioAlice1639780501.m4a'), // seg 1
+      member('742/Audio Record/audioBob1639780501.m4a'), // seg 1
+      member('742/Audio Record/audioAlice2639780501.m4a'), // seg 2 (session)
+      member('742/Audio Record/audioBob2639780501.m4a'), // seg 2 (session)
+    ];
+    const scoped = scopeAudioTracks('video2639780501.mp4', tracks);
+    expect(scoped.map((t) => t.leaf).sort()).toEqual([
+      'audioAlice2639780501.m4a',
+      'audioBob2639780501.m4a',
+    ]);
+  });
+});
+
+describe('pickPlaybackAudio — stored playback clip follows the SCOPED segment (FIX 1)', () => {
+  it('742-style: picks the SCOPED (session) track, not the first unscoped consent track', () => {
+    // The 742 consent-first folder: the FIRST unscoped track is a segment-1
+    // consent clip; the session is segment 2. The old code stored audioTracks[0]
+    // (consent) against a segment-2 transcript — the mis-scope this test guards.
+    const allTracks: FolderMember[] = [
+      member('742/Audio Record/audioHudson1639780501.m4a'), // seg 1 consent (first!)
+      member('742/Audio Record/audioVolodymyr1639780501.m4a'), // seg 1 consent
+      member('742/Audio Record/audioHudson2639780501.m4a'), // seg 2 session
+      member('742/Audio Record/audioVolodymyr2639780501.m4a'), // seg 2 session
+    ];
+    const scopedTracks = scopeAudioTracks('video2639780501.mp4', allTracks);
+    const playback = pickPlaybackAudio(scopedTracks, allTracks);
+    // Must be a SESSION-segment track (ends in 2639780501), NOT the consent one.
+    expect((playback as unknown as { name: string }).name).toBe(
+      'audioHudson2639780501.m4a',
+    );
+  });
+
+  it('falls back to the first unscoped track when scoping produced nothing', () => {
+    // Legacy single top-level track (no scoped match) → use the unscoped first.
+    const allTracks: FolderMember[] = [member('067/audioMixed.m4a')];
+    const scopedTracks: FolderMember[] = [];
+    const playback = pickPlaybackAudio(scopedTracks, allTracks);
+    expect((playback as unknown as { name: string }).name).toBe('audioMixed.m4a');
+  });
+
+  it('returns null when there are no tracks at all', () => {
+    expect(pickPlaybackAudio([], [])).toBeNull();
   });
 });
 

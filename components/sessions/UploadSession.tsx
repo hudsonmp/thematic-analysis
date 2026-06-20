@@ -13,6 +13,7 @@ import {
   groupFolderFiles,
   pidsInPool,
   scopeAudioTracks,
+  pickPlaybackAudio,
   type FolderFile,
   type FolderGroup,
   type FolderMember,
@@ -450,8 +451,12 @@ export default function UploadSession() {
       );
       videoSource = 'drive';
 
-      // 3) AUDIO → Supabase Storage (the first track; schema holds one audio_path).
-      const audioFile = plan.group.audioTracks[0]?.file ?? null;
+      // 3) AUDIO → Supabase Storage (schema holds one audio_path). Prefer the
+      //    SCOPED session-segment track so the stored playback clip belongs to the
+      //    SAME segment as the transcript; fall back to the first unscoped track
+      //    only when scoping produced nothing (legacy single track / degenerate
+      //    suffix). Otherwise a multi-segment folder would store a consent clip.
+      const audioFile = pickPlaybackAudio(plan.scopedTracks, plan.group.audioTracks);
       if (audioFile) {
         audioPath = `${base}/audio.m4a`;
         await resumableUpload(supabase, 'recordings', audioPath, audioFile, (u, t) =>
@@ -631,8 +636,10 @@ export default function UploadSession() {
                   // Tracks that will actually be TRANSCRIBED: the session segment's
                   // tracks only (so 742 shows 2, not all 9 across segments).
                   const trackCount = p.scopedTracks.length;
-                  // Whether ANY audio is uploaded for playback (separate concern:
-                  // the first available track → audio_path, unchanged by scoping).
+                  // Whether ANY audio is uploaded for playback. The stored clip
+                  // now FOLLOWS the scoped segment (pickPlaybackAudio: scoped
+                  // first, unscoped fallback), so it matches the transcript's
+                  // segment; this flag just asks whether any track exists at all.
                   const hasPlaybackAudio = p.group.audioTracks.length > 0;
                   return (
                     <tr key={p.pid} className="border-b border-foreground/10 align-top">
