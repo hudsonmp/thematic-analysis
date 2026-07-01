@@ -150,7 +150,7 @@ export async function getParticipantProgression(pid: string): Promise<Participan
 ## 4. Testing & verification
 - **Unit (vitest):** `orderSnapshots` (dedupe latest-by-`client_ts`, ordinal ordering incl. the non-monotonic case, missing-tail), `buildSteps` (5 steps, final→badge, missing steps null, diff vs previous *non-null* step), `diffEntities` (add/remove/change by trimmed name, empty↔populated, untrimmed-name equivalence). Fixtures drawn from real shapes in the dossier (e.g. the `Vehicle `-with-trailing-space entity).
 - **Type/lint:** `npx tsc --noEmit`; `npm run lint` (eslint + `scripts/check-no-study-writes.sh`).
-- **Guard hardening:** add `study_snapshots` and `llm_prompts` to `check-no-study-writes.sh`'s `STUDY_FROM_RE` (a latent gap — those two IRB tables are currently unguarded). A stays read-only, so it remains green.
+- **Read-only enforcement:** A's reads go through the new `studyFrom()` select-only guard (see the **[Study-Data Write-Safety spec](./2026-06-30-study-data-write-safety-design.md)**), not raw `createServiceRoleClient()`. `check-no-study-writes.sh` already covers `study_snapshots`; the safety spec adds the one genuinely-missing table (`llm_prompts`) and quarantines the service-role client. A introduces zero writes, so it stays green throughout.
 - **Manual:** on `:3200`, pick a full-5 participant (e.g. the perfect-6 user), a missing-Scenario-4 participant, and PID 343/411 (cohort "—"); confirm empty-state rendering and diff highlights.
 
 ---
@@ -158,7 +158,7 @@ export async function getParticipantProgression(pid: string): Promise<Participan
 ## 5. Risks / decisions carried
 - **PII:** display `pid` only; `first_name`/`email` never leave the action layer.
 - **Untrimmed names:** normalize (trim) for diff matching only; display raw.
-- **Read-only discipline:** service-role bypasses RLS; safety is `.select()`-only + the lint guard + the guard-hardening above.
+- **Read-only enforcement** is now structural via `studyFrom()` (L2 of the safety spec), not just discipline; the build runs under the L4 DB-safety verifier gate.
 - **`resolveTaskModuleId` extraction** touches `spec.ts` + `live.ts` (repoint imports) — behavior-preserving; covered by their existing usage.
 
 ---
