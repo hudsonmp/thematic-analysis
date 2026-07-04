@@ -48,16 +48,17 @@ describe('postgrest surface canary', () => {
   // loudly instead of the guard silently passing it through.
   it('real query-builder methods ⊆ known verbs + select', () => {
     const builder = new PostgrestClient('http://localhost').from('t');
-    // Walk the FULL prototype chain (excluding Object.prototype): a future
-    // postgrest-js refactor that moves a verb onto a base class must not let
-    // an inherited mutating method slip past this canary.
+    // Walk from the INSTANCE ITSELF up the full prototype chain (excluding
+    // Object.prototype): an own-property class-field verb, or a future
+    // postgrest-js refactor that moves a verb onto a base class, must not
+    // slip past this canary. The typeof filter below discards data props.
     const names = new Set<string>();
     for (
-      let proto = Object.getPrototypeOf(builder);
-      proto && proto !== Object.prototype;
-      proto = Object.getPrototypeOf(proto)
+      let o: object | null = builder;
+      o && o !== Object.prototype;
+      o = Object.getPrototypeOf(o)
     ) {
-      for (const n of Object.getOwnPropertyNames(proto)) names.add(n);
+      for (const n of Object.getOwnPropertyNames(o)) names.add(n);
     }
     const methods = [...names].filter(
       (n) =>
@@ -73,6 +74,10 @@ describe('postgrest surface canary', () => {
       // cloneRequestState: read-safe internal helper — copies the builder's
       // request state for immutable chaining; it constructs no write request.
       'cloneRequestState',
+      // fetch: own-property data field holding the injected transport (the
+      // plain fetch implementation). Not a query verb — calling it grants
+      // nothing beyond global fetch; requests it makes carry no builder state.
+      'fetch',
     ]);
     const unknown = methods.filter((m) => !known.has(m));
     expect(unknown).toEqual([]);

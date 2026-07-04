@@ -61,7 +61,7 @@ while IFS= read -r f; do
 done < <(
   find app lib components -type f \( -name '*.ts' -o -name '*.tsx' \) 2>/dev/null \
     | grep -v '/node_modules/' \
-    | grep -v -E 'lib/supabase/(server|service)\.ts$' \
+    | grep -v -E '^lib/supabase/(server|service)\.ts$' \
     | sort
 )
 
@@ -76,7 +76,9 @@ done < <(
 # read cb_ tables directly on the service client. That is legacy-sanctioned —
 # they predate the guards and touch only cb_ tables — but migrating them to
 # cbFrom-style access or the user client would let this allowlist shrink.
-SERVICE_ALLOWLIST_RE='lib/supabase/(guard|service|study-guard)\.ts$|app/actions/(auth|codebook|memos)\.ts$|app/api/media/'
+# Path-ANCHORED (`^`): grep emits repo-relative paths with no leading `./`, so
+# a suffix match would silently sanction e.g. components/lib/supabase/guard.ts.
+SERVICE_ALLOWLIST_RE='^lib/supabase/(guard|service|study-guard)\.ts$|^app/actions/(auth|codebook|memos)\.ts$|^app/api/media/'
 while IFS= read -r hit; do
   [ -n "$hit" ] || continue
   file="${hit%%:*}"
@@ -89,16 +91,28 @@ done < <(
 )
 
 # --- Rule 3: no .rpc() anywhere in app code (stored procedures bypass both
-# guards). Comment-only mentions are skipped: the guard modules document in
-# prose that `.rpc()` is NOT intercepted, and file-allowlisting them would
-# instead permit a real `.rpc(` call in exactly the modules that hold the
-# service client. Add a deliberate allowlist entry here if a real call site is
-# ever needed.
+# guards). Comment-only mentions are skipped in two stages: the guard modules
+# document in prose that `.rpc()` is NOT intercepted, and file-allowlisting
+# them would instead permit a real `.rpc(` call in exactly the modules that
+# hold the service client. Add a deliberate allowlist entry here if a real
+# call site is ever needed.
 while IFS= read -r hit; do
   [ -n "$hit" ] || continue
-  # Skip hits whose line content (after `path:lineno:`) is a `//` or block-
-  # comment (`*` / `/*`) line — prose mentions, not call sites.
-  if printf '%s' "$hit" | grep -qE '^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)'; then continue; fi
+  # Line content after `path:lineno:` (repo paths contain no colons).
+  content="${hit#*:}"
+  content="${content#*:}"
+  # Stage (i): skip ONLY comment-to-EOL prefixes — `//`, or a block-comment
+  # continuation `*` FOLLOWED BY whitespace/EOL. A bare `*/` or `/*` prefix
+  # does NOT qualify: code may follow the delimiter on the same line
+  # (`/* c */ await sb.rpc('x')`), and generator methods (`*gen(`) must not
+  # hide either.
+  if printf '%s' "$content" | grep -qE '^[[:space:]]*(//|\*([[:space:]]|$))'; then continue; fi
+  # Stage (ii): strip a leading `*/` and every CLOSED `/* ... */` span, then
+  # flag only if `.rpc(` survives the strip. Residual false positive — an
+  # unclosed `/*` opened on this line whose prose mentions `.rpc(` — fails
+  # SAFE (flagged for a human), the right direction for this guard.
+  stripped="$(printf '%s' "$content" | sed -E 's#^[[:space:]]*\*/##; s#/\*([^*]|\*+[^*/])*\*+/##g')"
+  if ! printf '%s' "$stripped" | grep -qE '\.rpc\('; then continue; fi
   echo "ERROR: .rpc( call (bypasses cbFrom/studyFrom guards): $hit" >&2
   offenders=$((offenders + 1))
 done < <(
