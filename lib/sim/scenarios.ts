@@ -91,15 +91,27 @@ export const SCENARIOS: readonly [ScenarioSetup, ScenarioSetup, ScenarioSetup, S
 ];
 
 /** Reference end-state CHECKS as data: what the authored expected behavior
- *  (REFERENCE_POLICY in sim.test.ts) produces, reduced to the fields the
- *  execution grader scores — per-rider servedBy/droppedAt, per-vehicle
- *  charged, and (S0 only, where the authored Then constrains it) the global
- *  pickup order. */
+ *  (REFERENCE_POLICY in sim.test.ts) produces.
+ *
+ *  GRADING CONTRACT (B2-3 execution grader): score ONLY per-rider
+ *  servedBy/droppedAt and per-vehicle charged. `pickupOrder` is GOLDEN-TEST
+ *  REFERENCE DATA, NOT a graded field — under atomic movement, S0's B-first
+ *  order is reachable only by a policy that withholds A's assignment (the
+ *  authored "pauses mid-trip" is outside the world's expressive range), so
+ *  grading order would systematically fail faithful immediate-assign policies
+ *  (gate-verified with a probe policy: A boards at t=8, before B's t=10
+ *  request). Order strictness is an oracle-spec.md [UNDECIDED] for Hudson.
+ *
+ *  KNOWN GRADING BLIND SPOT (documented, not decided): end-states carry no
+ *  vehicle POSITION, so S1's authored "V2 repositions to ASCEND³" is invisible
+ *  to execution grading — the naive baseline passes S1's checks 100%. That
+ *  clause is effectively judge-only until Hudson's matching-strictness
+ *  decision adds positional checks. */
 export type ExpectedEndState = {
   riders: { id: RiderId; servedBy: VehicleId | null; droppedAt: LandmarkName | null }[];
   vehicles: { id: VehicleId; charged: boolean }[];
-  /** Rider ids in global pickup order, present only when the scenario's
-   *  authored clauses pin the ordering. */
+  /** GOLDEN-TEST-ONLY (see above): rider ids in global pickup order where the
+   *  authored clauses pin it. The execution grader must NOT score this. */
   pickupOrder?: RiderId[];
 };
 

@@ -244,6 +244,11 @@ describe('hostile policies', () => {
       { act: 'assign', vehicle: 'V1', rider: 'Z' },
       { act: 'reassign', rider: 'A', to: 'V1' }, // A is unassigned in S0 — illegal
       { act: 'reposition', vehicle: 'V1', to: 'Atlantis' },
+      // Prototype-pollution-shaped landmark names: must be rejected as unknown
+      // by isLandmark's own-property guard, never resolved via Object.prototype
+      // (gate pin for the documented __proto__ threat).
+      { act: 'reposition', vehicle: 'V1', to: '__proto__' },
+      { act: 'reposition', vehicle: 'V1', to: 'toString' },
     ] as unknown as PolicyAction[];
     const hostile: PolicyFn = () => garbage;
     const end = runScenario(SCENARIOS[0], hostile);
@@ -331,5 +336,106 @@ describe('world rules: step cap', () => {
     const end = runScenario(SCENARIOS[1], pingPong);
     expect(end.completed).toBe(false);
     expect(end.log.some((l) => /step cap/.test(l))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate pins (B2-1 review): cover the traced-but-untested world-rule branches.
+// ---------------------------------------------------------------------------
+
+describe('gate pins: dead-path world rules', () => {
+  it('head-gating: a preassigned rider with a future requestAtMin holds the vehicle until the request fires', () => {
+    const setup = {
+      scenarioIdx: 0 as const,
+      vehicles: [{ id: 'V1' as const, start: 'Depot / Charging' as const, battery: 100 }],
+      riders: [
+        {
+          id: 'A' as const,
+          pickup: 'Lane Field' as const,
+          dropoff: 'ASCEND³' as const,
+          requestAtMin: 5,
+        },
+      ],
+      preassigned: [{ rider: 'A' as const, vehicle: 'V1' as const }],
+    };
+    const times: number[] = [];
+    const probe: PolicyFn = (world) => {
+      times.push(world.timeMin);
+      return [];
+    };
+    const end = runScenario(setup, probe);
+    // Served despite a pure-noop policy (preassigned FIFO service)...
+    expect(end.riders[0].servedBy).toBe('V1');
+    // ...but the FIRST departure happens only after the t=5 request: in the
+    // chronological log, the ride_request event precedes any departure line.
+    const firstDeparture = end.log.findIndex((l) => /departed/.test(l));
+    const requestLine = end.log.findIndex((l) => /event: .*ride_request/.test(l));
+    expect(firstDeparture).toBeGreaterThan(requestLine);
+    // And the policy never observed the world before t=0 dispatching early.
+    expect(Math.min(...times)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('charge-arrival suppresses a threshold crossing consumed by the recharge (no low_battery)', () => {
+    const setup = {
+      scenarioIdx: 0 as const,
+      vehicles: [{ id: 'V1' as const, start: 'Newman Library' as const, battery: 16 }],
+      riders: [
+        // Exists only to generate a consult; never assigned.
+        {
+          id: 'A' as const,
+          pickup: 'ASCEND³' as const,
+          dropoff: 'Lane Field' as const,
+          requestAtMin: 0,
+        },
+      ],
+    };
+    // NL -> Depot is 6 units: 16% - 6% = 10% crosses below 15 mid-leg, but the
+    // arrival IS the charge — the crossing is consumed, low_battery never fires.
+    const chargeOnly: PolicyFn = (_world, event) =>
+      event.type === 'ride_request' ? [{ act: 'charge', vehicle: 'V1' }] : [];
+    const end = runScenario(setup, chargeOnly);
+    expect(end.log.some((l) => /event: low_battery/.test(l))).toBe(false);
+    expect(end.vehicles[0].charged).toBe(true);
+    expect(end.vehicles[0].battery).toBe(100);
+  });
+
+  it('pickup abort: a rider reassigned away mid-pickup-leg is not picked up by the original vehicle', () => {
+    const setup = {
+      scenarioIdx: 0 as const,
+      vehicles: [
+        { id: 'V1' as const, start: 'Depot / Charging' as const, battery: 100 },
+        { id: 'V2' as const, start: 'ASCEND³' as const, battery: 100 },
+      ],
+      riders: [
+        {
+          id: 'A' as const,
+          pickup: 'Lane Field' as const,
+          dropoff: 'Executive Airport' as const,
+          requestAtMin: 0,
+        },
+        {
+          id: 'B' as const,
+          pickup: 'Newman Library' as const,
+          dropoff: 'Depot / Charging' as const,
+          requestAtMin: 5,
+        },
+      ],
+    };
+    // t=0: assign A to V1 (departs Depot -> Lane Field, ~15 min).
+    // t=5: reassign A to V2 while V1 is mid-leg. V1 arrives to an empty head
+    // -> the "no longer queued" abort path; V2 serves A.
+    const policy: PolicyFn = (_world, event) => {
+      if (event.type === 'ride_request' && event.rider === 'A') {
+        return [{ act: 'assign', vehicle: 'V1', rider: 'A' }];
+      }
+      if (event.type === 'ride_request' && event.rider === 'B') {
+        return [{ act: 'reassign', rider: 'A', to: 'V2' }];
+      }
+      return [];
+    };
+    const end = runScenario(setup, policy);
+    expect(end.log.some((l) => /no longer queued/.test(l))).toBe(true);
+    const a = end.riders.find((r) => r.id === 'A');
+    expect(a?.servedBy).toBe('V2');
   });
 });

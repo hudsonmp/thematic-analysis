@@ -30,7 +30,10 @@ export const SIM_JS: string = `'use strict';
  * under test. Rules (each implemented and doc-commented below):
  *  - five landmarks on the authored city map (1-decimal coordinates)
  *  - travel time = Manhattan distance at 1 unit/min, rounded UP to whole
- *    minutes; battery drains 1% per distance unit (float), floored at 0
+ *    minutes; battery drains 1% per distance unit (float), floored at 0.
+ *    0% NEVER strands a vehicle — battery is graded SIGNAL, not a movement
+ *    constraint (stranding would entangle "wrong policy" with "world deadlocks
+ *    the run" and kill the naive baseline's S3 end state)
  *  - low_battery fires ONCE when a drain crosses below 15% (edge-triggered:
  *    a recharge above the threshold re-arms it)
  *  - vehicles serve their queue FIFO, one passenger at a time: when idle with
@@ -379,8 +382,9 @@ function runScenario(setup, policy) {
       v.battery = 100;
       v.charged = true;
       // Suppress a threshold crossing consumed by this very charge: the
-      // vehicle is never observably below 15% (it recharges the same minute
-      // it arrives), so firing low_battery here would be noise.
+      // vehicle is never observable TO THE POLICY below 15% (it recharges the
+      // same minute it arrives; the arrival LOG line may still print the
+      // sub-threshold value), so firing low_battery here would be noise.
       crossed = false;
       line(v.id + ' charged to 100% at ' + DEPOT);
     }
