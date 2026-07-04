@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { PostgrestClient } from '@supabase/postgrest-js';
 import {
   STUDY_TABLES,
   assertStudyTable,
@@ -37,5 +38,47 @@ describe('selectOnly', () => {
     for (const verb of ['insert', 'update', 'upsert', 'delete']) {
       expect(() => guarded[verb]).toThrow(/read-only/i);
     }
+  });
+});
+
+describe('postgrest surface canary', () => {
+  // The selectOnly guard blocklists {insert,update,upsert,delete}. That is safe
+  // ONLY while the real query builder's mutating surface is exactly that set. If
+  // a postgrest-js upgrade adds a new verb (e.g. `merge`), this canary fails
+  // loudly instead of the guard silently passing it through.
+  it('real query-builder methods ⊆ known verbs + select', () => {
+    const builder = new PostgrestClient('http://localhost').from('t');
+    const proto = Object.getPrototypeOf(builder);
+    const methods = Object.getOwnPropertyNames(proto).filter(
+      (n) =>
+        n !== 'constructor' &&
+        typeof (builder as unknown as Record<string, unknown>)[n] === 'function',
+    );
+    const known = new Set([
+      'select',
+      'insert',
+      'update',
+      'upsert',
+      'delete',
+      // cloneRequestState: read-safe internal helper — copies the builder's
+      // request state for immutable chaining; it constructs no write request.
+      'cloneRequestState',
+    ]);
+    const unknown = methods.filter((m) => !known.has(m));
+    expect(unknown).toEqual([]);
+  });
+});
+
+describe('selectOnly over the real postgrest builder', () => {
+  it('write verbs throw; read chain constructs without network', () => {
+    const real = new PostgrestClient('http://localhost').from('t');
+    const guarded = selectOnly(real);
+    const asRecord = guarded as unknown as Record<string, unknown>;
+    for (const verb of ['insert', 'update', 'upsert', 'delete']) {
+      expect(() => asRecord[verb]).toThrow(/read-only/i);
+    }
+    // Chaining works through the bound method (no await → no network).
+    const chain = guarded.select('id').eq('x', 1).limit(1);
+    expect(chain).toBeTruthy();
   });
 });

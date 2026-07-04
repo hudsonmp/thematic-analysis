@@ -3,7 +3,6 @@ import { createUserServerClient } from '@/lib/supabase/user-server';
 import {
   assertStudyTable,
   selectOnly,
-  type SelectOnly,
   type StudyTable,
 } from '@/lib/supabase/study-guard-core';
 
@@ -28,5 +27,5 @@ export async function studyFrom<T extends StudyTable>(table: T) {
   assertStudyTable(table);
   const sb = await createUserServerClient();
   const builder = sb.from(table);
-  return selectOnly(builder) as SelectOnly<typeof builder>;
+  return selectOnly(builder);
 }
