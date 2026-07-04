@@ -50,6 +50,29 @@ describe('orderSnapshots', () => {
     ];
     expect(orderSnapshots(rows)[0].spec).toBe('b');
   });
+
+  it('tie on clientTs: newer createdAt wins deterministically regardless of input order', () => {
+    const a = snap({ spec: 'older-created', clientTs: '2026-06-21T15:00:00Z', createdAt: '2026-06-21T15:00:01Z' });
+    const b = snap({ spec: 'newer-created', clientTs: '2026-06-21T15:00:00Z', createdAt: '2026-06-21T15:00:02Z' });
+    expect(orderSnapshots([a, b]).map((r) => r.spec)).toEqual(['newer-created']);
+    expect(orderSnapshots([b, a]).map((r) => r.spec)).toEqual(['newer-created']);
+  });
+
+  it('mixed dedupe: later {clientTs:null, newer createdAt} beats earlier {older clientTs} (best-available timestamp)', () => {
+    const rows = [
+      snap({ spec: 'older-client', clientTs: '2026-06-21T15:00:00Z', createdAt: '2026-06-21T15:00:00Z' }),
+      snap({ spec: 'newer-created', clientTs: null, createdAt: '2026-06-21T15:10:00Z' }),
+    ];
+    expect(orderSnapshots(rows)[0].spec).toBe('newer-created');
+  });
+
+  it('non-null but unparseable clientTs falls back to createdAt (not -Infinity)', () => {
+    const rows = [
+      snap({ spec: 'valid', clientTs: '2026-06-21T15:10:00Z', createdAt: '2026-06-21T15:10:00Z' }),
+      snap({ spec: 'garbage-ts', clientTs: 'not-a-date', createdAt: '2026-06-21T15:20:00Z' }),
+    ];
+    expect(orderSnapshots(rows)[0].spec).toBe('garbage-ts');
+  });
 });
 
 describe('buildSteps', () => {
@@ -90,6 +113,33 @@ describe('buildSteps', () => {
   it('stepCount counts filled step slots (final not a slot)', () => {
     expect(stepCount(full)).toBe(5);
     expect(stepCount(full.slice(0, 4))).toBe(4);
+  });
+
+  it('submitted-without-s4: {initial,s0,s1,s2,final} → null Scenario-4 snapshot but submitted=true', () => {
+    // The 2-real-user shape: a final flush exists with NO Scenario-4 snapshot.
+    // They submitted — they are NOT dropouts.
+    const rows = [
+      snap({ phase: 'initial', spec: 'v0' }),
+      snap({ phase: 'after_scenario', scenarioIdx: 0, spec: 'v1' }),
+      snap({ phase: 'after_scenario', scenarioIdx: 1, spec: 'v2' }),
+      snap({ phase: 'after_scenario', scenarioIdx: 2, spec: 'v3' }),
+      snap({ phase: 'final', spec: 'v3' }),
+    ];
+    const steps = buildSteps(rows);
+    expect(steps[4].snapshot).toBeNull();
+    expect(steps[4].submitted).toBe(true);
+  });
+
+  it('scenarioIdx=4 row is dropped; does not displace final or flip submitted', () => {
+    const rows = [
+      ...full,
+      snap({ phase: 'after_scenario', scenarioIdx: 4, spec: 'phantom', clientTs: '2026-06-21T17:00:00Z' }),
+    ];
+    expect(orderSnapshots(rows).some((r) => r.spec === 'phantom')).toBe(false);
+    const steps = buildSteps(rows);
+    expect(steps).toHaveLength(5);
+    expect(steps[4].snapshot?.spec).toBe('v4');
+    expect(steps[4].submitted).toBe(true);
   });
 });
 
