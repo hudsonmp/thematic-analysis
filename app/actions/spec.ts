@@ -4,6 +4,7 @@ import { studyFrom } from '@/lib/supabase/study-guard';
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getShownStudy } from '@/app/actions/codebook';
+import { taskModuleIdFrom } from '@/lib/study/task-module';
 import type { Json } from '@/lib/types/cb-db';
 
 // ---------------------------------------------------------------------------
@@ -34,7 +35,7 @@ import type { Json } from '@/lib/types/cb-db';
 // TASK-MODULE FILTER: a participant emits spec/entities edits under TWO modules —
 // a warmup task and the real task. We filter to the REAL task's `module_id`
 // (resolved the SAME way the live anchor does — the `type:'task'` module in the
-// shown study's `authored_data`, see live.ts:resolveTaskModuleId) so warmup-spec
+// shown study's `authored_data`, via the shared lib/study/task-module.ts) so warmup-spec
 // edits don't render on the real-task video. If the task module can't be resolved
 // (no shown study / no task module), we DO NOT silently guess — we include all
 // edits and the caller can detect this absence; see the inline note.
@@ -119,12 +120,12 @@ export async function listSessionSpecTimeline(
   if (!userId) return empty;
 
   // 3. Resolve the REAL task module_id (the `type:'task'` module in the shown
-  //    study's authored_data — the SAME resolution live.ts:resolveTaskModuleId
-  //    uses, which the live clock anchors on). If it resolves, we scope the edit
-  //    query to it so warmup-spec edits never render on the real-task video. If it
-  //    does NOT resolve (no shown study / no task module), we do NOT silently
-  //    guess a module — we include ALL of the user's spec/entities edits.
-  const taskModuleId = await resolveTaskModuleId();
+  //    study's authored_data — the SAME shared resolution the live clock anchors
+  //    on, lib/study/task-module.ts:taskModuleIdFrom). If it resolves, we scope
+  //    the edit query to it so warmup-spec edits never render on the real-task
+  //    video. If it does NOT resolve (no shown study / no task module), we do NOT
+  //    silently guess a module — we include ALL of the user's spec/entities edits.
+  const taskModuleId = taskModuleIdFrom((await getShownStudy())?.authored_data ?? null);
 
   // 4. Select this user's spec_edit + entities_edit rows, ascending by created_at.
   //    Scoped to the task module when resolvable. Two `.select()`s, no write.
@@ -170,28 +171,4 @@ function payloadValue(payload: Json): string | null {
   }
   const value = (payload as Record<string, unknown>).value;
   return typeof value === 'string' ? value : null;
-}
-
-/** The active study's `type:'task'` module id (the recorded real-task module),
- *  or null. READ-ONLY: derived from `getShownStudy().authored_data`. Mirrors
- *  live.ts:resolveTaskModuleId so the spec replay scopes to the SAME module the
- *  live clock anchors on. */
-async function resolveTaskModuleId(): Promise<string | null> {
-  const study = await getShownStudy();
-  const authoredData = study?.authored_data ?? null;
-  if (
-    !authoredData ||
-    typeof authoredData !== 'object' ||
-    Array.isArray(authoredData)
-  ) {
-    return null;
-  }
-  const modules = (authoredData as Record<string, unknown>).modules;
-  if (!Array.isArray(modules)) return null;
-  for (const m of modules) {
-    if (!m || typeof m !== 'object') continue;
-    const rec = m as Record<string, unknown>;
-    if (rec.type === 'task' && typeof rec.id === 'string') return rec.id;
-  }
-  return null;
 }

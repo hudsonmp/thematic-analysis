@@ -5,6 +5,7 @@ import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getShownStudy } from '@/app/actions/codebook';
 import { getRecordingStart } from '@/app/actions/recording';
 import { humanizeEvent } from '@/lib/live/humanize';
+import { taskModuleIdFrom } from '@/lib/study/task-module';
 import type { Json } from '@/lib/types/cb-db';
 
 // ---------------------------------------------------------------------------
@@ -433,11 +434,10 @@ async function resolveUserId(pid: string): Promise<string | null> {
 }
 
 /** The active study's `type:'task'` module id (the recorded module), or null.
- *  READ-ONLY: derived from `getShownStudy().authored_data`. */
+ *  READ-ONLY: derived from `getShownStudy().authored_data`. Delegates to the
+ *  shared lib/study/task-module.ts resolution (ONE copy, shared with spec.ts). */
 async function resolveTaskModuleId(): Promise<string | null> {
-  const modules = parseModules(await safeShownStudyAuthoredData());
-  const task = modules.find((m) => m.type === 'task');
-  return task?.id ?? null;
+  return taskModuleIdFrom(await safeShownStudyAuthoredData());
 }
 
 /** Read the shown study's `authored_data`, tolerating its absence (null). */
