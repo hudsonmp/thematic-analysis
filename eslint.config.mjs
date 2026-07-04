@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Agent worktrees (isolated checkouts under .claude/) — never lint them from
+    // the main tree; each worktree lints itself. Without this, every error in
+    // the main tree double-reports and in-flight agent branches break our lint.
+    ".claude/**",
   ]),
 ]);
 
