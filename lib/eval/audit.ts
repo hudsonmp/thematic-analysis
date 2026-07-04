@@ -60,12 +60,25 @@ export async function withStudyAudit<T>(
   try {
     result = await fn();
   } catch (err) {
-    const after = await takeStudyFingerprint();
+    // Guard the post-fingerprint itself (review NIT): if IT throws (exotic —
+    // query errors become -1, but an abort/env failure can still escape), the
+    // action's ORIGINAL error must not be masked by the audit's own failure.
+    let after: StudyFingerprint | null = null;
+    try {
+      after = await takeStudyFingerprint();
+    } catch (auditErr) {
+      console.error(
+        `[audit] post-fingerprint failed after "${label}" (original action error rethrown):`,
+        auditErr,
+      );
+      throw err;
+    }
     const lines = diffFingerprints(before, after);
     if (lines.length > 0) {
       throw new Error(
         `STUDY-DATA AUDIT FAILURE after "${label}": ${lines.join('; ')}` +
           `; underlying action error: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
       );
     }
     throw err;

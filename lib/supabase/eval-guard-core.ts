@@ -2,9 +2,11 @@
 // under vitest. Mirrors study-guard-core.ts's allowlist half: eval_* tables are
 // the eval harness's OWN storage (safety spec L5) — writable, unlike study
 // tables — so there is NO selectOnly proxy here. The guard exists so a typo'd
-// table name can never reach cb_/study_ data through this path, and so CI can
-// quarantine raw clients to the three guard modules. `evalFrom` (eval-guard.ts)
-// composes this core with the user client.
+// table name can never reach cb_/study_ data through this path, and so DB access
+// stays funneled through the guard modules rather than raw clients at call
+// sites. (CI's Rule 2 quarantines only the SERVICE client; evalFrom runs on the
+// user client, so its containment is this compile+runtime bound, not the lint.)
+// `evalFrom` (eval-guard.ts) composes this core with the user client.
 
 /** Every eval-harness table this app may READ AND WRITE. Closed allowlist —
  *  adding a table is a deliberate, reviewed act. (cb_* tables go through cbFrom;
