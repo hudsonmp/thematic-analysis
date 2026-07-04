@@ -11,6 +11,7 @@ const LINKS: NavLink[] = [
   { href: '/codebook', label: 'Codebook' },
   { href: '/sessions/live', label: 'Live' },
   { href: '/sessions', label: 'Sessions' },
+  { href: '/progression-analysis', label: 'Progression' },
   { href: '/episodes', label: 'Events' },
   { href: '/flag-types', label: 'Flags' },
   { href: '/labels', label: 'Labels' },
