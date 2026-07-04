@@ -48,8 +48,18 @@ describe('postgrest surface canary', () => {
   // loudly instead of the guard silently passing it through.
   it('real query-builder methods ⊆ known verbs + select', () => {
     const builder = new PostgrestClient('http://localhost').from('t');
-    const proto = Object.getPrototypeOf(builder);
-    const methods = Object.getOwnPropertyNames(proto).filter(
+    // Walk the FULL prototype chain (excluding Object.prototype): a future
+    // postgrest-js refactor that moves a verb onto a base class must not let
+    // an inherited mutating method slip past this canary.
+    const names = new Set<string>();
+    for (
+      let proto = Object.getPrototypeOf(builder);
+      proto && proto !== Object.prototype;
+      proto = Object.getPrototypeOf(proto)
+    ) {
+      for (const n of Object.getOwnPropertyNames(proto)) names.add(n);
+    }
+    const methods = [...names].filter(
       (n) =>
         n !== 'constructor' &&
         typeof (builder as unknown as Record<string, unknown>)[n] === 'function',
@@ -79,6 +89,7 @@ describe('selectOnly over the real postgrest builder', () => {
     }
     // Chaining works through the bound method (no await → no network).
     const chain = guarded.select('id').eq('x', 1).limit(1);
-    expect(chain).toBeTruthy();
+    // Thenable ⇒ a real un-awaited PostgrestFilterBuilder; nothing fired.
+    expect(typeof (chain as { then?: unknown }).then).toBe('function');
   });
 });
