@@ -43,6 +43,17 @@ describe('validateLlmConfig — valid configs', () => {
       config: { model: 'claude-sonnet-4-6', effort: 'max', maxTokens: 16000 },
     });
   });
+
+  // Pin the INCLUSIVE bounds the range error message promises (review NIT).
+  it('accepts temperature exactly 0 on sonnet (inclusive lower bound)', () => {
+    const result = validateLlmConfig({ model: 'claude-sonnet-4-6', temperature: 0 });
+    expect(result).toEqual({ ok: true, config: { model: 'claude-sonnet-4-6', temperature: 0 } });
+  });
+
+  it('accepts temperature exactly 1 on sonnet (inclusive upper bound)', () => {
+    const result = validateLlmConfig({ model: 'claude-sonnet-4-6', temperature: 1 });
+    expect(result).toEqual({ ok: true, config: { model: 'claude-sonnet-4-6', temperature: 1 } });
+  });
 });
 
 describe('validateLlmConfig — model-conditional rules', () => {

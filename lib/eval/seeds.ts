@@ -31,7 +31,7 @@ export const ORACLE_SPEC_DRAFT = `> **DRAFT — Hudson: edit before trusting any
 
 ## Scenario 1
 
-Authored basis (Then/And clauses, verbatim): Vehicle 1 pauses and picks up
+Authored basis (paraphrased from the authored Then/And clauses): Vehicle 1 pauses and picks up
 Rider B from Lane Field (before A, because it passes Lane Field first); drops
 B at Executive Airport; picks up Rider A at Executive Airport; drops A at
 Newman Library.
@@ -50,7 +50,7 @@ Tolerances: [UNDECIDED — e.g. is pickup ORDER required or only final positions
 
 ## Scenario 2
 
-Authored basis (Then/And clauses, verbatim): Vehicle 1 adds Rider B to its
+Authored basis (paraphrased from the authored Then/And clauses): Vehicle 1 adds Rider B to its
 pickup queue; Vehicle 2 repositions to ASCEND³ (central) while idle; V1 drops
 A at Newman Library then picks up B at Lane Field, drops B at Executive
 Airport.
@@ -59,15 +59,17 @@ Pass conditions (proposed):
 
 - Vehicle 1 adds Rider B to its pickup queue.
 - Vehicle 2 repositions to ASCEND³ (central) while idle.
-- Vehicle 1 drops Rider A at Newman Library, then picks up Rider B at Lane
-  Field, then drops Rider B at Executive Airport.
+- [WHEN — simulator-provided trigger, not graded] Vehicle 1 drops Rider A at
+  Newman Library.
+- Vehicle 1 then picks up Rider B at Lane Field, then drops Rider B at
+  Executive Airport.
 - End-state: B served by V1; V2 repositioned, unused for pickups.
 
 Tolerances: [UNDECIDED — e.g. is pickup ORDER required or only final positions?]
 
 ## Scenario 3
 
-Authored basis (Then/And clauses, verbatim): when Rider C requests from Newman
+Authored basis (paraphrased from the authored Then/And clauses): when Rider C requests from Newman
 Library (where V1 just dropped A), Rider B is REMOVED from V1's queue and
 ADDED to V2; V2 drives to pick up B from ASCEND³; V1 takes C to Lane Field.
 
@@ -83,15 +85,15 @@ Tolerances: [UNDECIDED — e.g. is pickup ORDER required or only final positions
 
 ## Scenario 4
 
-Authored basis (Then/And clauses, verbatim): V1 battery falls below the 15%
+Authored basis (paraphrased from the authored Then/And clauses): V1 battery falls below the 15%
 operating threshold after dropping A → B is removed from V1's queue and added
 to V2; V1 drives to the Depot to charge INSTEAD of picking up B; V2 picks up B
 at Lane Field.
 
 Pass conditions (proposed):
 
-- Vehicle 1's battery falls below the 15% operating threshold after dropping
-  Rider A.
+- [WHEN — simulator-provided trigger, not graded] Vehicle 1's battery falls
+  below the 15% operating threshold after dropping Rider A.
 - Rider B is removed from Vehicle 1's queue and added to Vehicle 2's.
 - Vehicle 1 drives to the Depot to charge INSTEAD of picking up Rider B.
 - Vehicle 2 picks up Rider B at Lane Field.

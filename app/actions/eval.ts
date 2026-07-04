@@ -404,6 +404,14 @@ export async function saveAnnotation(input: {
  * "## Researcher annotations" section listing the notes. The folded
  * annotations are stamped with the new variant's id so the UI can show
  * which observations have already been acted on.
+ *
+ * PARTIAL-FAILURE SEMANTICS (no transactions without .rpc, which is banned):
+ * the variant insert and the fold-stamp update are two statements. If the
+ * stamp fails after the insert, the new variant exists but its annotations
+ * still read as unfolded — the variant is INERT (nothing references it until
+ * a run selects it); re-folding creates a duplicate child, which append-only
+ * versioning tolerates. Delete or ignore the orphan; acceptable for a
+ * single-researcher tool.
  */
 export async function foldAnnotationsIntoVariant(
   annotationIds: string[],
@@ -445,6 +453,13 @@ export async function foldAnnotationsIntoVariant(
     const annotations = annRes.data ?? [];
     if (annotations.length === 0) {
       throw new Error('foldAnnotationsIntoVariant: none of the annotation ids were found.');
+    }
+    // Fail LOUD on stale ids rather than silently folding a shrunken set —
+    // a partial fold would misrepresent which observations shaped the variant.
+    if (annotations.length !== new Set(annotationIds).size) {
+      throw new Error(
+        `foldAnnotationsIntoVariant: ${new Set(annotationIds).size - annotations.length} annotation id(s) did not resolve — refusing a partial fold.`,
+      );
     }
 
     const systemPrompt =
