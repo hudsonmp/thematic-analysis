@@ -85,12 +85,15 @@ export async function listProgressionParticipants(): Promise<ProgressionParticip
   const authoring = parseTaskAuthoring((await getShownStudy())?.authored_data ?? null);
 
   // 2. All snapshot slots (user_id + slot keys only) via the select-only guard.
-  //    Deterministic input order: makes the engine's latest-per-slot dedupe
-  //    stable when two duplicate rows share an identical timestamp
-  //    (`commitMs >=` keeps the last-iterated row).
+  //    Deterministic input order: client_ts THEN created_at. The secondary key
+  //    is what actually stabilizes ties — Postgres gives equal-key rows an
+  //    unspecified relative order, and duplicate re-flushes sharing a client_ts
+  //    are separate requests with distinct created_at. (The engine also
+  //    tiebreaks internally; this keeps the wire order deterministic too.)
   let snapQuery = (await studyFrom('study_snapshots'))
     .select('user_id, phase, scenario_idx, client_ts, created_at')
-    .order('client_ts', { ascending: true });
+    .order('client_ts', { ascending: true })
+    .order('created_at', { ascending: true });
   if (authoring) snapQuery = snapQuery.eq('module_id', authoring.moduleId);
   const snapRes = await snapQuery;
   if (snapRes.error) {
@@ -119,9 +122,15 @@ export async function listProgressionParticipants(): Promise<ProgressionParticip
   }
 
   // 4. Cohort via cb_sessions (user client — cb_ table), keyed by pid_label.
-  //    LEFT-join semantics: a pid with no session keeps cohort null.
+  //    LEFT-join semantics: a pid with no session keeps cohort null. Ordered so
+  //    first-row-wins below is deterministic (earliest session wins) if a pid
+  //    ever carries duplicate pid_labels — cb_sessions rows are updated in
+  //    place, so an unordered read's row order can drift over time.
   const userSb = await createUserServerClient();
-  const sessRes = await userSb.from('cb_sessions').select('id, pid_label, collection');
+  const sessRes = await userSb
+    .from('cb_sessions')
+    .select('id, pid_label, collection')
+    .order('created_at', { ascending: true });
   if (sessRes.error) {
     throw new Error(`listProgressionParticipants: cb_sessions read failed: ${sessRes.error.message}`);
   }
@@ -167,11 +176,13 @@ export async function getParticipantProgression(pid: string): Promise<Participan
   const userId = userRes.data?.id;
   if (!userId) return null;
 
-  // Deterministic input order for the same dedupe-stability reason as above.
+  // Deterministic input order (client_ts, then created_at as the tie key) —
+  // same rationale as the list query above.
   let snapQuery = (await studyFrom('study_snapshots'))
     .select('phase, scenario_idx, spec, entities, client_ts, created_at')
     .eq('user_id', userId)
-    .order('client_ts', { ascending: true });
+    .order('client_ts', { ascending: true })
+    .order('created_at', { ascending: true });
   if (authoring) snapQuery = snapQuery.eq('module_id', authoring.moduleId);
   const snapRes = await snapQuery;
   if (snapRes.error) {

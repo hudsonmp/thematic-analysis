@@ -131,8 +131,17 @@ export default function ProgressionViewer({
                   }`}
                 >
                   {step.label}
+                  {/* Submitted badge. NOTE: for 2 real participants a `final`
+                      flush exists WITHOUT a Scenario-4 snapshot (the engine
+                      reports submitted=true, snapshot=null) — the ✓ then sits
+                      on a disabled tab, truthfully: they submitted, but there
+                      is no Scenario-4 state to view. Copy stays generic for
+                      exactly that reason (final ≡ last FLUSHED scenario). */}
                   {step.submitted && (
-                    <span className="ml-1 text-emerald-700" title="final submission recorded (identical to Scenario 4)">
+                    <span
+                      className="ml-1 text-emerald-700"
+                      title="final submission recorded (identical to the last flushed scenario)"
+                    >
                       ✓
                     </span>
                   )}

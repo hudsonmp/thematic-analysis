@@ -74,9 +74,12 @@ describe('postgrest surface canary', () => {
       // cloneRequestState: read-safe internal helper — copies the builder's
       // request state for immutable chaining; it constructs no write request.
       'cloneRequestState',
-      // fetch: own-property data field holding the injected transport (the
-      // plain fetch implementation). Not a query verb — calling it grants
-      // nothing beyond global fetch; requests it makes carry no builder state.
+      // fetch: own-property transport, not a query verb — rightly outside the
+      // blocklist. NB (re-review finding): in PRODUCTION this is supabase-js's
+      // fetchWithAuth, which injects `apikey` + the user's Authorization header
+      // into ANY request it makes — credential-bearing; never expose beyond the
+      // server. Not a study-write vector only because the researcher JWT is
+      // SELECT-only on study tables (L1 RLS).
       'fetch',
     ]);
     const unknown = methods.filter((m) => !known.has(m));
