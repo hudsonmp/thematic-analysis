@@ -51,10 +51,15 @@ export default function ProgressionViewer({
     });
   }
 
-  // Cohort grouping, sorted: pilot, study, then "—" (no session) via '~' sentinel.
+  // Cohort grouping, sorted: pilot, study, then "—" (no session) LAST via an
+  // explicit null-last comparator. (A '~' sentinel does NOT sort last under
+  // localeCompare — ICU collation orders '~' before letters.)
   const groups = new Map<string, ProgressionParticipant[]>();
   for (const p of [...participants].sort(
-    (a, b) => (a.cohort ?? '~').localeCompare(b.cohort ?? '~') || a.pid.localeCompare(b.pid),
+    (a, b) =>
+      (a.cohort === null ? 1 : 0) - (b.cohort === null ? 1 : 0) ||
+      (a.cohort ?? '').localeCompare(b.cohort ?? '') ||
+      a.pid.localeCompare(b.pid),
   )) {
     const key = p.cohort ?? '—';
     groups.set(key, [...(groups.get(key) ?? []), p]);
@@ -141,6 +146,7 @@ export default function ProgressionViewer({
                     <span
                       className="ml-1 text-emerald-700"
                       title="final submission recorded (identical to the last flushed scenario)"
+                      aria-label="final submission recorded"
                     >
                       ✓
                     </span>
