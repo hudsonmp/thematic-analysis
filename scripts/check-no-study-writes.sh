@@ -3,20 +3,28 @@
 #
 # Defense-in-depth lint guard. The service-role key bypasses RLS, so the only
 # thing standing between this app and a mutation of IRB-covered study data is
-# discipline. `cbFrom()` enforces this at runtime (see lib/supabase/guard.ts);
-# this script enforces it at lint time by refusing any write verb chained to a
-# study table.
+# discipline. `cbFrom()` enforces this at runtime (see lib/supabase/guard.ts),
+# `studyFrom()` enforces SELECT-only study reads (lib/supabase/study-guard.ts);
+# this script enforces the same boundaries at lint time with three rules:
 #
-# It greps app/ and lib/ for a study-table `.from(...)` and, if a write verb
-# (.insert/.update/.delete/.upsert) appears on the same line OR within the next
-# few lines (a chained call), it fails with file:line of the offending `.from`.
+#   Rule 1 — no write verb chained to a study table. Greps app/, lib/, and
+#     components/ for a study-table `.from(...)` and, if a write verb
+#     (.insert/.update/.delete/.upsert) appears on the same line OR within the
+#     next few lines (a chained call), fails with file:line of the offending
+#     `.from`. Conservative / false-positive-safe: it only fires when BOTH a
+#     study-table `.from(` AND a write verb are present in the same small
+#     window. Read-only `.from('studies').select(...)` never trips it.
 #
-# Conservative / false-positive-safe: it only fires when BOTH a study-table
-# `.from(` AND a write verb are present in the same small window. Read-only
-# `.from('studies').select(...)` never trips it.
+#   Rule 2 — the service-role client is QUARANTINED. Only an explicit allowlist
+#     of sanctioned modules may call `createServiceRoleClient(`; everything else
+#     must go through cbFrom (writes, cb_ tables) or studyFrom (study reads on
+#     the user client).
 #
-# Excludes node_modules, and the two client modules that legitimately read
-# study tables (lib/supabase/server.ts, lib/supabase/service.ts).
+#   Rule 3 — no `.rpc()` anywhere in app code: stored procedures bypass both
+#     the cbFrom and studyFrom guards entirely.
+#
+# Excludes node_modules, and (Rule 1 only) the client modules that construct
+# the study-reading clients (lib/supabase/server.ts, lib/supabase/service.ts).
 
 set -euo pipefail
 
@@ -24,7 +32,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # Study tables that are read-only for this app.
-STUDY_FROM_RE="from\((['\"])(studies|study_events|study_snapshots|study_responses|study_scripts|study_assistant_messages|users|onboarding)"
+STUDY_FROM_RE="from\((['\"])(studies|study_events|study_snapshots|study_responses|study_scripts|study_assistant_messages|users|onboarding|llm_prompts)"
 WRITE_VERB_RE="\.(insert|update|delete|upsert)\("
 WINDOW=5  # lines after a study `.from(` still considered part of the same chain
 
@@ -51,17 +59,57 @@ while IFS= read -r f; do
     fi
   done < <(grep -nE "$STUDY_FROM_RE" "$f" || true)
 done < <(
-  find app lib -type f \( -name '*.ts' -o -name '*.tsx' \) 2>/dev/null \
+  find app lib components -type f \( -name '*.ts' -o -name '*.tsx' \) 2>/dev/null \
     | grep -v '/node_modules/' \
     | grep -v -E 'lib/supabase/(server|service)\.ts$' \
     | sort
 )
 
+# --- Rule 2: the service-role client is QUARANTINED. Only the guard modules may
+# construct it; study reads go through studyFrom (user client, SELECT-only RLS),
+# cb_ writes through cbFrom. The allowlist below names every sanctioned site:
+# guard/service modules, the Auth-admin call (app/actions/auth.ts), cb_-only
+# readers, and the storage/media route. Adding a site here is a deliberate,
+# reviewed act.
+#
+# NOTE on the cb_-only readers: app/actions/codebook.ts and app/actions/memos.ts
+# read cb_ tables directly on the service client. That is legacy-sanctioned —
+# they predate the guards and touch only cb_ tables — but migrating them to
+# cbFrom-style access or the user client would let this allowlist shrink.
+SERVICE_ALLOWLIST_RE='lib/supabase/(guard|service|study-guard)\.ts$|app/actions/(auth|codebook|memos)\.ts$|app/api/media/'
+while IFS= read -r hit; do
+  [ -n "$hit" ] || continue
+  file="${hit%%:*}"
+  if printf '%s' "$file" | grep -qE "$SERVICE_ALLOWLIST_RE"; then continue; fi
+  echo "ERROR: raw createServiceRoleClient outside the sanctioned allowlist: $hit" >&2
+  offenders=$((offenders + 1))
+done < <(
+  grep -rn "createServiceRoleClient(" app lib components \
+    --include='*.ts' --include='*.tsx' 2>/dev/null || true
+)
+
+# --- Rule 3: no .rpc() anywhere in app code (stored procedures bypass both
+# guards). Comment-only mentions are skipped: the guard modules document in
+# prose that `.rpc()` is NOT intercepted, and file-allowlisting them would
+# instead permit a real `.rpc(` call in exactly the modules that hold the
+# service client. Add a deliberate allowlist entry here if a real call site is
+# ever needed.
+while IFS= read -r hit; do
+  [ -n "$hit" ] || continue
+  # Skip hits whose line content (after `path:lineno:`) is a `//` or block-
+  # comment (`*` / `/*`) line — prose mentions, not call sites.
+  if printf '%s' "$hit" | grep -qE '^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)'; then continue; fi
+  echo "ERROR: .rpc( call (bypasses cbFrom/studyFrom guards): $hit" >&2
+  offenders=$((offenders + 1))
+done < <(
+  grep -rn "\.rpc(" app lib components --include='*.ts' --include='*.tsx' 2>/dev/null || true
+)
+
 if [ "$offenders" -gt 0 ]; then
   echo "" >&2
-  echo "check-no-study-writes: found $offenders potential write(s) to study data." >&2
-  echo "Study tables are read-only. Route codebook writes through cbFrom() (cb_* tables only)." >&2
+  echo "check-no-study-writes: found $offenders guard violation(s)." >&2
+  echo "Study tables are read-only (reads via studyFrom). Route codebook writes through cbFrom() (cb_* tables only)." >&2
   exit 1
 fi
 
-echo "check-no-study-writes: OK (no writes to study tables found)."
+echo "check-no-study-writes: OK (no study-table writes, no raw service client, no .rpc)."
