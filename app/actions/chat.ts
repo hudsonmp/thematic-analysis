@@ -1,6 +1,6 @@
 'use server';
 
-import { createServiceRoleClient } from '@/lib/supabase/service';
+import { studyFrom } from '@/lib/supabase/study-guard';
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 
@@ -17,14 +17,15 @@ import { requireAuthUser } from '@/lib/auth/supabase-auth';
 //   * `cb_sessions` (a cb_ table) → the USER client (anon key bound to the
 //     researcher's JWT), exactly as app/actions/observations.ts:
 //     listObservationsForSession resolves `pid_label`.
-//   * `users` + `study_assistant_messages` (study tables) → the SERVICE-ROLE
-//     client, exactly as app/actions/live.ts reads `users`/`study_events`. Study-
-//     table RLS need not admit the researcher's anon JWT, so a user-client read
-//     could come back RLS-FILTERED to empty; the service-role key bypasses RLS for
-//     reads, which is the correct path for data the researcher is entitled to see.
-//     The read-only guarantee here is discipline + the `check-no-study-writes`
-//     guard, NOT RLS — every query below is a `.select()`; there is NOT one write
-//     to a study table.
+//   * `users` + `study_assistant_messages` (study tables) → `studyFrom` (the
+//     SELECT-only study-read guard, lib/supabase/study-guard.ts), exactly as
+//     app/actions/live.ts reads `users`/`study_events`. It runs on the anon-key
+//     USER client: study tables carry a SELECT-only RLS policy for
+//     `authenticated` (and no write policy), so reads succeed on the
+//     researcher's JWT and the read-only guarantee is STRUCTURAL (RLS + the
+//     guard + the `check-no-study-writes` lint guard), not just discipline —
+//     every query below is a `.select()`; there is NOT one write to a study
+//     table, and a write on this credential would be refused by Postgres.
 //
 // `requireAuthUser()` gates first, so an unauthenticated request never reaches the
 // study stream. A session with no chat (or a pid with none) returns [] — never a
@@ -85,15 +86,13 @@ export async function listSessionAssistantChat(
   const pidLabel = (sessRes.data?.pid_label ?? '').trim();
   if (!pidLabel) return [];
 
-  // 2-3. Study reads via the SERVICE-ROLE client (mirrors live.ts). Resolve pid →
-  //       users.id, then select that user's chat ascending. Either step coming back
-  //       empty yields [] (no chat for this participant).
-  const studySb = createServiceRoleClient();
+  // 2-3. Study reads via `studyFrom` (SELECT-only guard, mirrors live.ts).
+  //       Resolve pid → users.id, then select that user's chat ascending. Either
+  //       step coming back empty yields [] (no chat for this participant).
 
   // `pid` is expected unique; a duplicate surfaces as a `.maybeSingle()` error
   // (caught below → throw), never a silently wrong user.
-  const userRes = await studySb
-    .from('users')
+  const userRes = await (await studyFrom('users'))
     .select('id')
     .eq('pid', pidLabel)
     .maybeSingle();
@@ -105,8 +104,7 @@ export async function listSessionAssistantChat(
   const userId = userRes.data?.id;
   if (!userId) return [];
 
-  const msgRes = await studySb
-    .from('study_assistant_messages')
+  const msgRes = await (await studyFrom('study_assistant_messages'))
     .select('id, role, content, created_at, module_id, scenario_idx')
     .eq('user_id', userId)
     // created_at is the timeline key; id is a deterministic tiebreaker for two

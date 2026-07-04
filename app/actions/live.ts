@@ -1,6 +1,6 @@
 'use server';
 
-import { createServiceRoleClient } from '@/lib/supabase/service';
+import { studyFrom } from '@/lib/supabase/study-guard';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getShownStudy } from '@/app/actions/codebook';
 import { getRecordingStart } from '@/app/actions/recording';
@@ -17,15 +17,16 @@ import type { Json } from '@/lib/types/cb-db';
 // there is NOT a single write to a study table, and the `check-no-study-writes`
 // lint guard verifies that.
 //
-// Reads go through the SERVICE-ROLE client (`createServiceRoleClient()`), the
-// same path `app/actions/codebook.ts:getShownStudy` already uses to read
-// `studies`. We deliberately do NOT route study reads through `cbFrom` (its
-// compile-time `cb_` bound forbids `from('users')`) nor strictly require the
-// user-JWT client (study-table RLS need not admit the researcher's anon JWT).
-// The service-role key bypasses RLS for reads, which is fine — these are reads
-// of data the researcher is entitled to see; the read-only guarantee is the
-// guard + discipline, not RLS. Every action gates on `requireAuthUser()` first
-// so an unauthenticated request can never reach the study stream.
+// Reads go through `studyFrom` (lib/supabase/study-guard.ts) — the SELECT-only
+// study-read guard on the anon-key USER client, the same path
+// `app/actions/codebook.ts:getShownStudy` uses to read `studies`. We
+// deliberately do NOT route study reads through `cbFrom` (its compile-time
+// `cb_` bound forbids `from('users')`). Study tables carry a SELECT-only RLS
+// policy for `authenticated` (and no write policy), so reads succeed on the
+// researcher's JWT and the read-only guarantee is STRUCTURAL (RLS + the guard
+// + the `check-no-study-writes` lint guard), not just discipline. Every action
+// gates on `requireAuthUser()` first so an unauthenticated request can never
+// reach the study stream.
 // ---------------------------------------------------------------------------
 
 /** A participant for the live PID picker. `pid` is the participant label the
@@ -45,10 +46,8 @@ export type LiveParticipant = {
  */
 export async function listParticipants(): Promise<LiveParticipant[]> {
   await requireAuthUser();
-  const sb = createServiceRoleClient();
 
-  const { data, error } = await sb
-    .from('users')
+  const { data, error } = await (await studyFrom('users'))
     .select('id, pid, first_name')
     .order('pid', { ascending: true });
   if (error) throw new Error(`listParticipants failed: ${error.message}`);
@@ -81,13 +80,10 @@ export async function latestEventForPid(pid: string): Promise<LatestEvent | null
   const trimmed = (pid ?? '').trim();
   if (!trimmed) return null;
 
-  const sb = createServiceRoleClient();
-
-  const userId = await resolveUserId(sb, trimmed);
+  const userId = await resolveUserId(trimmed);
   if (!userId) return null;
 
-  const { data, error } = await sb
-    .from('study_events')
+  const { data, error } = await (await studyFrom('study_events'))
     .select('module_id, event_type, payload, created_at')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
@@ -127,14 +123,12 @@ export async function taskStartForPid(pid: string): Promise<string | null> {
   const taskModuleId = await resolveTaskModuleId();
   if (!taskModuleId) return null;
 
-  const sb = createServiceRoleClient();
-  const userId = await resolveUserId(sb, trimmed);
+  const userId = await resolveUserId(trimmed);
   if (!userId) return null;
 
   // min(created_at) of the task module_start. `created_at asc, limit 1` gives
   // the earliest such event without an aggregate (PostgREST has no min()).
-  const { data, error } = await sb
-    .from('study_events')
+  const { data, error } = await (await studyFrom('study_events'))
     .select('created_at')
     .eq('user_id', userId)
     .eq('module_id', taskModuleId)
@@ -164,12 +158,10 @@ export async function taskEndedForPid(pid: string): Promise<string | null> {
   const trimmed = (pid ?? '').trim();
   if (!trimmed) return null;
 
-  const sb = createServiceRoleClient();
-  const userId = await resolveUserId(sb, trimmed);
+  const userId = await resolveUserId(trimmed);
   if (!userId) return null;
 
-  const { data, error } = await sb
-    .from('study_events')
+  const { data, error } = await (await studyFrom('study_events'))
     .select('created_at')
     .eq('user_id', userId)
     .eq('event_type', 'study_complete')
@@ -208,12 +200,10 @@ export async function taskBoundaryEventsForPid(
   const taskModuleId = await resolveTaskModuleId();
   if (!taskModuleId) return [];
 
-  const sb = createServiceRoleClient();
-  const userId = await resolveUserId(sb, trimmed);
+  const userId = await resolveUserId(trimmed);
   if (!userId) return [];
 
-  const { data, error } = await sb
-    .from('study_events')
+  const { data, error } = await (await studyFrom('study_events'))
     .select('event_type, payload, created_at')
     .eq('user_id', userId)
     .eq('module_id', taskModuleId)
@@ -433,12 +423,8 @@ function stepDestination(payload: Json): string | null {
 // ---------------------------------------------------------------------------
 
 /** Resolve a `users.id` from a `pid`. READ-ONLY. Null when the pid is unknown. */
-async function resolveUserId(
-  sb: ReturnType<typeof createServiceRoleClient>,
-  pid: string,
-): Promise<string | null> {
-  const { data, error } = await sb
-    .from('users')
+async function resolveUserId(pid: string): Promise<string | null> {
+  const { data, error } = await (await studyFrom('users'))
     .select('id')
     .eq('pid', pid)
     .maybeSingle();
