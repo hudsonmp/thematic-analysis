@@ -102,6 +102,29 @@ describe('buildGrid', () => {
     // flat 0.5 everywhere → deltas 1..4 are 0
     expect(grid[0].phaseDeltas.slice(1)).toEqual([0, 0, 0, 0]);
   });
+
+  it('propagates an ungradable phase to null deltas END-TO-END through buildGrid (gate pin)', () => {
+    // P1 is gradable at every phase EXCEPT phase 2, where all 4 scenario scores
+    // are null. The honest-signal rule must survive the full pivot: phase 2's
+    // own delta AND phase 3's delta (its successor) are null, not 0 — while the
+    // still-gradable phases 1 and 4 keep real numeric deltas.
+    const rows: VerdictRow[] = [];
+    for (let phase = 0; phase < 5; phase++) {
+      for (let sc = 0; sc < 4; sc++) {
+        const score = phase === 2 ? null : 0.5;
+        rows.push(
+          v({ pid: 'P1', phaseOrdinal: phase, scenarioIdx: sc, score, pass: score === null ? null : false }),
+        );
+      }
+    }
+    const grid = buildGrid(rows, [{ pid: 'P1', cohort: 'pilot' }]);
+    const d = grid[0].phaseDeltas;
+    expect(d[0]).toBeNull(); // no prior phase
+    expect(d[1]).toBe(0); // phase 1 vs phase 0, both 0.5 → gradable zero, NOT null
+    expect(d[2]).toBeNull(); // phase 2 ungradable → its own delta null
+    expect(d[3]).toBeNull(); // phase 3's prior neighbor (2) ungradable → null
+    expect(d[4]).toBe(0); // phase 4 vs phase 3, both gradable again → real 0
+  });
 });
 
 describe('meanScorePerPhase', () => {
