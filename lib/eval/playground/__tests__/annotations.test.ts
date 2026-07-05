@@ -1,9 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import {
   contextLabel,
+  mapAnnotationRow,
   selectableCheckedIds,
   type PendingAnnotation,
 } from '../annotations';
+
+describe('mapAnnotationRow', () => {
+  it('renames snake_case DB columns to camelCase WITHOUT transposing fields', () => {
+    // Distinct run/verdict values so a run_id→verdictId transposition (which
+    // type-checks — both are strings) fails this assertion, not just tsc.
+    expect(
+      mapAnnotationRow({
+        id: 'a1',
+        note: 'n',
+        run_id: 'RUN-1',
+        verdict_id: 'VERDICT-9',
+        created_at: '2026-07-04T00:00:00Z',
+      }),
+    ).toEqual({
+      id: 'a1',
+      note: 'n',
+      runId: 'RUN-1',
+      verdictId: 'VERDICT-9',
+      createdAt: '2026-07-04T00:00:00Z',
+    });
+  });
+
+  it('preserves nulls for run_id / verdict_id', () => {
+    expect(mapAnnotationRow({ id: 'a1', note: 'n', run_id: null, verdict_id: null, created_at: 't' })).toMatchObject(
+      { runId: null, verdictId: null },
+    );
+  });
+});
 
 describe('selectableCheckedIds', () => {
   // The fold action refuses a PARTIAL fold: it throws when the resolved-count

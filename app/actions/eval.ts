@@ -7,6 +7,7 @@ import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getShownStudy } from '@/app/actions/codebook';
 import { taskModuleIdFrom } from '@/lib/study/task-module';
 import { METRIC_DRAFT, ORACLE_SPEC_DRAFT, sha256Hex } from '@/lib/eval/seeds';
+import { mapAnnotationRow, type AnnotationRow } from '@/lib/eval/playground/annotations';
 import type { Json, Tables } from '@/lib/types/cb-db';
 
 // ---------------------------------------------------------------------------
@@ -380,13 +381,10 @@ export async function listAssistantTurnsForFewShot(): Promise<AssistantTurn[]> {
  *  from the insert, listed by `listUnfoldedAnnotations`) so the checkbox fold no
  *  longer needs pasted ids. PII: none — run/verdict ids are the context, never
  *  pid/name/email (spec L5). */
-export type AnnotationRow = {
-  id: string;
-  note: string;
-  runId: string | null;
-  verdictId: string | null;
-  createdAt: string;
-};
+// AnnotationRow's shape + its snake→camel mapper live in the pure playground
+// module so the mapping is unit-tested (a field transposition type-checks);
+// re-exported here so existing consumers keep importing it from the action.
+export type { AnnotationRow };
 
 export async function saveAnnotation(input: {
   runId?: string;
@@ -433,13 +431,7 @@ export async function listUnfoldedAnnotations(): Promise<AnnotationRow[]> {
   if (res.error) {
     throw new Error(`listUnfoldedAnnotations: eval_annotations read failed: ${res.error.message}`);
   }
-  return (res.data ?? []).map((row) => ({
-    id: row.id,
-    note: row.note,
-    runId: row.run_id,
-    verdictId: row.verdict_id,
-    createdAt: row.created_at,
-  }));
+  return (res.data ?? []).map(mapAnnotationRow);
 }
 
 /**

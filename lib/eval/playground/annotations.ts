@@ -52,6 +52,38 @@ export function selectableCheckedIds(checked: Set<string>, available: string[]):
   return available.filter((id) => checked.has(id));
 }
 
+/** A still-unfolded annotation as the fold panel consumes it (camelCase). The
+ *  source of truth for the shape; `app/actions/eval.ts` re-exports it. */
+export type AnnotationRow = {
+  id: string;
+  note: string;
+  runId: string | null;
+  verdictId: string | null;
+  createdAt: string;
+};
+
+/** The raw eval_annotations row shape the DB returns (snake_case). */
+export type DbAnnotationRow = {
+  id: string;
+  note: string;
+  run_id: string | null;
+  verdict_id: string | null;
+  created_at: string;
+};
+
+/** snake_case DB row → camelCase AnnotationRow. Extracted as a PURE function so
+ *  the field mapping is unit-pinned: a transposition (e.g. run_id → verdictId)
+ *  type-checks — both sides are strings — so only a test catches it, not tsc. */
+export function mapAnnotationRow(row: DbAnnotationRow): AnnotationRow {
+  return {
+    id: row.id,
+    note: row.note,
+    runId: row.run_id,
+    verdictId: row.verdict_id,
+    createdAt: row.created_at,
+  };
+}
+
 /** A short, human-readable context label for a pending annotation — the
  *  (pid · phase · scenario) coordinates when known, else the run/verdict id, so
  *  the recall list reads meaningfully. pid only (never name/email). */
