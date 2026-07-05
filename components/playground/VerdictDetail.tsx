@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react';
 import type { VerdictRow } from '@/app/actions/runs';
+import { AnnotateBox } from '@/components/playground/AnnotatePanel';
 
 // ---------------------------------------------------------------------------
 // VerdictDetail — the inspection surface for a single verdict cell (Task B3-3).
@@ -70,8 +71,10 @@ export default function VerdictDetail({
   annotate,
 }: {
   verdict: VerdictRow;
-  /** B3-4 mounts its annotate box here. Kept as a slot so this stays a pure
-   *  presenter and B3-4 needs no edit to the grid/detail render path. */
+  /** B3-4's annotate affordance mounts here. The default is the self-contained
+   *  <AnnotateBox> (saves via saveAnnotation, reports up through AnnotateContext);
+   *  an explicit `annotate` node still overrides it, so the seam stays open and
+   *  the grid/detail render path needs no edit. */
   annotate?: ReactNode;
 }) {
   const perCheck = extractPerCheck(verdict.evidence);
@@ -129,8 +132,9 @@ export default function VerdictDetail({
         </pre>
       </details>
 
-      {/* B3-4 annotate seam. */}
-      {annotate}
+      {/* B3-4 annotate seam: the self-contained box by default, an override node
+          when the caller supplies one. */}
+      {annotate ?? <AnnotateBox verdict={verdict} />}
     </div>
   );
 }
