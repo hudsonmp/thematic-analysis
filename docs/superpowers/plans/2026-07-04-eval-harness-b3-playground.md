@@ -21,7 +21,7 @@
 
 From `app/actions/progression.ts` (A, shipped):
 ```ts
-export type ProgressionParticipant = { pid: string; cohort: string | null; filledSteps: number };
+export type ProgressionParticipant = { pid: string; cohort: string | null; stepCount: number };
 // NOTE (verified against committed code): ParticipantProgression has NO cohort —
 // cohort lives ONLY on ProgressionParticipant from the LIST. Any grid/row that
 // needs cohort must join it from the participant list by pid, never expect it on
@@ -92,7 +92,7 @@ export function cohortSelectionState(sel: Set<string>, ps: ProgressionParticipan
 
 **Tests (write FIRST, fail, then implement):** `orderCohorts(['study',null,'pilot'])` → `['pilot','study',null]`; `groupByCohort` buckets + order; `selectAll` size; `toggle` add then remove; `selectCohort` adds only that cohort's pids and leaves others; `deselectCohort` inverse; `cohortSelectionState` returns 'none'/'some'/'all' across a partial selection; null cohort is addressable (a `—`-cohort select works).
 
-**Component structure:** `page.tsx` (server) awaits `listProgressionParticipants()` + `listArtifacts('oracle_spec')` + `listArtifacts('metric')` + `listPromptVariants()` + `listFewShotSets()` and passes them to `<Playground .../>`. `Playground.tsx` holds `selected: Set<string>` state and renders `<CohortPanel>` (this task) + placeholders for config/run (later tasks). `CohortPanel` renders, per `groupByCohort`: a cohort header with a tri-state checkbox (`cohortSelectionState` → checked/indeterminate) wired to `selectCohort`/`deselectCohort`, and a global **Select all · Deselect all** pair (`selectAll`/`deselectAll`); each pid is a checkbox row with an n/5 `filledSteps` hint (mirror `ProgressionViewer`'s row). Indeterminate: set `ref.indeterminate = state === 'some'` in an effect.
+**Component structure:** `page.tsx` (server) awaits `listProgressionParticipants()` + `listArtifacts('oracle_spec')` + `listArtifacts('metric')` + `listPromptVariants()` + `listFewShotSets()` and passes them to `<Playground .../>`. `Playground.tsx` holds `selected: Set<string>` state and renders `<CohortPanel>` (this task) + placeholders for config/run (later tasks). `CohortPanel` renders, per `groupByCohort`: a cohort header with a tri-state checkbox (`cohortSelectionState` → checked/indeterminate) wired to `selectCohort`/`deselectCohort`, and a global **Select all · Deselect all** pair (`selectAll`/`deselectAll`); each pid is a checkbox row with an n/5 `stepCount` hint (mirror `ProgressionViewer`'s row). Indeterminate: set `ref.indeterminate = state === 'some'` in an effect.
 
 **Steps:** failing selection tests → implement selection.ts → green → read `node_modules/next/dist/docs` routing/client-component guide → scaffold page + Playground shell + CohortPanel → add nav entry → `tsc && vitest && lint` → commit `feat(playground): route, nav, cohort multiselect with select-all/deselect-all/per-cohort`.
 
