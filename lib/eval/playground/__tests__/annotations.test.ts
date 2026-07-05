@@ -1,27 +1,37 @@
 import { describe, expect, it } from 'vitest';
-import { contextLabel, parseAnnotationIds, type PendingAnnotation } from '../annotations';
+import {
+  contextLabel,
+  selectableCheckedIds,
+  type PendingAnnotation,
+} from '../annotations';
 
-describe('parseAnnotationIds', () => {
-  it('splits on commas, whitespace, and newlines', () => {
-    expect(parseAnnotationIds('a, b\nc  d,e')).toEqual(['a', 'b', 'c', 'd', 'e']);
+describe('selectableCheckedIds', () => {
+  // The fold action refuses a PARTIAL fold: it throws when the resolved-count
+  // (rows still present in the DB) !== the requested Set size. The checkbox
+  // list is fetched once and refreshed after saves/folds, so a checked id can
+  // go stale (its row got folded in a prior fold, or was removed). This helper
+  // pins the fold's id set to the ids STILL AVAILABLE in the current list, so a
+  // stale check can never spuriously trip the action's partial-fold refusal.
+  it('keeps only checked ids that are still available, in available order', () => {
+    expect(selectableCheckedIds(new Set(['b', 'stale', 'a']), ['a', 'b', 'c'])).toEqual([
+      'a',
+      'b',
+    ]);
   });
 
-  it('trims and drops empty tokens (trailing separators, double commas)', () => {
-    expect(parseAnnotationIds(' a , , b, ')).toEqual(['a', 'b']);
+  it('de-dupes to the available list (available ids are unique DB ids)', () => {
+    // A duplicate available id would already be a DB anomaly; the output mirrors
+    // the available list exactly once so it matches the action's `new Set` count.
+    expect(selectableCheckedIds(new Set(['x']), ['x', 'y'])).toEqual(['x']);
   });
 
-  it('DE-DUPES while preserving first-seen order (mirrors the action Set count)', () => {
-    // The fold action refuses a partial fold when resolved-count !== Set size,
-    // so the client MUST collapse duplicates the same way or a double-paste
-    // would spuriously trip the refusal.
-    expect(parseAnnotationIds('x, y, x, z, y')).toEqual(['x', 'y', 'z']);
+  it('returns [] when nothing checked or nothing available', () => {
+    expect(selectableCheckedIds(new Set(), ['a', 'b'])).toEqual([]);
+    expect(selectableCheckedIds(new Set(['a']), [])).toEqual([]);
   });
 
-  it('returns [] for empty / whitespace-only / nullish input', () => {
-    expect(parseAnnotationIds('')).toEqual([]);
-    expect(parseAnnotationIds('   \n  ')).toEqual([]);
-    // @ts-expect-error — guard against a nullish blob defensively.
-    expect(parseAnnotationIds(undefined)).toEqual([]);
+  it('drops ALL checked ids when none remain available (avoids a doomed fold)', () => {
+    expect(selectableCheckedIds(new Set(['gone']), ['a'])).toEqual([]);
   });
 });
 

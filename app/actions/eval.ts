@@ -376,26 +376,70 @@ export async function listAssistantTurnsForFewShot(): Promise<AssistantTurn[]> {
 // Annotations — free-form researcher observations, foldable into variants.
 // ---------------------------------------------------------------------------
 
+/** A researcher annotation the fold panel can act on — the id is REAL (returned
+ *  from the insert, listed by `listUnfoldedAnnotations`) so the checkbox fold no
+ *  longer needs pasted ids. PII: none — run/verdict ids are the context, never
+ *  pid/name/email (spec L5). */
+export type AnnotationRow = {
+  id: string;
+  note: string;
+  runId: string | null;
+  verdictId: string | null;
+  createdAt: string;
+};
+
 export async function saveAnnotation(input: {
   runId?: string;
   verdictId?: string;
   note: string;
-}): Promise<void> {
+}): Promise<{ id: string }> {
   await requireAuthUser();
 
   const note = (input?.note ?? '').trim();
   if (!note) throw new Error('saveAnnotation: note must be non-empty.');
 
-  await withStudyAudit('saveAnnotation', async () => {
-    const ins = await (await evalFrom('eval_annotations')).insert({
-      note,
-      run_id: input.runId ?? null,
-      verdict_id: input.verdictId ?? null,
-    });
+  const inserted = await withStudyAudit('saveAnnotation', async () => {
+    const ins = await (await evalFrom('eval_annotations'))
+      .insert({
+        note,
+        run_id: input.runId ?? null,
+        verdict_id: input.verdictId ?? null,
+      })
+      .select('id')
+      .single();
     if (ins.error) {
       throw new Error(`saveAnnotation: eval_annotations insert failed: ${ins.error.message}`);
     }
+    return ins.data;
   });
+  return { id: inserted.id };
+}
+
+/**
+ * Every not-yet-folded researcher annotation, newest first — the fold panel's
+ * checkbox source. A READ (no `withStudyAudit`; the belt guards writes only),
+ * through `evalFrom` on the researcher JWT. Folded rows drop off (their
+ * `folded_into_variant_id` is stamped), so the list shrinks as observations get
+ * acted on. PII: pid-only posture — no pid/name/email is selected here at all;
+ * the run/verdict ids ARE the context.
+ */
+export async function listUnfoldedAnnotations(): Promise<AnnotationRow[]> {
+  await requireAuthUser();
+
+  const res = await (await evalFrom('eval_annotations'))
+    .select('id, note, run_id, verdict_id, created_at')
+    .is('folded_into_variant_id', null)
+    .order('created_at', { ascending: false });
+  if (res.error) {
+    throw new Error(`listUnfoldedAnnotations: eval_annotations read failed: ${res.error.message}`);
+  }
+  return (res.data ?? []).map((row) => ({
+    id: row.id,
+    note: row.note,
+    runId: row.run_id,
+    verdictId: row.verdict_id,
+    createdAt: row.created_at,
+  }));
 }
 
 /**

@@ -72,9 +72,11 @@ export default function VerdictDetail({
 }: {
   verdict: VerdictRow;
   /** B3-4's annotate affordance mounts here. The default is the self-contained
-   *  <AnnotateBox> (saves via saveAnnotation, reports up through AnnotateContext);
-   *  an explicit `annotate` node still overrides it, so the seam stays open and
-   *  the grid/detail render path needs no edit. */
+   *  <AnnotateBox> (saves via saveAnnotation → gets back the row id, then signals
+   *  AnnotateContext.onSaved so the fold panel re-pulls its unfolded-annotation
+   *  checkbox list — B3-4b's closed loop); an explicit `annotate` node still
+   *  overrides it, so the seam stays open and the grid/detail render path needs
+   *  no edit. */
   annotate?: ReactNode;
 }) {
   const perCheck = extractPerCheck(verdict.evidence);

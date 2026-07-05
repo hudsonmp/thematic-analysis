@@ -1,68 +1,63 @@
 'use client';
 
-import { createContext, useContext, useState, useTransition } from 'react';
+import { createContext, useContext, useEffect, useState, useTransition } from 'react';
 import {
   foldAnnotationsIntoVariant,
+  listUnfoldedAnnotations,
   saveAnnotation,
+  type AnnotationRow,
   type PromptVariant,
 } from '@/app/actions/eval';
 import type { VerdictRow } from '@/app/actions/runs';
-import {
-  contextLabel,
-  parseAnnotationIds,
-  type PendingAnnotation,
-} from '@/lib/eval/playground/annotations';
+import { contextLabel, selectableCheckedIds } from '@/lib/eval/playground/annotations';
 
 // ---------------------------------------------------------------------------
-// Annotate → fold-into-variant surface (Task B3-4).
+// Annotate → fold-into-variant surface (Task B3-4, loop closed in B3-4b).
 //
 // TWO pieces, one file (this task owns only AnnotatePanel.tsx):
 //
 //   • AnnotateBox — mounted INSIDE VerdictDetail's `annotate` seam. A textarea +
 //     Save that calls saveAnnotation({ runId, verdictId, note }) from a handler
-//     (useTransition, A's island rule). It carries the verdict/run/pid context
-//     off the `verdict` prop VerdictDetail already holds — the action's REAL
-//     input shape is { runId?, verdictId?, note } (NO pid field; PII stays out
-//     of the annotation row), so the run + verdict ids ARE the context. The
-//     pid/phase/scenario ride along only into the SESSION recall list below
-//     (pid-only), never into the DB write.
+//     (useTransition, A's island rule). It carries the verdict/run context off
+//     the `verdict` prop VerdictDetail already holds — the action's input shape
+//     is { runId?, verdictId?, note } (NO pid field; PII stays out of the row).
+//     On save it fires AnnotateContext.onSaved so the panel below can re-pull
+//     the unfolded list (the new note appears as a checkbox).
 //
-//   • AnnotatePanel — mounted in Playground. Lists the notes saved THIS SESSION
-//     (a recall aid; see the id note) and folds a chosen id set into a new
-//     variant via foldAnnotationsIntoVariant(ids, baseVariantId, newName).
+//   • AnnotatePanel — mounted in Playground. Fetches listUnfoldedAnnotations()
+//     (on mount + on every onSaved bump via `refreshToken`) and renders it as a
+//     CHECKBOX list. Folding uses the CHECKED, still-available ids
+//     (selectableCheckedIds) → foldAnnotationsIntoVariant(ids, baseVariantId,
+//     newName); the folded rows drop off the list and the new variant is lifted
+//     to Playground for the config path. This is the closed loop B3-4 lacked:
+//     no Supabase-console paste — saveAnnotation now returns the id and the read
+//     action surfaces the real, unfolded rows.
 //
-// THE ID SEAM (why this is wired the way it is): the committed saveAnnotation
-// returns VOID (no .select()) and there is NO annotation read action — and B3
-// may add none. So a session cannot learn the DB id of a note it just saved.
-// foldAnnotationsIntoVariant, though, needs REAL ids and FAILS LOUD if any id
-// doesn't resolve or the resolved count ≠ the requested Set size (partial-fold
-// refusal). The honest wiring, adding no action: the recall list shows what was
-// annotated this session (text + context, no id), and the researcher supplies
-// the ids to fold (from Supabase / a prior list) in a paste field that is
-// normalized by parseAnnotationIds EXACTLY as the action counts them. The loud
-// refusal is surfaced verbatim, never swallowed.
+// THE LOUD REFUSAL: foldAnnotationsIntoVariant throws if the resolved-count ≠
+// the requested Set size (a stale id). selectableCheckedIds intersects the
+// checked set with the live list so a stale check is dropped BEFORE the call;
+// any refusal that still surfaces is shown verbatim, never swallowed.
 //
-// Playground bridges AnnotateBox → AnnotatePanel via AnnotateContext so the
-// notes saved deep in the grid (VerdictGrid → VerdictDetail, files this task
-// does NOT own) reach the panel's recall list WITHOUT editing that chain.
+// Playground bridges AnnotateBox → AnnotatePanel via AnnotateContext so a save
+// deep in the grid (VerdictGrid → VerdictDetail, files this task does NOT own)
+// triggers the panel's refresh WITHOUT editing that chain.
 // ---------------------------------------------------------------------------
 
-/** Playground provides `onNoteSaved`; AnnotateBox (rendered far down the grid)
- *  consumes it to push a just-saved note into the session recall list. Default
+/** Playground provides `onSaved`; AnnotateBox (rendered far down the grid) calls
+ *  it after a successful save so the panel re-pulls the unfolded list. Default
  *  no-op so the box still saves to the DB when used outside a provider. */
-export const AnnotateContext = createContext<{ onNoteSaved: (a: PendingAnnotation) => void }>({
-  onNoteSaved: () => {},
+export const AnnotateContext = createContext<{ onSaved: () => void }>({
+  onSaved: () => {},
 });
-
-let localKeySeq = 0;
 
 /**
  * The annotate box VerdictDetail mounts in its `annotate` seam. Self-contained:
- * derives the run/verdict/pid context from the verdict it inspects, saves the
- * note, and reports it up through AnnotateContext for the session recall list.
+ * derives the run/verdict context from the verdict it inspects, saves the note
+ * (getting back its DB id), and signals AnnotateContext.onSaved so the fold
+ * panel refreshes its checkbox list.
  */
 export function AnnotateBox({ verdict }: { verdict: VerdictRow }) {
-  const { onNoteSaved } = useContext(AnnotateContext);
+  const { onSaved } = useContext(AnnotateContext);
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [justSaved, setJustSaved] = useState(false);
@@ -77,20 +72,12 @@ export function AnnotateBox({ verdict }: { verdict: VerdictRow }) {
     setError(null);
     startSaving(async () => {
       try {
-        // REAL input shape: { runId?, verdictId?, note }. The run + verdict ids
-        // ARE the context the action stores; no pid leaves this call.
+        // Input shape: { runId?, verdictId?, note }. The run + verdict ids ARE
+        // the context the action stores; no pid leaves this call.
         await saveAnnotation({ runId: verdict.runId, verdictId: verdict.id, note: trimmed });
-        onNoteSaved({
-          note: trimmed,
-          runId: verdict.runId,
-          verdictId: verdict.id,
-          pid: verdict.pid,
-          phaseOrdinal: verdict.phaseOrdinal,
-          scenarioIdx: verdict.scenarioIdx,
-          localKey: `ann-${localKeySeq++}`,
-        });
         setNote('');
         setJustSaved(true);
+        onSaved(); // → Playground bumps the refresh token → panel re-pulls.
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to save annotation.');
       }
@@ -122,7 +109,7 @@ export function AnnotateBox({ verdict }: { verdict: VerdictRow }) {
         </button>
         {justSaved && !isSaving && (
           <span className="text-xs text-foreground/50">
-            saved · fold it into a variant from the annotate panel
+            saved · check it in the annotate panel to fold it into a variant
           </span>
         )}
       </div>
@@ -131,31 +118,81 @@ export function AnnotateBox({ verdict }: { verdict: VerdictRow }) {
   );
 }
 
+/** Row → the minimal PendingAnnotation shape contextLabel reads. Only the
+ *  run/verdict ids ride along (pid-safe — the row has no pid/name/email), so the
+ *  label degrades to `verdict <id>` / `run <id>` / `unscoped`. */
+function labelForRow(row: AnnotationRow): string {
+  return contextLabel({
+    note: row.note,
+    runId: row.runId ?? undefined,
+    verdictId: row.verdictId ?? undefined,
+    localKey: row.id,
+  });
+}
+
 /**
- * The fold panel (mounted in Playground). Shows the session recall list and
- * folds a supplied id set into a NEW child variant.
+ * The fold panel (mounted in Playground). Owns the unfolded-annotation list:
+ * fetches it on mount and whenever `refreshToken` changes (a save deep in the
+ * grid), renders it as checkboxes, and folds the checked/still-available set
+ * into a NEW child variant.
  */
 export default function AnnotatePanel({
-  pending,
+  refreshToken,
   variants,
   onFolded,
 }: {
-  /** Notes saved this session (recall aid — no DB id; see the id-seam note). */
-  pending: PendingAnnotation[];
+  /** Bumped by Playground on every note-save so the list re-pulls. */
+  refreshToken: number;
   /** Current variant lineage — the fold's base is chosen from here. */
   variants: PromptVariant[];
   /** Lift the new variant so Playground can refresh the config/editor path. */
   onFolded: (variant: PromptVariant) => void;
 }) {
+  const [rows, setRows] = useState<AnnotationRow[]>([]);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isLoading, startLoading] = useTransition();
+
   const [baseVariantId, setBaseVariantId] = useState<string>(variants[0]?.id ?? '');
   const [newName, setNewName] = useState('');
-  const [idsRaw, setIdsRaw] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [folded, setFolded] = useState<PromptVariant | null>(null);
   const [isFolding, startFolding] = useTransition();
 
-  const ids = parseAnnotationIds(idsRaw);
+  // Pull the unfolded list on mount + on every refreshToken bump. setState lives
+  // INSIDE the transition callback (never bare in the effect) to avoid the
+  // set-state-in-effect lint; the transition also gives `isLoading` for free.
+  useEffect(() => {
+    startLoading(async () => {
+      try {
+        const next = await listUnfoldedAnnotations();
+        setRows(next);
+        // Prune checks whose rows are gone (folded elsewhere / refreshed away).
+        setChecked((prev) => {
+          const live = new Set(next.map((r) => r.id));
+          const kept = new Set<string>();
+          for (const id of prev) if (live.has(id)) kept.add(id);
+          return kept;
+        });
+        setLoadError(null);
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : 'Failed to load annotations.');
+      }
+    });
+    // refreshToken is the trigger; startLoading is a stable useTransition dispatcher.
+  }, [refreshToken]);
+
   const base = variants.find((v) => v.id === baseVariantId) ?? variants[0] ?? null;
+  const foldIds = selectableCheckedIds(checked, rows.map((r) => r.id));
+
+  function toggle(id: string) {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   function fold() {
     const name = newName.trim();
@@ -167,8 +204,8 @@ export default function AnnotatePanel({
       setError('Name the new variant before folding.');
       return;
     }
-    if (ids.length === 0) {
-      setError('Enter at least one annotation id to fold.');
+    if (foldIds.length === 0) {
+      setError('Check at least one annotation to fold.');
       return;
     }
     setError(null);
@@ -177,12 +214,16 @@ export default function AnnotatePanel({
       try {
         // Positional args (annotationIds, baseVariantId, newName). The action's
         // LOUD partial-fold refusal (a stale id throws) is surfaced verbatim
-        // below — never swallowed.
-        const variant = await foldAnnotationsIntoVariant(ids, base.id, name);
+        // below — never swallowed. selectableCheckedIds already dropped stale
+        // checks, so this only fires on a genuine mid-flight change.
+        const variant = await foldAnnotationsIntoVariant(foldIds, base.id, name);
         setFolded(variant);
-        onFolded(variant); // → Playground refreshes the variant list.
+        onFolded(variant); // → Playground prepends it to the variant list.
         setNewName('');
-        setIdsRaw('');
+        // Refresh the unfolded list: the just-folded rows drop off.
+        const next = await listUnfoldedAnnotations();
+        setRows(next);
+        setChecked(new Set());
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Fold failed.');
       }
@@ -196,22 +237,36 @@ export default function AnnotatePanel({
           Annotations → fold into variant
         </h3>
         <span className="text-xs text-foreground/40">
-          {pending.length} note{pending.length === 1 ? '' : 's'} this session
+          {isLoading ? 'loading…' : `${rows.length} unfolded · ${foldIds.length} checked`}
         </span>
       </div>
 
-      {/* Session recall list — text + context, no DB id (saveAnnotation returns
-          void; this is not the fold input). */}
-      {pending.length === 0 ? (
+      {/* Unfolded annotations — real DB rows, checkbox-selectable. No paste. */}
+      {loadError ? (
+        <p className="border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-700">
+          {loadError}
+        </p>
+      ) : rows.length === 0 ? (
         <p className="text-xs text-foreground/40">
-          No notes yet. Inspect a verdict cell and add an annotation to build a set to fold.
+          No unfolded annotations. Inspect a verdict cell and add a note to build a set to fold.
         </p>
       ) : (
-        <ul className="max-h-40 divide-y divide-foreground/10 overflow-auto border border-rule">
-          {pending.map((a) => (
-            <li key={a.localKey} className="px-2 py-1.5 text-xs">
-              <span className="mr-1 font-mono text-foreground/40">{contextLabel(a)}</span>
-              <span className="block truncate text-foreground/70">{a.note}</span>
+        <ul className="max-h-48 divide-y divide-foreground/10 overflow-auto border border-rule">
+          {rows.map((r) => (
+            <li key={r.id} className="px-2 py-1.5 text-xs">
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={checked.has(r.id)}
+                  onChange={() => toggle(r.id)}
+                  aria-label={`Fold annotation ${labelForRow(r)}`}
+                  className="mt-0.5"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="mr-1 font-mono text-foreground/40">{labelForRow(r)}</span>
+                  <span className="block truncate text-foreground/70">{r.note}</span>
+                </span>
+              </label>
             </li>
           ))}
         </ul>
@@ -236,23 +291,6 @@ export default function AnnotatePanel({
           </select>
         </label>
 
-        <label className="block space-y-1 text-sm">
-          <span className="text-xs font-semibold uppercase tracking-wider text-foreground/50">
-            Annotation ids to fold
-          </span>
-          <textarea
-            value={idsRaw}
-            onChange={(e) => setIdsRaw(e.target.value)}
-            placeholder="paste annotation ids (comma/space/newline separated)…"
-            aria-label="Annotation ids to fold"
-            spellCheck={false}
-            className="min-h-[3rem] w-full resize-y border border-rule bg-background px-3 py-2 font-mono text-[12px] leading-relaxed outline-none focus:border-foreground/40"
-          />
-          <span className="text-xs text-foreground/40">
-            {ids.length} id{ids.length === 1 ? '' : 's'} · deduped as the action counts them
-          </span>
-        </label>
-
         <div className="flex items-center gap-2">
           <input
             type="text"
@@ -265,10 +303,10 @@ export default function AnnotatePanel({
           <button
             type="button"
             onClick={fold}
-            disabled={isFolding}
+            disabled={isFolding || foldIds.length === 0}
             className="border border-foreground/20 px-3 py-1 text-sm transition hover:bg-foreground/5 disabled:opacity-50"
           >
-            {isFolding ? 'folding…' : 'Fold into new variant'}
+            {isFolding ? 'folding…' : `Fold ${foldIds.length} into new variant`}
           </button>
         </div>
       </div>

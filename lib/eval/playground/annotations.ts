@@ -1,30 +1,30 @@
 // ---------------------------------------------------------------------------
-// Pure helpers for the annotate → fold-into-variant surface (Task B3-4).
+// Pure helpers for the annotate → fold-into-variant surface (Task B3-4 / B3-4b).
 //
-// WHY A PURE MODULE HERE: the committed eval actions (app/actions/eval.ts) shape
-// this task in a way the plan under-specified. `saveAnnotation` returns `void`
-// (no `.select()`), and there is NO annotation READ action — and B3 may add no
-// new server action / DB access. So a session never learns the DB id of a note
-// it just saved. `foldAnnotationsIntoVariant(annotationIds, ...)`, however,
-// requires REAL DB ids, and it FAILS LOUD if the resolved-count ≠ the requested
-// set size (it de-dupes with `new Set(annotationIds).size` and refuses a partial
-// fold). Therefore the only honest, no-new-action wiring is: the researcher
-// supplies the ids to fold, and the client must normalize them EXACTLY the way
-// the action counts them — dedupe preserving order, drop blanks — or the count
-// check will misfire. That normalization is the contestable logic the plan says
-// to extract + unit-test rather than bury in JSX; it pins the client's set to
-// the action's `new Set(...)` semantics so a stray comma or duplicate paste can
-// never trip the partial-fold refusal spuriously.
+// B3-4b closes the loop the original B3-4 could not: `saveAnnotation` now
+// RETURNS the new row id and a `listUnfoldedAnnotations()` read action exists,
+// so the fold panel drives off a CHECKBOX list of real, still-unfolded DB rows
+// instead of a paste field. That killed the old paste-normalizer
+// (`parseAnnotationIds`) — the client no longer parses researcher-typed ids.
 //
-// The panel ALSO tracks the notes saved THIS session (an advisory recall list —
-// text only, since no id comes back) so the researcher can see what they
-// annotated and label each by its (run · verdict) context.
+// The one piece of contestable logic that survives is the mapping from the
+// checkbox selection to the fold's id list. `foldAnnotationsIntoVariant`
+// refuses a PARTIAL fold — it throws when the resolved-count (rows still in the
+// DB) differs from the requested `new Set(ids).size`. Because the checkbox list
+// is a snapshot (fetched on mount, refreshed after each save/fold), a checked
+// id can go stale between refreshes. `selectableCheckedIds` intersects the
+// checked set with the CURRENTLY-available ids so the fold request only ever
+// carries ids the action can still resolve — a stale check can never spuriously
+// trip the partial-fold refusal.
+//
+// The panel ALSO tracks the notes saved THIS session (an advisory recall list),
+// labelled by their (run · verdict) context via `contextLabel`.
 // ---------------------------------------------------------------------------
 
 /** One note captured this session, with the verdict/run context it was saved
- *  under. No `id` — the committed `saveAnnotation` returns void, so the client
- *  cannot know the DB id; this is a RECALL aid, not the fold input. PII: pid
- *  only (carried for the human-readable context label). */
+ *  under. Carried through AnnotateContext as a lightweight signal that a save
+ *  happened (drives the unfolded-list refresh) and as a human-readable recall
+ *  aid. PID: pid only — never first_name/email (spec L5). */
 export type PendingAnnotation = {
   note: string;
   runId?: string;
@@ -38,23 +38,18 @@ export type PendingAnnotation = {
 };
 
 /**
- * Normalize a researcher-pasted id blob into the exact set the fold action
- * counts. Splits on commas and any whitespace (so newline- or space- or
- * comma-separated all work), trims, drops empties, and DE-DUPES while
- * PRESERVING first-seen order. Mirrors the action's `new Set(annotationIds)` —
- * a duplicate or trailing separator can never spuriously trip its partial-fold
- * refusal.
+ * The exact id list to hand `foldAnnotationsIntoVariant`, given the researcher's
+ * checkbox selection and the ids currently available in the unfolded list.
+ *
+ * Returns the AVAILABLE ids (in their list order) that are checked — an
+ * intersection. This pins the request to the action's `new Set(...)` count:
+ * only ids the action can still resolve are sent, so a stale check (its row
+ * folded by a prior fold) is silently dropped rather than tripping the
+ * partial-fold refusal. Available ids are unique DB ids, so the result is
+ * duplicate-free by construction.
  */
-export function parseAnnotationIds(raw: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const tok of (raw ?? '').split(/[\s,]+/)) {
-    const id = tok.trim();
-    if (id === '' || seen.has(id)) continue;
-    seen.add(id);
-    out.push(id);
-  }
-  return out;
+export function selectableCheckedIds(checked: Set<string>, available: string[]): string[] {
+  return available.filter((id) => checked.has(id));
 }
 
 /** A short, human-readable context label for a pending annotation — the

@@ -5,7 +5,6 @@ import type { ProgressionParticipant } from '@/app/actions/progression';
 import type { EvalArtifact, FewShotSet, PromptVariant } from '@/app/actions/eval';
 import type { VerdictRow } from '@/app/actions/runs';
 import type { PlaygroundConfig } from '@/lib/eval/playground/config';
-import type { PendingAnnotation } from '@/lib/eval/playground/annotations';
 import CohortPanel from '@/components/playground/CohortPanel';
 import ConfigPanel from '@/components/playground/ConfigPanel';
 import RunPanel from '@/components/playground/RunPanel';
@@ -18,13 +17,15 @@ import AnnotatePanel, { AnnotateContext } from '@/components/playground/Annotate
 // can read the run under inspection), and — as of B3-4 — the session's PENDING
 // annotations plus the prompt-variant LINEAGE.
 //
-// FOLD LOOP (B3-4): the annotate box lives deep in the grid (VerdictGrid →
-// VerdictDetail, files this task does not own). Playground provides AnnotateContext
-// so each saved note surfaces up into `pending` WITHOUT editing that chain. The
-// AnnotatePanel folds a chosen id set into a new child variant; on success Playground
-// prepends it to `variants` (state, seeded from the server prop) and threads THAT
-// state to ConfigPanel — so the folded variant is immediately selectable for the
-// next run.
+// FOLD LOOP (B3-4, closed in B3-4b): the annotate box lives deep in the grid
+// (VerdictGrid → VerdictDetail, files this task does not own). Playground provides
+// AnnotateContext so a save surfaces up as an `onSaved` signal WITHOUT editing that
+// chain; Playground turns it into a monotonic `annotationRefresh` token threaded to
+// AnnotatePanel, which re-pulls the unfolded-annotation list (the newly-saved note
+// appears as a checkbox). AnnotatePanel folds the CHECKED, still-unfolded rows into a
+// new child variant; on success Playground prepends it to `variants` (state, seeded
+// from the server prop) and threads THAT state to ConfigPanel — so the folded variant
+// is immediately selectable for the next run.
 // ---------------------------------------------------------------------------
 
 export default function Playground({
@@ -46,16 +47,17 @@ export default function Playground({
   const [verdicts, setVerdicts] = useState<VerdictRow[] | null>(null);
   // Variant lineage lifted to state so a fold can add a selectable variant.
   const [variants, setVariants] = useState<PromptVariant[]>(promptVariants);
-  // Notes saved this session (recall aid for the fold panel).
-  const [pending, setPending] = useState<PendingAnnotation[]>([]);
+  // Monotonic token: bumped on every note-save so AnnotatePanel re-pulls the
+  // unfolded-annotation list (the fold panel's checkbox source).
+  const [annotationRefresh, setAnnotationRefresh] = useState(0);
 
   function onRunLoaded(runId: string, rows: VerdictRow[]) {
     setCurrentRunId(runId);
     setVerdicts(rows);
   }
 
-  function onNoteSaved(a: PendingAnnotation) {
-    setPending((prev) => [a, ...prev]);
+  function onSaved() {
+    setAnnotationRefresh((n) => n + 1);
   }
 
   function onFolded(variant: PromptVariant) {
@@ -63,7 +65,7 @@ export default function Playground({
   }
 
   return (
-    <AnnotateContext.Provider value={{ onNoteSaved }}>
+    <AnnotateContext.Provider value={{ onSaved }}>
       <div className="flex gap-6">
         <CohortPanel
           participants={participants}
@@ -95,7 +97,11 @@ export default function Playground({
             onRunLoaded={onRunLoaded}
           />
 
-          <AnnotatePanel pending={pending} variants={variants} onFolded={onFolded} />
+          <AnnotatePanel
+            refreshToken={annotationRefresh}
+            variants={variants}
+            onFolded={onFolded}
+          />
         </section>
       </div>
     </AnnotateContext.Provider>
