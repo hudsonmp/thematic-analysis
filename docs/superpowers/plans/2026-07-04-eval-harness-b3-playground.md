@@ -22,9 +22,14 @@
 From `app/actions/progression.ts` (A, shipped):
 ```ts
 export type ProgressionParticipant = { pid: string; cohort: string | null; filledSteps: number };
-export type ParticipantProgression = { pid: string; cohort: string | null; steps: ProgressionStep[] };
+// NOTE (verified against committed code): ParticipantProgression has NO cohort —
+// cohort lives ONLY on ProgressionParticipant from the LIST. Any grid/row that
+// needs cohort must join it from the participant list by pid, never expect it on
+// the progression.
+export type ParticipantProgression = { pid: string; title: string; requirements: Requirement[]; scenarios: Scenario[]; steps: ProgressionStep[] };
 // ProgressionStep (lib/progression/progression.ts): { ordinal: 0|1|2|3|4; kind: 'requirement'|'scenario'; label: string; scenarioIdx: number|null; snapshot: PhaseSnapshot|null; diff: EntityDiff|null; submitted?: boolean }
 export async function listProgressionParticipants(): Promise<ProgressionParticipant[]>;
+// getParticipantProgression(pid) returns ParticipantProgression | null.
 ```
 From `app/actions/eval.ts` (B1, shipped): `listArtifacts(kind)`, `saveArtifact`, `listPromptVariants`, `savePromptVariant`, `listFewShotSets`, `saveFewShotSet`, `listAssistantTurnsForFewShot`, `saveAnnotation`, `foldAnnotationsIntoVariant` + types `EvalArtifact`, `PromptVariant`, `FewShotExample`, `FewShotSet`, `AssistantTurn`. **Read the real signatures at build time** (some take input objects); do not assume arg order.
 From `app/actions/runs.ts` (B2-4): `RunRequest`, `createAndExecuteRun(req): {runId}`, `RunSummary`, `listRuns()`, `VerdictRow`, `listVerdicts(runId)`, `AgreementReport`, `compareRuns(a,b)`. **Read the real file** — if B2-4's committed shapes differ from the B2-4 plan, follow the committed code and note the delta.
