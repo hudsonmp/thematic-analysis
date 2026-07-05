@@ -195,7 +195,7 @@ export default function AgreementView() {
               {report.kappa === null ? (
                 <p className="font-mono text-foreground/50" title="n = 0 — no cell was gradable by both runs">
                   n/a
-                  <span className="ml-1 text-xs text-foreground/40">(insufficient/constant — not 0)</span>
+                  <span className="ml-1 text-xs text-foreground/40">(n = 0, not measurable — not 0)</span>
                 </p>
               ) : (
                 <p className="font-mono text-foreground/90">{report.kappa.toFixed(3)}</p>
