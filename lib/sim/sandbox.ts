@@ -5,28 +5,53 @@
 // The policy source is concatenated with the trusted SIM_JS string into a
 // self-contained script and run under `node -e` in a child process.
 //
+// VERDICT INTEGRITY — the result cannot be forged (B2-2 gate, BLOCKING fix).
+//  The policy source runs as TOP-LEVEL code, so it shares the child's stdout
+//  and global scope with the code that emits the result. A naive fixed-string
+//  sentinel is therefore forgeable: a policy can print its own
+//  `<sentinel><perfect endState>` (via a later write, an exit hook, a
+//  setImmediate, or by monkey-patching process.stdout.write) and win a
+//  last-occurrence parse — the gate demonstrated four such vectors returning a
+//  fabricated passing verdict. The fix (see buildScript): a SEALED EMITTER
+//  captured in a private IIFE that runs BEFORE any policy code. It closes over
+//  (a) a per-run unguessable nonce and (b) a pristine bound process.stdout.write
+//  taken before the policy can patch it. The result is bracketed by the nonce
+//  on both sides. Because the nonce and the captured writer are IIFE locals,
+//  the policy's sibling top-level scope cannot read them and cannot produce a
+//  nonce-tagged segment; the only path that emits one is the sealed emitter,
+//  which always routes through the trusted sim. INVARIANT: the returned
+//  endState is a faithful serialization of a trusted-sim run, or an honest
+//  failure — never an attacker-chosen object. The emitter also serializes
+//  through a null-prototype safe-clone built from captured primitives, so
+//  Object.prototype.toJSON / getter poisoning cannot rewrite the payload
+//  either (an attack on the clone throws → honest failure, not a forgery).
+//
 // SANDBOX TIERING — stated honestly:
-//  - WITH `--experimental-permission` (probed once per process, below): the
-//    child is denied filesystem and network access by default. This is the
-//    belt against a hostile policy calling require('fs') or opening sockets
-//    (`node -e` scripts DO have require in scope).
-//  - WITHOUT the flag (probe fails on this node): the floor is
+//  - WITH a permission flag (`--permission` on node ≥23, else the older
+//    `--experimental-permission`; both probed below): the child is denied
+//    filesystem and network access by default. This is the belt against a
+//    hostile policy calling require('fs') or opening sockets (`node -e`
+//    scripts DO have require in scope). stdout writes remain allowed, so the
+//    sealed emitter is unaffected.
+//  - WITHOUT any flag (probe fails — e.g. a future node that renames the flag
+//    again, or an old node predating it): the floor is
 //      (1) a CLEARED environment — no ANTHROPIC_API_KEY, no Supabase tokens,
 //          nothing to exfiltrate even if the code phones home;
 //      (2) a SIGKILL timeout — no runaway compute;
 //      (3) a 1 MB stdout cap — no memory blowup through the pipe;
-//      (4) zod validation of the result — untrusted stdout cannot forge a
-//          malformed EndState into the grader.
-//    A hostile policy CAN still require('fs') and read world-readable files
-//    or open a socket in this tier. That residual risk is accepted for a
+//      (4) the unforgeable-nonce result channel above.
+//    A hostile policy CAN still require('fs') and read world-readable files or
+//    open a socket in THIS tier — the fs/net belt silently drops when no flag
+//    is accepted (node's flag rename is exactly such a silent trigger, which
+//    is why the probe tries both spellings). That residual is accepted for a
 //    research harness grading LLM output; it is risk-tiering, not a VM.
 
 import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { SIM_JS } from './sim-source';
 import type { EndState, LandmarkName, RiderId, ScenarioSetup, VehicleId } from './harness';
 
-const SENTINEL = '__SIM_RESULT__';
 const DEFAULT_TIMEOUT_MS = 2000;
 const MAX_STDOUT_BYTES = 1024 * 1024;
 const STDERR_EXCERPT_CHARS = 500;
@@ -52,9 +77,11 @@ const LANDMARK_NAMES = [
 const VEHICLE_IDS = ['V1', 'V2'] as const satisfies readonly VehicleId[];
 const RIDER_IDS = ['A', 'B', 'C'] as const satisfies readonly RiderId[];
 
-// Defensive schema over the child's stdout: the sentinel-suffixed JSON comes
-// from a process that just ran untrusted code, so nothing about its shape is
-// taken on faith. Unknown keys are stripped (zod object default).
+// Defensive schema over the child's result payload: even though the nonce
+// guarantees the payload came from the sealed emitter (i.e. from the trusted
+// sim), the shape is still validated — unknown keys are stripped (zod object
+// default), enums/types enforced — so a malformed sim output can never reach
+// the grader as a "valid" EndState.
 const endStateSchema = z.object({
   riders: z.array(
     z.object({
@@ -78,53 +105,97 @@ const endStateSchema = z.object({
 
 // --- permission-flag probe -------------------------------------------------
 // Probed lazily on first use and cached for the process lifetime (never a
-// top-level await / never at import time): one spawnSync asking node whether
-// it accepts --experimental-permission. status 0 → the flag exists and an -e
-// script runs under it, so every sandbox spawn includes it; anything else
-// (unknown-option exit, missing binary weirdness) → run at the floor tier
-// documented above.
-let permissionFlagCache: boolean | null = null;
+// top-level await / never at import time). node renamed the permission flag
+// from `--experimental-permission` to `--permission` around node 23, and an
+// unknown flag exits NON-ZERO — so probing only the old spelling would
+// silently drop a node ≥23 host to the floor tier. We try the current
+// spelling first, then the legacy one, and cache the accepted flag (or `null`
+// when neither is accepted). Denying fs/net is the belt; stdout stays open so
+// the result channel is unaffected either way.
+const PERMISSION_FLAGS = ['--permission', '--experimental-permission'] as const;
+let permissionFlagCache: string | null | undefined;
 
-export function isPermissionFlagSupported(): boolean {
-  if (permissionFlagCache === null) {
-    const probe = spawnSync(
-      process.execPath,
-      ['--experimental-permission', '-e', 'process.exit(0)'],
-      { env: EMPTY_ENV, stdio: 'ignore', timeout: 5000 },
-    );
-    permissionFlagCache = probe.status === 0;
+/** The permission flag this node accepts (denies fs/net by default), or null
+ *  if neither spelling is accepted (floor tier). Cached for the process. */
+export function supportedPermissionFlag(): string | null {
+  if (permissionFlagCache === undefined) {
+    permissionFlagCache = null;
+    for (const flag of PERMISSION_FLAGS) {
+      const probe = spawnSync(process.execPath, [flag, '-e', 'process.exit(0)'], {
+        env: EMPTY_ENV,
+        stdio: 'ignore',
+        timeout: 5000,
+      });
+      if (probe.status === 0) {
+        permissionFlagCache = flag;
+        break;
+      }
+    }
   }
   return permissionFlagCache;
 }
 
+/** True when SOME permission flag is accepted (strong tier). Thin boolean
+ *  wrapper over supportedPermissionFlag for callers that only need the tier. */
+export function isPermissionFlagSupported(): boolean {
+  return supportedPermissionFlag() !== null;
+}
+
 /** Assemble the self-contained sandbox script: CommonJS shim (SIM_JS assigns
  *  module.exports, and `const module = …` is legal at `node -e` top level) +
- *  the trusted sim + the frozen setup + the UNTRUSTED policy source + a
- *  runner tail that prints the sentinel-tagged result or exits 3.
+ *  the trusted sim + the frozen setup + a SEALED EMITTER (private IIFE) +
+ *  the UNTRUSTED policy source + a single call to the emitter.
  *
- *  The extraction binds `__runScenario`, NOT `runScenario`: SIM_JS declares
- *  `function runScenario` at top level, so re-binding the bare name in the
- *  same scope is a SyntaxError. Going through module.exports (rather than
- *  leaning on that hoisted declaration directly) keeps the sandbox coupled to
- *  the sim's EXPORT contract, same as harness.ts. */
-function buildScript(policySource: string, setup: ScenarioSetup): string {
+ *  Ordering is load-bearing for verdict integrity: the emitter IIFE runs and
+ *  captures its pristine writer + private nonce BEFORE the policy source runs,
+ *  so no policy top-level statement (nor any handler it schedules) can read
+ *  the nonce or reach the captured writer. `__runScenario` is bound off
+ *  module.exports (SIM_JS declares `function runScenario` at top level, so
+ *  re-binding the bare name is a SyntaxError; going through the export keeps
+ *  the sandbox coupled to the sim's EXPORT contract, same as harness.ts). */
+function buildScript(policySource: string, setup: ScenarioSetup, nonce: string): string {
   return (
     'const module={exports:{}};\n' +
     SIM_JS +
     '\nconst __runScenario=module.exports.runScenario;\n' +
-    'const __setup = ' +
+    'const __setup=' +
     JSON.stringify(setup) +
     ';\n' +
+    // Sealed emitter. Captures, before any untrusted code: a pristine bound
+    // stdout writer, process.exit/stderr, JSON.stringify, and the primitives
+    // needed for a prototype-free deep clone. `__done` makes the first call
+    // authoritative (a policy that pre-calls the emitter only substitutes a
+    // different — still trusted-sim — run; later calls are no-ops).
+    'const __emit=(function(){' +
+    'var __w=process.stdout.write.bind(process.stdout);' +
+    'var __err=process.stderr.write.bind(process.stderr);' +
+    'var __exit=process.exit.bind(process);' +
+    'var __stringify=JSON.stringify;' +
+    'var __create=Object.create;' +
+    'var __hop=Object.prototype.hasOwnProperty;' +
+    'var __isArr=Array.isArray;' +
+    'var __nonce=' +
+    JSON.stringify(nonce) +
+    ';' +
+    'var __done=false;' +
+    // Null-prototype deep clone from captured primitives: the clone has no
+    // prototype, so JSON.stringify cannot be diverted by a poisoned
+    // Object.prototype.toJSON. Any attack that makes this throw is caught
+    // below → honest exit 3, never a forged payload.
+    'function __safe(v){' +
+    'if(__isArr(v)){var a=[];var n=v.length;for(var i=0;i<n;i++){a[i]=__safe(v[i]);}return a;}' +
+    "if(v!==null&&typeof v==='object'){var o=__create(null);for(var k in v){if(__hop.call(v,k)){o[k]=__safe(v[k]);}}return o;}" +
+    'return v;' +
+    '}' +
+    'return function(decideFn){' +
+    'if(__done)return;__done=true;' +
+    "if(typeof decideFn!=='function'){__err('decide is not a function');__exit(3);return;}" +
+    'try{var es=__runScenario(__setup,decideFn);__w(__nonce+__stringify(__safe(es))+__nonce);}' +
+    'catch(e){__err(String(e&&e.stack||e));__exit(3);}' +
+    '};' +
+    '})();\n' +
     policySource +
-    // `typeof decide` is safe even when the policy never declared it. The
-    // check runs BEFORE the sim call, not as a throwing stand-in policy
-    // passed INTO it: the sim catches per-event policy exceptions as noops
-    // (a B2-1 world rule), so a deferred throw would be silently swallowed
-    // into a fake do-nothing run instead of the honest exit-3 failure the
-    // grader needs (verdict honesty, plan Global Constraints).
-    "\ntry { if (typeof decide !== 'function') { throw new Error('decide is not a function'); } const endState = __runScenario(__setup, decide); process.stdout.write('" +
-    SENTINEL +
-    "' + JSON.stringify(endState)); } catch (e) { process.stderr.write(String(e && e.stack || e)); process.exit(3); }\n"
+    "\n__emit(typeof decide==='function'?decide:undefined);\n"
   );
 }
 
@@ -132,11 +203,13 @@ export type SandboxResult = { ok: true; endState: EndState } | { ok: false; fail
 
 /**
  * Run one untrusted policy against one scenario in a sandboxed node child.
- * Never throws for anything the child does: every failure mode (nonzero
- * exit, timeout, stdout flood, missing/forged sentinel, malformed JSON,
- * schema miss) comes back as { ok: false, failure } with a stderr excerpt,
- * so the grader can record an honest pass:null verdict (plan Global
- * Constraints: verdict honesty).
+ * Never throws for anything the child does: every failure mode (nonzero exit,
+ * timeout, stdout flood, missing/forged result, malformed JSON, schema miss)
+ * comes back as { ok: false, failure } with a stderr excerpt, so the grader
+ * can record an honest pass:null verdict (plan Global Constraints: verdict
+ * honesty). A forged result is impossible (see buildScript): a policy that
+ * cannot emit the per-run nonce simply produces no result → missing-sentinel
+ * failure, which is honest.
  */
 export async function runPolicyInSandbox(
   policySource: string,
@@ -144,10 +217,15 @@ export async function runPolicyInSandbox(
   opts?: { timeoutMs?: number },
 ): Promise<SandboxResult> {
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const script = buildScript(policySource, setup);
-  const nodeArgs = isPermissionFlagSupported()
-    ? ['--experimental-permission', '-e', script]
-    : ['-e', script];
+  // Unguessable per-run marker: a UUID the untrusted policy has no way to
+  // learn (it is an IIFE local in the child; it never appears in a serialized
+  // EndState, whose fields are landmark/vehicle/rider literals, floats, and
+  // sim-generated log strings). Only the sealed emitter can bracket a payload
+  // with it.
+  const nonce = ' ' + randomUUID() + ' ';
+  const script = buildScript(policySource, setup, nonce);
+  const flag = supportedPermissionFlag();
+  const nodeArgs = flag ? [flag, '-e', script] : ['-e', script];
 
   return new Promise((resolve) => {
     // process.execPath, not 'node': env:{} empties PATH too, and a PATH-less
@@ -224,24 +302,26 @@ export async function runPolicyInSandbox(
         return;
       }
 
-      // LAST-occurrence sentinel parse: the runner tail's write is the final
-      // thing a well-behaved script prints, so the segment after the last
-      // sentinel is the real result even when the policy spammed fake
-      // sentinels earlier. (A policy that prevents the tail from running ends
-      // with ITS fake as the last segment — which is why the zod gate below
-      // exists.)
+      // Unforgeable-nonce extraction: the sealed emitter is the ONLY code that
+      // can bracket a payload with the per-run nonce (which the policy never
+      // sees), so the region between the first and second nonce occurrence is
+      // exactly the trusted sim's serialized EndState — untouched by any
+      // policy garbage printed before, between (impossible — no nonce), or
+      // after. A policy that cannot emit the nonce leaves fewer than two
+      // occurrences → an honest missing-sentinel failure.
       const stdout = Buffer.concat(stdoutChunks).toString('utf8');
-      const segments = stdout.split(SENTINEL);
-      if (segments.length < 2) {
+      const open = stdout.indexOf(nonce);
+      const close = open >= 0 ? stdout.indexOf(nonce, open + nonce.length) : -1;
+      if (open < 0 || close < 0) {
         resolve({
           ok: false,
-          failure: 'missing ' + SENTINEL + ' sentinel in sandbox stdout' + stderrExcerpt(),
+          failure: 'missing result sentinel in sandbox stdout' + stderrExcerpt(),
         });
         return;
       }
       let parsed: unknown;
       try {
-        parsed = JSON.parse(segments[segments.length - 1]);
+        parsed = JSON.parse(stdout.slice(open + nonce.length, close));
       } catch (err) {
         resolve({
           ok: false,

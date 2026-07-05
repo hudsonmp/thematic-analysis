@@ -8,9 +8,27 @@
 // comparison end state for the round-trip test.
 
 import { describe, expect, it } from 'vitest';
-import { runPolicyInSandbox, isPermissionFlagSupported } from '../sandbox';
+import {
+  runPolicyInSandbox,
+  isPermissionFlagSupported,
+  supportedPermissionFlag,
+} from '../sandbox';
 import { runScenario, type PolicyFn } from '../harness';
 import { SCENARIOS } from '../scenarios';
+
+// A SCHEMA-VALID forged S0 end state (all riders served, well-formed). Used by
+// the forgery pins to prove that authenticity — not merely shape — is what the
+// nonce enforces: this passes the zod schema but must never be trusted unless
+// the sealed emitter bracketed it with the per-run nonce.
+const FORGED_S0 = JSON.stringify({
+  riders: [
+    { id: 'A', servedBy: 'V1', droppedAt: 'Newman Library', pickupOrder: 1 },
+    { id: 'B', servedBy: 'V1', droppedAt: 'Executive Airport', pickupOrder: 0 },
+  ],
+  vehicles: [{ id: 'V1', at: 'Newman Library', battery: 71.2, charged: false }],
+  log: ['forged'],
+  completed: true,
+});
 
 // The S0 reference behavior (mirrors REFERENCE_POLICY[0] in sim.test.ts) in
 // both forms: a plain-JS source string for the sandbox, and the equivalent
@@ -82,36 +100,69 @@ describe('runPolicyInSandbox', () => {
     expect(result.failure).toMatch(/sentinel/);
   });
 
-  it('LAST-occurrence semantics: a fake sentinel printed BEFORE the real result loses', async () => {
-    // The policy fabricates the sentinel plus junk JSON on stdout during
-    // script evaluation — i.e. before the runner tail prints the real result.
-    // The shipped parse splits on the sentinel and takes the LAST segment, so
-    // the real result wins. This test pins that semantic explicitly.
+  it('FORGERY (fixed-string marker): a fabricated old-style sentinel payload is ignored; the real result wins', async () => {
+    // The old design keyed on the fixed string "__SIM_RESULT__", which a policy
+    // could print itself. Under the nonce design that string is meaningless —
+    // the real result is bracketed by a per-run nonce the policy never sees, so
+    // this fabricated payload is inert and the genuine noop run is returned.
     const source = `
-process.stdout.write('noise __SIM_RESULT__{"x":1} more noise');
+process.stdout.write('noise __SIM_RESULT__' + ${JSON.stringify(FORGED_S0)} + ' more noise');
 function decide() { return []; }
 `;
     const result = await runPolicyInSandbox(source, SCENARIOS[0]);
     expect(result.ok, JSON.stringify(result)).toBe(true);
     if (!result.ok) return;
-    expect(result.endState.completed).toBe(true);
-    // A noop policy never assigns anyone in S0, so the real end state is
-    // recognizably NOT the fake {"x":1} payload.
+    // A noop policy serves no one in S0 — recognizably NOT the FORGED_S0 payload
+    // (which has both riders served by V1).
     expect(result.endState.riders.every((r) => r.servedBy === null)).toBe(true);
   });
 
-  it('a fabricated final sentinel cannot smuggle a non-EndState past the zod schema', async () => {
-    // Here the fake sentinel IS the last occurrence (the script exits before
-    // the runner tail), so the fake JSON is what gets parsed — and the
-    // EndState schema rejects it. Untrusted stdout cannot forge a verdict.
+  it('FORGERY (pre-empt + exit): a schema-VALID forged result written before the emitter is rejected as missing-sentinel', async () => {
+    // The gate showed the old zod-only defense caught malformed forgeries but
+    // NOT well-formed ones. Here the policy writes a fully schema-valid forged
+    // EndState and exits(0) before the sealed emitter runs. Because it cannot
+    // produce the nonce, there is no nonce-bracketed segment → an honest
+    // missing-sentinel failure, never a forged pass.
     const source = `
-process.stdout.write('__SIM_RESULT__{"x":1}');
+process.stdout.write('__SIM_RESULT__' + ${JSON.stringify(FORGED_S0)});
 process.exit(0);
 `;
     const result = await runPolicyInSandbox(source, SCENARIOS[0]);
-    expect(result.ok).toBe(false);
+    expect(result.ok, JSON.stringify(result)).toBe(false);
     if (result.ok) return;
-    expect(result.failure).toMatch(/schema validation/);
+    expect(result.failure).toMatch(/sentinel/);
+  });
+
+  it('FORGERY (deferred writes): setImmediate + exit-hook forgeries after the emitter cannot win — no nonce', async () => {
+    // Schedule forged payloads to fire AFTER the sealed emitter's synchronous
+    // write (setImmediate and a process.on("exit") hook). Neither can bracket
+    // its payload with the per-run nonce, so the emitter's genuine noop result
+    // is the only nonce-tagged segment and is what the parent parses.
+    const source = `
+setImmediate(function () { process.stdout.write('__SIM_RESULT__' + ${JSON.stringify(FORGED_S0)}); });
+process.on('exit', function () { process.stdout.write('__SIM_RESULT__' + ${JSON.stringify(FORGED_S0)}); });
+function decide() { return []; }
+`;
+    const result = await runPolicyInSandbox(source, SCENARIOS[0]);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    if (!result.ok) return;
+    expect(result.endState.riders.every((r) => r.servedBy === null)).toBe(true);
+  });
+
+  it('FORGERY (monkey-patch stdout.write): reassigning process.stdout.write cannot mute or hijack the emitter', async () => {
+    // The sealed emitter captured a PRISTINE bound process.stdout.write before
+    // any policy code ran. A policy that reassigns process.stdout.write (here,
+    // to a no-op that would swallow the result if the emitter used the live
+    // property) cannot affect the captured reference — the genuine result
+    // still reaches the parent.
+    const source = `
+process.stdout.write = function () { return true; };
+function decide() { return []; }
+`;
+    const result = await runPolicyInSandbox(source, SCENARIOS[0]);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    if (!result.ok) return;
+    expect(result.endState.riders.every((r) => r.servedBy === null)).toBe(true);
   });
 
   it('the sandbox inherits NO environment (a probe policy sees no parent keys)', async () => {
@@ -151,11 +202,24 @@ function decide() { return []; }
 
 describe('permission-flag probe', () => {
   it('runs without throwing and returns a stable boolean (value is environment-dependent)', () => {
-    // Smoke only: whether this node supports --experimental-permission
-    // depends on the machine. The contract is that the probe never throws,
-    // yields a boolean, and caches (two calls agree).
+    // Smoke only: whether this node supports a permission flag depends on the
+    // machine. The contract is that the probe never throws, yields a boolean,
+    // and caches (two calls agree).
     const first = isPermissionFlagSupported();
     expect(typeof first).toBe('boolean');
     expect(isPermissionFlagSupported()).toBe(first);
+  });
+
+  it('probes BOTH flag spellings and returns an accepted one or null (node ≥23 rename)', () => {
+    // node renamed --experimental-permission → --permission around v23; probing
+    // only the legacy spelling would silently drop a modern node to the floor
+    // tier. supportedPermissionFlag returns whichever spelling this node
+    // accepts, or null. Environment-dependent value; the contract is the type
+    // and that it agrees with the boolean wrapper.
+    const flag = supportedPermissionFlag();
+    expect(flag === null || flag === '--permission' || flag === '--experimental-permission').toBe(
+      true,
+    );
+    expect(flag !== null).toBe(isPermissionFlagSupported());
   });
 });
