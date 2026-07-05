@@ -192,9 +192,13 @@ export async function createAndExecuteRun(req: RunRequest): Promise<{ runId: str
   // a verdict to the EXACT grading configuration so two verdicts are comparable
   // iff their hashes match. Captures grader identity, sim backend, the CONTENT
   // hashes of oracle+metric (so an artifact edit changes the hash), the prompt
-  // variant id, and the validated llmConfig. (few-shot set id is intentionally
-  // NOT in the hash — see the concern noted in the report; add it here if
-  // few-shot content should partition comparability.)
+  // variant id, the validated llmConfig, AND the resolved few-shot CONTENT.
+  // Few-shot examples materially change LLM verdicts, so two runs differing
+  // only in few-shot set MUST NOT share a config_hash — else compareRuns would
+  // report κ between configs the provenance layer swears are identical, exactly
+  // when Hudson varies few-shot sets to probe the grader fork (B2-4 gate,
+  // Verdict 3). Hashing the resolved `fewShot` content (not the bare id) also
+  // closes the hand-edited-in-place hole, mirroring oracleHash/metricHash.
   const configHash = sha256Hex(
     JSON.stringify({
       graderId: req.graderId,
@@ -203,6 +207,7 @@ export async function createAndExecuteRun(req: RunRequest): Promise<{ runId: str
       metricHash: metric.hash,
       promptVariantId: req.promptVariantId,
       llmConfig: cfg.config,
+      fewShot,
     }),
   );
 
