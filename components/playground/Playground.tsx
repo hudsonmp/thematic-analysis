@@ -9,6 +9,7 @@ import CohortPanel from '@/components/playground/CohortPanel';
 import ConfigPanel from '@/components/playground/ConfigPanel';
 import RunPanel from '@/components/playground/RunPanel';
 import AnnotatePanel, { AnnotateContext } from '@/components/playground/AnnotatePanel';
+import AgreementView from '@/components/playground/AgreementView';
 
 // ---------------------------------------------------------------------------
 // Playground island shell. Holds the state this island owns: the participant
@@ -102,6 +103,13 @@ export default function Playground({
             variants={variants}
             onFolded={onFolded}
           />
+
+          {/* AgreementView (B3-5) is self-contained: it loads its own run list on
+              mount and compares any two runs, independent of this island's
+              selection/config/current-run state. It is the empirical fork-resolver
+              (B spec §3) — κ + the disagreement browser — and presents the split
+              cells without adjudicating which grader is right. */}
+          <AgreementView />
         </section>
       </div>
     </AnnotateContext.Provider>
