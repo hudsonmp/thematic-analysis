@@ -159,3 +159,35 @@ hashes — so runs that differ in any grading input hash differently.
 
 Source: B spec §3 (agreement as construct validation); B2-4 gate (κ math + config_hash
 provenance).
+
+## 10 · The playground: decisions-as-data made operable (B3, shipped)
+
+The researcher-facing surface at `/progression-analysis/llm` turns every paradigm above into a
+knob Hudson turns, never code he edits. Every contestable computation is a PURE, unit-tested
+module under `lib/eval/playground/` (selection set-ops, the model→control matrix, verdict-grid
++ per-phase deltas, disagreement ordering); the React islands stay thin and call the shipped
+B1/B2-4 server actions from handlers — B3 added no study access. Design invariants worth
+recording:
+
+- **Model knobs are a DERIVED view of the validator.** `controlMatrix(model)` PROBES
+  `validateLlmConfig` (does `{model, temperature}` validate? which efforts validate?) rather
+  than re-listing the API rules — so the UI can never present a knob the server would 400 on,
+  and a rule change in `config.ts` breaks the matrix tests, forcing the two in sync.
+- **Honest signal end-to-end.** The grid's per-phase improvement delta is `null` (rendered
+  `—`) when a neighbor phase is ungradable, distinct from a genuine `0` (rendered `▬ 0.00`);
+  the agreement view renders κ `null` (n = 0, not measurable) distinct from κ `0`. A
+  null-as-0 would misread "couldn't measure" as "no improvement / chance agreement" — the same
+  discipline the graders hold at the verdict level.
+- **The annotate→fold loop closes decisions-as-data.** Reading a verdict, annotating what the
+  grading got wrong, and folding those annotations into a NEW prompt variant (provenance chain
+  preserved) is how a measurement decision re-enters the config for the next run. Closing it
+  required amending "B3 adds no new actions" — a discovered requirement (`saveAnnotation`
+  returned void; no way to read foldable ids) forced `listUnfoldedAnnotations()` + an
+  id-returning `saveAnnotation`, both kept inside the guard posture (B3-4b).
+- **Agreement PRESENTS the fork, never adjudicates it.** The disagreement browser sorts
+  hard (both graders committed, differ — in κ) before soft (one abstained — not in κ) so the
+  sharpest divergences surface first; annotation is suppressed there (present, don't mutate a
+  foreign run's fold context). Which grader is ground truth stays Hudson's empirical call.
+
+Source: B spec §7 (playground) + §3 (fork-resolver); B3-1…B3-5 gates (probe-based matrix,
+null-vs-0 honesty, loop-closing, kind classification).
