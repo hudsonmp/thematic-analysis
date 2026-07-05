@@ -165,13 +165,38 @@ Simulate faithfully: serve queues FIFO, one passenger at a time, apply the world
  * grader's no-code-block → pass:null honesty path).
  */
 export function extractCodeBlock(text: string): string | null {
-  // ```[lang]\n ... \n``` — non-greedy body, `m`/`s`-free by using [\s\S].
-  // Global so we can walk to the LAST match.
-  const fence = /```[^\n`]*\n([\s\S]*?)```/g;
-  let match: RegExpExecArray | null;
+  // LINE-ORIENTED fence pairing (not a single global regex). A fence is a line
+  // whose first non-whitespace characters are three backticks — so a stray
+  // ``` INSIDE prose ("use a ```js block…") is NOT a fence and cannot open a
+  // phantom block that mis-pairs with a later closer (B2-3 gate: the old
+  // regex returned "" on exactly such well-formed-but-narrated model output).
+  // We pair each opener to the next fence line and keep the LAST COMPLETE
+  // block; a dangling opener with no closer is ignored (never captured).
+  const isFence = (line: string): boolean => /^\s*```/.test(line);
+  const lines = text.split('\n');
   let last: string | null = null;
-  while ((match = fence.exec(text)) !== null) {
-    last = match[1];
+  let i = 0;
+  while (i < lines.length) {
+    if (!isFence(lines[i])) {
+      i++;
+      continue;
+    }
+    // Opening fence at i (its language tag is dropped — we start the body on
+    // the next line). Collect until the next fence line closes the block.
+    const body: string[] = [];
+    let j = i + 1;
+    let closed = false;
+    while (j < lines.length) {
+      if (isFence(lines[j])) {
+        closed = true;
+        break;
+      }
+      body.push(lines[j]);
+      j++;
+    }
+    if (!closed) break; // dangling opener — not a complete block
+    last = body.join('\n');
+    i = j + 1; // resume after the closing fence
   }
-  return last === null ? null : last.replace(/\n$/, '');
+  return last;
 }

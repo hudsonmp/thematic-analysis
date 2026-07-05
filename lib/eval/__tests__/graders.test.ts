@@ -121,6 +121,32 @@ describe('extractCodeBlock', () => {
     const text = '~~~js\nfunction decide() { return []; }\n~~~';
     expect(extractCodeBlock(text)).toBeNull();
   });
+
+  it('ignores an inline ``` inside prose and still returns the real block (gate regression)', () => {
+    // The model narrates with an inline triple-backtick mid-sentence before the
+    // real fenced block. Line-oriented detection treats only line-leading
+    // fences as fences, so the inline one cannot mis-pair with the real closer.
+    const text = [
+      'You can write a ```js function that decides dispatch.',
+      'Here it is:',
+      '```js',
+      'function decide() { return [{ act: "noop" }]; }',
+      '```',
+    ].join('\n');
+    expect(extractCodeBlock(text)).toBe('function decide() { return [{ act: "noop" }]; }');
+  });
+
+  it('ignores a dangling opener with no closer, keeping the last COMPLETE block', () => {
+    const text = [
+      '```js',
+      'const good = 1;',
+      '```',
+      'then an unterminated example:',
+      '```js',
+      'const dangling = 2;',
+    ].join('\n');
+    expect(extractCodeBlock(text)).toBe('const good = 1;');
+  });
 });
 
 // --- prompt builders (pure) ------------------------------------------------
