@@ -77,6 +77,12 @@ export default function ConfigPanel({
   if (Number.isFinite(maxTokens)) llmConfig.maxTokens = maxTokens;
 
   // Lift the assembled config whenever any input changes.
+  // INVARIANT (unenforced by the type, required by this effect): `onChange`
+  // MUST be a STABLE reference (a useState setter or useCallback-wrapped fn).
+  // It is deliberately absent from the dep list; an inline-arrow onChange from
+  // a future caller would change identity every render and either loop (if
+  // included) or silently drop lifts (as-is). Today's sole caller passes the
+  // `setConfig` useState setter (Playground.tsx), which is stable.
   useEffect(() => {
     onChange({
       graderId,
@@ -88,7 +94,8 @@ export default function ConfigPanel({
       metricArtifactId,
     });
     // llmConfig is derived from the primitive knob state below; listing those
-    // avoids a new-object-identity render loop.
+    // (not the fresh object) avoids a new-identity render loop. onChange is
+    // omitted per the stability invariant documented above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     graderId,

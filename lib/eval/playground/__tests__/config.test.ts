@@ -136,4 +136,27 @@ describe('buildRunRequest — assemble + validate', () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.req.simBackend).toBe('llm');
   });
+
+  // --- gate NIT pins: previously-untested buildRunRequest branches ----------
+
+  it('defaults a null execution-codegen sim backend to deterministic', () => {
+    // execution-codegen NEEDS a backend; a null one falls back to deterministic
+    // (config.ts `?? 'deterministic'`). Pin so a regression to another default
+    // or a dropped fallback fails a test.
+    const r = buildRunRequest('run', ['p1'], validCfg({ graderId: 'execution-codegen', simBackend: null }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.req.simBackend).toBe('deterministic');
+  });
+
+  it('passes a non-null fewShotSetId through unchanged', () => {
+    const r = buildRunRequest('run', ['p1'], validCfg({ fewShotSetId: 'fs-42' }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.req.fewShotSetId).toBe('fs-42');
+  });
+
+  it('trims and drops blank pids, keeping only the real ones', () => {
+    const r = buildRunRequest('run', ['  p1  ', '', '   ', 'p2'], validCfg());
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.req.pids).toEqual(['p1', 'p2']);
+  });
 });
