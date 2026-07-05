@@ -16,7 +16,7 @@ import {
 // Cohort multiselect (Hudson's explicit ask). Renders groupByCohort() — pilot,
 // study, then "—" (null) LAST — with a global Select all · Deselect all pair
 // and a per-cohort tri-state header checkbox that touches ONLY that cohort's
-// pids. Each pid is a checkbox row with the n/5 filledSteps hint (mirrors
+// pids. Each pid is a checkbox row with the n/5 stepCount hint (mirrors
 // ProgressionViewer's row) and its cohort label. All set-ops are the pure
 // helpers in lib/eval/playground/selection; this component is a thin island
 // that lifts the resulting Set via onSelectedChange.
