@@ -3,16 +3,19 @@
 import { useState } from 'react';
 import type { ProgressionParticipant } from '@/app/actions/progression';
 import type { EvalArtifact, FewShotSet, PromptVariant } from '@/app/actions/eval';
+import { buildRunRequest, type PlaygroundConfig } from '@/lib/eval/playground/config';
 import CohortPanel from '@/components/playground/CohortPanel';
+import ConfigPanel from '@/components/playground/ConfigPanel';
 
 // ---------------------------------------------------------------------------
-// Playground island shell. Holds the participant selection Set (the single
-// piece of state this task owns) and renders the cohort multiselect. The
-// config + run panels land in B3-2 / B3-3; the initial artifacts, prompt
-// variants, and few-shot sets are loaded server-side and threaded here so
-// those later tasks have them without a re-fetch. For now they are surfaced as
-// counts in the placeholder — genuinely consumed (no unused-prop lint), and a
-// truthful "these are loaded and ready" signal.
+// Playground island shell. Holds the two pieces of state this island owns: the
+// participant selection Set (B3-1) and the assembled run config (B3-2, lifted
+// from ConfigPanel). The initial artifacts / prompt variants / few-shot sets are
+// loaded server-side and threaded to ConfigPanel's editors (they are edited in
+// place — each editor saves a new version/variant/set via a B1 action). The run
+// panel + verdict grid land in B3-3; here we surface the current run-readiness
+// (buildRunRequest over the selection + config) so the config's validity is
+// visible and every prop is genuinely consumed.
 // ---------------------------------------------------------------------------
 
 export default function Playground({
@@ -29,6 +32,14 @@ export default function Playground({
   fewShotSets: FewShotSet[];
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [config, setConfig] = useState<PlaygroundConfig | null>(null);
+
+  // Run-readiness preview: buildRunRequest returns the disabled reason when the
+  // selection/config isn't runnable. The actual Run button lands in B3-3; this
+  // just reflects the config's validity as the researcher edits.
+  const readiness = config
+    ? buildRunRequest('preview', [...selected], config)
+    : ({ ok: false, error: 'Configure a run.' } as const);
 
   return (
     <div className="flex gap-6">
@@ -39,15 +50,31 @@ export default function Playground({
       />
 
       <section className="min-w-0 flex-1 space-y-3">
-        <div className="border border-dashed border-foreground/15 px-4 py-6 text-sm text-foreground/60">
-          <p className="font-medium text-foreground/70">Config + run panels land in B3-2 / B3-3.</p>
-          <p className="mt-1">
-            {selected.size} participant{selected.size === 1 ? '' : 's'} selected ·{' '}
-            {oracleArtifacts.length} oracle spec{oracleArtifacts.length === 1 ? '' : 's'} ·{' '}
-            {metricArtifacts.length} metric{metricArtifacts.length === 1 ? '' : 's'} ·{' '}
-            {promptVariants.length} prompt variant{promptVariants.length === 1 ? '' : 's'} ·{' '}
-            {fewShotSets.length} few-shot set{fewShotSets.length === 1 ? '' : 's'} loaded.
-          </p>
+        <ConfigPanel
+          oracleArtifacts={oracleArtifacts}
+          metricArtifacts={metricArtifacts}
+          promptVariants={promptVariants}
+          fewShotSets={fewShotSets}
+          onChange={setConfig}
+        />
+
+        <div
+          className={`border px-4 py-3 text-sm ${
+            readiness.ok
+              ? 'border-emerald-600/30 bg-emerald-600/5 text-foreground/70'
+              : 'border-dashed border-foreground/15 text-foreground/60'
+          }`}
+        >
+          {readiness.ok ? (
+            <p>
+              Ready to run · {selected.size} participant{selected.size === 1 ? '' : 's'} ·{' '}
+              {readiness.req.graderId}
+              {readiness.req.simBackend ? ` · ${readiness.req.simBackend}` : ''} ·{' '}
+              {config?.llmConfig.model}. Run panel lands in B3-3.
+            </p>
+          ) : (
+            <p>{readiness.error}</p>
+          )}
         </div>
       </section>
     </div>
