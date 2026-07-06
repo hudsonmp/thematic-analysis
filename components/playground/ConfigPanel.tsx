@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { EVAL_MODELS, type EvalModel, type LlmConfig } from '@/lib/llm/config';
 import { controlMatrix, type PlaygroundConfig } from '@/lib/eval/playground/config';
+import { EDITOR_COPY } from '@/lib/eval/playground/editor-copy';
 import type { EvalArtifact, FewShotSet, PromptVariant } from '@/app/actions/eval';
 import ArtifactEditor from '@/components/playground/ArtifactEditor';
 import VariantEditor from '@/components/playground/VariantEditor';
@@ -237,6 +238,7 @@ export default function ConfigPanel({
         <ArtifactEditor
           kind="oracle_spec"
           label="Oracle spec"
+          description={EDITOR_COPY.oracleSpec}
           artifacts={oracleArtifacts}
           selectedId={oracleArtifactId}
           onSelect={setOracleArtifactId}
@@ -244,6 +246,7 @@ export default function ConfigPanel({
         <ArtifactEditor
           kind="metric"
           label="Metric"
+          description={EDITOR_COPY.metric}
           artifacts={metricArtifacts}
           selectedId={metricArtifactId}
           onSelect={setMetricArtifactId}

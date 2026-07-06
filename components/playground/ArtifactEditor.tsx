@@ -18,12 +18,14 @@ const UNDECIDED = '[UNDECIDED]';
 export default function ArtifactEditor({
   kind,
   label,
+  description,
   artifacts,
   selectedId,
   onSelect,
 }: {
   kind: 'oracle_spec' | 'metric';
   label: string;
+  description: string;
   artifacts: EvalArtifact[];
   selectedId: string;
   onSelect: (id: string) => void;
@@ -84,6 +86,8 @@ export default function ArtifactEditor({
           )}
         </span>
       </div>
+
+      <p className="text-xs leading-relaxed text-foreground/55">{description}</p>
 
       <select
         value={selected?.id ?? ''}

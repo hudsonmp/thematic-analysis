@@ -8,6 +8,7 @@ import {
   type FewShotExample,
   type FewShotSet,
 } from '@/app/actions/eval';
+import { EDITOR_COPY } from '@/lib/eval/playground/editor-copy';
 
 // ---------------------------------------------------------------------------
 // Few-shot picker island. Two affordances:
@@ -39,6 +40,8 @@ export default function FewShotPicker({
   const [error, setError] = useState<string | null>(null);
   const [isLoading, startLoading] = useTransition();
   const [isSaving, startSaving] = useTransition();
+
+  const selectedSet = selectedId === null ? null : list.find((s) => s.id === selectedId) ?? null;
 
   function openBuilder() {
     setBuilding(true);
@@ -100,22 +103,22 @@ export default function FewShotPicker({
         <span className="text-xs font-semibold uppercase tracking-wider text-foreground/50">
           Few-shot set
         </span>
-        <button
-          type="button"
-          onClick={() => (building ? setBuilding(false) : openBuilder())}
-          className="text-xs text-foreground/60 underline underline-offset-2 transition hover:text-foreground"
-        >
-          {building ? 'cancel' : 'build from corpus'}
-        </button>
+        <span className="text-xs text-foreground/40">
+          {selectedSet
+            ? `${selectedSet.examples.length} example${selectedSet.examples.length === 1 ? '' : 's'} in use`
+            : 'zero-shot'}
+        </span>
       </div>
 
+      <p className="text-xs leading-relaxed text-foreground/55">{EDITOR_COPY.fewShot}</p>
+
       <select
-        value={selectedId ?? ''}
-        onChange={(e) => onSelect(e.target.value === '' ? null : e.target.value)}
+        value={selectedId ?? '__zero_shot__'}
+        onChange={(e) => onSelect(e.target.value === '__zero_shot__' ? null : e.target.value)}
         aria-label="Few-shot set"
         className="w-full border border-rule bg-background px-2 py-1.5 text-sm outline-none focus:border-foreground/40"
       >
-        <option value="">(none)</option>
+        <option value="__zero_shot__">Zero-shot (no examples)</option>
         {list.map((s) => (
           <option key={s.id} value={s.id}>
             {s.name} · {s.examples.length} example{s.examples.length === 1 ? '' : 's'}
@@ -123,11 +126,23 @@ export default function FewShotPicker({
         ))}
       </select>
 
+      <button
+        type="button"
+        onClick={() => (building ? setBuilding(false) : openBuilder())}
+        className="text-xs text-foreground/60 underline underline-offset-2 transition hover:text-foreground"
+      >
+        {building ? 'close builder' : 'build / edit a set from the study corpus'}
+      </button>
+
       {building && (
         <div className="space-y-2 border-t border-foreground/10 pt-2">
+          <p className="text-xs leading-relaxed text-foreground/55">
+            Check the study turns to include, name the set, and save. The saved set becomes
+            selectable above; leave it unselected to stay zero-shot.
+          </p>
           {isLoading && <p className="text-xs text-foreground/40">Loading corpus turns…</p>}
           {turns && turns.length === 0 && (
-            <p className="text-xs text-foreground/40">No assistant turns in the corpus.</p>
+            <p className="text-xs text-foreground/40">No turns in the corpus.</p>
           )}
           {turns && turns.length > 0 && (
             <ul className="max-h-52 divide-y divide-foreground/10 overflow-auto border border-rule">
@@ -161,14 +176,16 @@ export default function FewShotPicker({
               aria-label="Few-shot set name"
               className="min-w-0 flex-1 border border-rule bg-background px-2 py-1 text-sm outline-none focus:border-foreground/40"
             />
-            <span className="text-xs text-foreground/40">{checked.size} chosen</span>
+            <span className="whitespace-nowrap text-xs text-foreground/40">
+              {checked.size} chosen
+            </span>
             <button
               type="button"
               onClick={save}
               disabled={isSaving}
-              className="border border-foreground/20 px-3 py-1 text-sm transition hover:bg-foreground/5 disabled:opacity-50"
+              className="whitespace-nowrap border border-foreground/20 px-3 py-1 text-sm transition hover:bg-foreground/5 disabled:opacity-50"
             >
-              {isSaving ? 'saving…' : 'Save set'}
+              {isSaving ? 'saving…' : 'Save new set'}
             </button>
           </div>
         </div>

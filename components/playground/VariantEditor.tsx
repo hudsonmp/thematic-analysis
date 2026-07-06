@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { savePromptVariant, type PromptVariant } from '@/app/actions/eval';
+import { EDITOR_COPY } from '@/lib/eval/playground/editor-copy';
 
 // ---------------------------------------------------------------------------
 // Prompt-variant editor island. Lists the prompt-variant lineage (newest first,
@@ -74,6 +75,8 @@ export default function VariantEditor({
         </span>
         <span className="text-xs text-foreground/40">{list.length} in lineage</span>
       </div>
+
+      <p className="text-xs leading-relaxed text-foreground/55">{EDITOR_COPY.promptVariant}</p>
 
       <select
         value={selected?.id ?? ''}
