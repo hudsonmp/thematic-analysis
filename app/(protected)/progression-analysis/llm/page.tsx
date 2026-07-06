@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { listProgressionParticipants } from '@/app/actions/progression';
 import { listArtifacts, listFewShotSets, listPromptVariants } from '@/app/actions/eval';
 import Playground from '@/components/playground/Playground';
@@ -24,7 +25,15 @@ export default async function LlmEvalPage() {
   return (
     <main className="px-6 py-6">
       <header className="mb-4">
-        <h1 className="text-lg font-medium tracking-tight">LLM Eval</h1>
+        <div className="flex items-baseline justify-between gap-4">
+          <h1 className="text-lg font-medium tracking-tight">LLM Eval</h1>
+          <Link
+            href="/progression-analysis/llm/run"
+            className="text-sm text-foreground/60 underline underline-offset-2 hover:text-foreground"
+          >
+            Review runs →
+          </Link>
+        </div>
         <p className="max-w-2xl text-sm text-foreground/60">
           Select the participants to grade, then configure a run — grader,
           model, prompt variant, and the oracle-spec / metric artifacts it
