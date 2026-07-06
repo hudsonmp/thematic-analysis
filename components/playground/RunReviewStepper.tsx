@@ -149,7 +149,12 @@ export default function RunReviewStepper({
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {SCENARIO_IDXS.map((scenarioIdx) => (
                 <VerdictCell
-                  key={scenarioIdx}
+                  // Key by (phase ordinal, scenario) — NOT scenario alone — so
+                  // switching the phase tab REMOUNTS each cell with a fresh
+                  // empty draft. A key of scenarioIdx only would keep an unsaved
+                  // draft typed at phase k visible at phase k+1, where saving it
+                  // would file the phase-k text under phase k+1 (gate NIT).
+                  key={`${activeStep.ordinal}-${scenarioIdx}`}
                   pid={progression.pid}
                   phaseOrdinal={activeStep.ordinal}
                   scenarioIdx={scenarioIdx}
