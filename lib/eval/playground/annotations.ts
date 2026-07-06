@@ -97,6 +97,40 @@ export function mapAnnotationRow(row: DbAnnotationRow): AnnotationRow {
   };
 }
 
+/** The camelCase input a caller hands `saveAnnotation` (note already validated
+ *  by the action; coordinates optional). */
+export type AnnotationInsertInput = {
+  note: string;
+  runId?: string;
+  verdictId?: string;
+  pid?: string;
+  phaseOrdinal?: number;
+  scenarioIdx?: number;
+};
+
+/** camelCase input → the snake_case eval_annotations INSERT row (absent →
+ *  null). Extracted + unit-pinned for the SAME reason as mapAnnotationRow, and
+ *  the write path is the more dangerous one: a phaseOrdinal↔scenarioIdx swap
+ *  here (both numbers, tsc-invisible) files every per-cell note under the wrong
+ *  scenario permanently, with nothing in the UI to reveal it. */
+export function annotationInsertRow(input: AnnotationInsertInput): {
+  note: string;
+  run_id: string | null;
+  verdict_id: string | null;
+  pid: string | null;
+  phase_ordinal: number | null;
+  scenario_idx: number | null;
+} {
+  return {
+    note: input.note,
+    run_id: input.runId ?? null,
+    verdict_id: input.verdictId ?? null,
+    pid: input.pid ?? null,
+    phase_ordinal: input.phaseOrdinal ?? null,
+    scenario_idx: input.scenarioIdx ?? null,
+  };
+}
+
 /** A short, human-readable context label for a pending annotation — the
  *  (pid · phase · scenario) coordinates when known, else the run/verdict id, so
  *  the recall list reads meaningfully. pid only (never name/email). */

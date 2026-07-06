@@ -1,10 +1,47 @@
 import { describe, expect, it } from 'vitest';
 import {
+  annotationInsertRow,
   contextLabel,
   mapAnnotationRow,
   selectableCheckedIds,
   type PendingAnnotation,
 } from '../annotations';
+
+describe('annotationInsertRow', () => {
+  it('maps camelCase input → snake_case insert row WITHOUT transposing coordinates', () => {
+    // Distinct numeric coordinates so a phaseOrdinal↔scenarioIdx swap at the
+    // WRITE site (both numbers, tsc-invisible) fails this assertion — the write
+    // path files notes under a scenario permanently, so it must be pinned too.
+    expect(
+      annotationInsertRow({
+        note: 'n',
+        runId: 'RUN-1',
+        verdictId: 'VERDICT-9',
+        pid: '042',
+        phaseOrdinal: 2,
+        scenarioIdx: 3,
+      }),
+    ).toEqual({
+      note: 'n',
+      run_id: 'RUN-1',
+      verdict_id: 'VERDICT-9',
+      pid: '042',
+      phase_ordinal: 2,
+      scenario_idx: 3,
+    });
+  });
+
+  it('defaults every optional field to null when absent', () => {
+    expect(annotationInsertRow({ note: 'n' })).toEqual({
+      note: 'n',
+      run_id: null,
+      verdict_id: null,
+      pid: null,
+      phase_ordinal: null,
+      scenario_idx: null,
+    });
+  });
+});
 
 describe('mapAnnotationRow', () => {
   it('renames snake_case DB columns to camelCase WITHOUT transposing fields', () => {

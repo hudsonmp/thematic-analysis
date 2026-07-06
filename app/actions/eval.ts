@@ -7,7 +7,7 @@ import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getShownStudy } from '@/app/actions/codebook';
 import { taskModuleIdFrom } from '@/lib/study/task-module';
 import { METRIC_DRAFT, ORACLE_SPEC_DRAFT, sha256Hex } from '@/lib/eval/seeds';
-import { mapAnnotationRow, type AnnotationRow } from '@/lib/eval/playground/annotations';
+import { annotationInsertRow, mapAnnotationRow, type AnnotationRow } from '@/lib/eval/playground/annotations';
 import type { Json, Tables } from '@/lib/types/cb-db';
 
 // ---------------------------------------------------------------------------
@@ -401,14 +401,7 @@ export async function saveAnnotation(input: {
 
   const inserted = await withStudyAudit('saveAnnotation', async () => {
     const ins = await (await evalFrom('eval_annotations'))
-      .insert({
-        note,
-        run_id: input.runId ?? null,
-        verdict_id: input.verdictId ?? null,
-        pid: input.pid ?? null,
-        phase_ordinal: input.phaseOrdinal ?? null,
-        scenario_idx: input.scenarioIdx ?? null,
-      })
+      .insert(annotationInsertRow({ ...input, note }))
       .select('id')
       .single();
     if (ins.error) {
