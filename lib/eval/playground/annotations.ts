@@ -53,12 +53,18 @@ export function selectableCheckedIds(checked: Set<string>, available: string[]):
 }
 
 /** A still-unfolded annotation as the fold panel consumes it (camelCase). The
- *  source of truth for the shape; `app/actions/eval.ts` re-exports it. */
+ *  source of truth for the shape; `app/actions/eval.ts` re-exports it. The
+ *  (pid · phaseOrdinal · scenarioIdx) coordinates bind a note to a per-cell
+ *  review position; they are null for legacy/unscoped annotations. pid is the
+ *  study's de-identified id ONLY — never first_name/email (spec L5). */
 export type AnnotationRow = {
   id: string;
   note: string;
   runId: string | null;
   verdictId: string | null;
+  pid: string | null;
+  phaseOrdinal: number | null;
+  scenarioIdx: number | null;
   createdAt: string;
 };
 
@@ -68,18 +74,25 @@ export type DbAnnotationRow = {
   note: string;
   run_id: string | null;
   verdict_id: string | null;
+  pid: string | null;
+  phase_ordinal: number | null;
+  scenario_idx: number | null;
   created_at: string;
 };
 
 /** snake_case DB row → camelCase AnnotationRow. Extracted as a PURE function so
- *  the field mapping is unit-pinned: a transposition (e.g. run_id → verdictId)
- *  type-checks — both sides are strings — so only a test catches it, not tsc. */
+ *  the field mapping is unit-pinned: a transposition (e.g. run_id → verdictId,
+ *  or phase_ordinal → scenarioIdx — both numbers) type-checks, so only a test
+ *  catches it, not tsc. */
 export function mapAnnotationRow(row: DbAnnotationRow): AnnotationRow {
   return {
     id: row.id,
     note: row.note,
     runId: row.run_id,
     verdictId: row.verdict_id,
+    pid: row.pid,
+    phaseOrdinal: row.phase_ordinal,
+    scenarioIdx: row.scenario_idx,
     createdAt: row.created_at,
   };
 }

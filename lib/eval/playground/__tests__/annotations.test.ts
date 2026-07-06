@@ -10,12 +10,18 @@ describe('mapAnnotationRow', () => {
   it('renames snake_case DB columns to camelCase WITHOUT transposing fields', () => {
     // Distinct run/verdict values so a run_id→verdictId transposition (which
     // type-checks — both are strings) fails this assertion, not just tsc.
+    // phase_ordinal / scenario_idx are DISTINCT numbers so a
+    // phase_ordinal→scenarioIdx transposition (both numbers — type-checks)
+    // fails this assertion, not just tsc.
     expect(
       mapAnnotationRow({
         id: 'a1',
         note: 'n',
         run_id: 'RUN-1',
         verdict_id: 'VERDICT-9',
+        pid: 'P07',
+        phase_ordinal: 2,
+        scenario_idx: 3,
         created_at: '2026-07-04T00:00:00Z',
       }),
     ).toEqual({
@@ -23,14 +29,32 @@ describe('mapAnnotationRow', () => {
       note: 'n',
       runId: 'RUN-1',
       verdictId: 'VERDICT-9',
+      pid: 'P07',
+      phaseOrdinal: 2,
+      scenarioIdx: 3,
       createdAt: '2026-07-04T00:00:00Z',
     });
   });
 
-  it('preserves nulls for run_id / verdict_id', () => {
-    expect(mapAnnotationRow({ id: 'a1', note: 'n', run_id: null, verdict_id: null, created_at: 't' })).toMatchObject(
-      { runId: null, verdictId: null },
-    );
+  it('preserves nulls for run_id / verdict_id / pid / phase_ordinal / scenario_idx', () => {
+    expect(
+      mapAnnotationRow({
+        id: 'a1',
+        note: 'n',
+        run_id: null,
+        verdict_id: null,
+        pid: null,
+        phase_ordinal: null,
+        scenario_idx: null,
+        created_at: 't',
+      }),
+    ).toMatchObject({
+      runId: null,
+      verdictId: null,
+      pid: null,
+      phaseOrdinal: null,
+      scenarioIdx: null,
+    });
   });
 });
 

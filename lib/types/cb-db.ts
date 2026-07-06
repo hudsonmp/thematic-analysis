@@ -1299,7 +1299,10 @@ export type Database = {
           folded_into_variant_id: string | null
           id: string
           note: string
+          phase_ordinal: number | null
+          pid: string | null
           run_id: string | null
+          scenario_idx: number | null
           verdict_id: string | null
         }
         Insert: {
@@ -1307,7 +1310,10 @@ export type Database = {
           folded_into_variant_id?: string | null
           id?: string
           note: string
+          phase_ordinal?: number | null
+          pid?: string | null
           run_id?: string | null
+          scenario_idx?: number | null
           verdict_id?: string | null
         }
         Update: {
@@ -1315,7 +1321,10 @@ export type Database = {
           folded_into_variant_id?: string | null
           id?: string
           note?: string
+          phase_ordinal?: number | null
+          pid?: string | null
           run_id?: string | null
+          scenario_idx?: number | null
           verdict_id?: string | null
         }
         Relationships: [

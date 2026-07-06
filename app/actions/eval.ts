@@ -389,6 +389,9 @@ export type { AnnotationRow };
 export async function saveAnnotation(input: {
   runId?: string;
   verdictId?: string;
+  pid?: string;
+  phaseOrdinal?: number;
+  scenarioIdx?: number;
   note: string;
 }): Promise<{ id: string }> {
   await requireAuthUser();
@@ -402,6 +405,9 @@ export async function saveAnnotation(input: {
         note,
         run_id: input.runId ?? null,
         verdict_id: input.verdictId ?? null,
+        pid: input.pid ?? null,
+        phase_ordinal: input.phaseOrdinal ?? null,
+        scenario_idx: input.scenarioIdx ?? null,
       })
       .select('id')
       .single();
@@ -418,14 +424,15 @@ export async function saveAnnotation(input: {
  * checkbox source. A READ (no `withStudyAudit`; the belt guards writes only),
  * through `evalFrom` on the researcher JWT. Folded rows drop off (their
  * `folded_into_variant_id` is stamped), so the list shrinks as observations get
- * acted on. PII: pid-only posture — no pid/name/email is selected here at all;
- * the run/verdict ids ARE the context.
+ * acted on. PII: pid-only posture — `pid` here is the study's own de-identified
+ * id (the per-cell review coordinate), never first_name/email; the run/verdict
+ * ids + (pid · phase · scenario) coordinates ARE the context.
  */
 export async function listUnfoldedAnnotations(): Promise<AnnotationRow[]> {
   await requireAuthUser();
 
   const res = await (await evalFrom('eval_annotations'))
-    .select('id, note, run_id, verdict_id, created_at')
+    .select('id, note, run_id, verdict_id, pid, phase_ordinal, scenario_idx, created_at')
     .is('folded_into_variant_id', null)
     .order('created_at', { ascending: false });
   if (res.error) {
