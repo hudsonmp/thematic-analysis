@@ -9,11 +9,15 @@
 //     (lib/eval/graders/prompts.ts); their [UNDECIDED] markers come from
 //     ORACLE_SPEC_DRAFT / METRIC_DRAFT (lib/eval/seeds.ts).
 //   - a prompt variant is the `system` prompt the grader runs under, seeded
-//     from the study's live `help_seeking` prompt; saving forks a child
-//     (savePromptVariant, parent = the selected variant — lineage preserved).
+//     from GRADER_SYSTEM_PROMPT_DRAFT — a GRADING persona, NOT the study's
+//     help-seeking prompt (the eval grades spec improvement, not help). Saving
+//     forks a child (savePromptVariant, parent = the selected variant).
 //   - a few-shot set is prepended as chat messages BEFORE the grader prompt
 //     (…input.fewShot in judge.ts / execution.ts); an empty/absent set is
-//     zero-shot. The corpus turns are real study chat turns (user + assistant).
+//     zero-shot — the DEFAULT and the right choice here. The corpus turns are
+//     real study conversation turns (help-seeking), so adding them as examples
+//     would push the grader back toward help-seeking — keep it zero-shot unless
+//     you deliberately want that.
 
 export const EDITOR_COPY = {
   oracleSpec:
@@ -21,9 +25,9 @@ export const EDITOR_COPY = {
   metric:
     'The grading rubric plus the improvement measure. It is embedded verbatim in every judge call and defines how the per-clause verdicts roll up to a score.',
   promptVariant:
-    'The system prompt the grader runs under. Seeded from the study’s live help-seeking prompt; editing and saving forks a child variant, so the original’s lineage is preserved.',
+    'The grader’s system prompt — a spec-evaluation persona, NOT a help-seeking assistant (the eval measures how specs improve, not help-seeking). Edit + save to fork a child variant; lineage is preserved.',
   fewShot:
-    'Example chat turns prepended to the grader prompt to steer its behavior. Build a set from real study turns; an empty set (none) means zero-shot.',
+    'Optional example turns prepended to steer the grader. Default and recommended: zero-shot (no examples). The corpus is real study conversation turns (help-seeking), so adding them nudges the grader toward help-seeking — leave it zero-shot unless you intend that.',
 } as const;
 
 export type EditorCopyKey = keyof typeof EDITOR_COPY;

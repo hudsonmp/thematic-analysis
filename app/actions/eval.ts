@@ -6,7 +6,12 @@ import { studyFrom } from '@/lib/supabase/study-guard';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getShownStudy } from '@/app/actions/codebook';
 import { taskModuleIdFrom } from '@/lib/study/task-module';
-import { METRIC_DRAFT, ORACLE_SPEC_DRAFT, sha256Hex } from '@/lib/eval/seeds';
+import {
+  GRADER_SYSTEM_PROMPT_DRAFT,
+  METRIC_DRAFT,
+  ORACLE_SPEC_DRAFT,
+  sha256Hex,
+} from '@/lib/eval/seeds';
 import { annotationInsertRow, mapAnnotationRow, type AnnotationRow } from '@/lib/eval/playground/annotations';
 import type { Json, Tables } from '@/lib/types/cb-db';
 
@@ -19,14 +24,15 @@ import type { Json, Tables } from '@/lib/types/cb-db';
 // service key never touches this path). Every action that writes wraps its
 // write section in `withStudyAudit`, the pre/post study-table fingerprint
 // belt: a study row count that moves across an eval write throws loudly.
-// Study data (llm_prompts seed, the assistant-turn corpus) is READ via
-// `studyFrom` only — the SELECT-only guard over IRB tables.
+// Study data (the assistant-turn corpus) is READ via `studyFrom` only — the
+// SELECT-only guard over IRB tables.
 //
 // SELF-INITIALIZING SEEDS: `listArtifacts` inserts the DRAFT oracle-spec /
 // metric from lib/eval/seeds.ts when a kind is empty; `listPromptVariants`
-// seeds variant #1 from the study's live help_seeking prompt when empty. Both
-// are idempotent by the empty check. Two concurrent FIRST loads could
-// double-seed — accepted: single researcher, and versions are append-only
+// seeds variant #1 from GRADER_SYSTEM_PROMPT_DRAFT (a grading persona, NOT the
+// study's help-seeking prompt — the eval grades spec improvement, not help) when
+// empty. Both are idempotent by the empty check. Two concurrent FIRST loads
+// could double-seed — accepted: single researcher, and versions are append-only
 // anyway (a duplicate seed is just one extra selectable version, never data
 // loss).
 //
@@ -200,10 +206,12 @@ export async function saveArtifact(
 
 /**
  * All prompt variants, newest first. Self-initializing: when empty, variant #1
- * is seeded from the study's LIVE help-seeking prompt (`llm_prompts`, read via
- * the SELECT-only study guard) so every later variant's lineage traces back to
- * what participants actually saw. No live prompt found → [] (empty-shape
- * discipline — the UI shows an empty state, nothing throws).
+ * is seeded from GRADER_SYSTEM_PROMPT_DRAFT — a GRADING persona (evaluate how
+ * student specs improve across iterations), NOT the study's help-seeking prompt.
+ * The eval measures spec improvement, so the grader's system prompt must not
+ * adopt a help-seeking assistant role (that role contradiction biased every
+ * verdict). The DRAFT is a proposal Hudson edits; saving forks child variants
+ * whose lineage traces back to it.
  */
 export async function listPromptVariants(): Promise<PromptVariant[]> {
   await requireAuthUser();
@@ -217,19 +225,13 @@ export async function listPromptVariants(): Promise<PromptVariant[]> {
   const rows = res.data ?? [];
   if (rows.length > 0) return rows.map(mapVariant);
 
-  const promptRes = await (await studyFrom('llm_prompts'))
-    .select('content')
-    .eq('key', 'help_seeking')
-    .maybeSingle();
-  if (promptRes.error) {
-    throw new Error(`listPromptVariants: llm_prompts read failed: ${promptRes.error.message}`);
-  }
-  const liveContent = promptRes.data?.content;
-  if (!liveContent) return [];
-
   const inserted = await withStudyAudit('listPromptVariants', async () => {
     const ins = await (await evalFrom('eval_prompt_variants'))
-      .insert({ name: 'help_seeking (study seed)', system_prompt: liveContent, parent_id: null })
+      .insert({
+        name: 'grader-system-prompt (DRAFT)',
+        system_prompt: GRADER_SYSTEM_PROMPT_DRAFT,
+        parent_id: null,
+      })
       .select('*')
       .single();
     if (ins.error) {

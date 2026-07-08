@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { METRIC_DRAFT, ORACLE_SPEC_DRAFT, sha256Hex } from '@/lib/eval/seeds';
+import {
+  GRADER_SYSTEM_PROMPT_DRAFT,
+  METRIC_DRAFT,
+  ORACLE_SPEC_DRAFT,
+  sha256Hex,
+} from '@/lib/eval/seeds';
 
 describe('sha256Hex', () => {
   it('hashes the empty string to the well-known sha256 digest', () => {
@@ -21,6 +26,25 @@ describe('sha256Hex', () => {
 
   it('distinguishes distinct inputs (the two drafts hash differently)', () => {
     expect(sha256Hex(ORACLE_SPEC_DRAFT)).not.toBe(sha256Hex(METRIC_DRAFT));
+  });
+});
+
+describe('GRADER_SYSTEM_PROMPT_DRAFT', () => {
+  it('carries the DRAFT marker', () => {
+    expect(GRADER_SYSTEM_PROMPT_DRAFT).toContain('DRAFT');
+  });
+
+  it('is a spec-evaluation persona, explicitly NOT help-seeking', () => {
+    // The whole point of this seed: the grader must not adopt a help-seeking
+    // assistant role (that biased every verdict). Pin both the framing and the
+    // explicit negation so a regression to the help-seeking seed fails here.
+    expect(GRADER_SYSTEM_PROMPT_DRAFT).toMatch(/specification/i);
+    expect(GRADER_SYSTEM_PROMPT_DRAFT).toMatch(/NOT a help-seeking/i);
+    expect(GRADER_SYSTEM_PROMPT_DRAFT).not.toMatch(/you are a help-seeking assistant/i);
+  });
+
+  it('frames the role as evaluating improvement across iterations', () => {
+    expect(GRADER_SYSTEM_PROMPT_DRAFT).toMatch(/improve/i);
   });
 });
 
