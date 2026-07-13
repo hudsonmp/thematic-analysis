@@ -110,6 +110,7 @@ export default function StagingBox({
   facetLabel,
   unfiled,
   onDragCode,
+  onSelectCode,
 }: {
   facetId: string;
   facetLabel: string;
@@ -118,6 +119,9 @@ export default function StagingBox({
   unfiled: CodeWithRefs[];
   /** Told which code is being dragged, so the canvas nodes can become drop targets. */
   onDragCode: (codeId: string | null) => void;
+  /** Clicking a chip inspects it in the right rail. Dragging FILES it; clicking READS
+   *  it — and you often need to reread the definition before you know where it goes. */
+  onSelectCode: (codeId: string) => void;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -253,6 +257,7 @@ export default function StagingBox({
                     onDragStart={() => onDragCode(id)}
                     onDragEnd={() => onDragCode(null)}
                     onDropCode={(dragged) => onDropOnCode(id, dragged)}
+                    onSelect={() => onSelectCode(id)}
                   />
                 );
               })}
@@ -278,6 +283,7 @@ export default function StagingBox({
               onDragStart={() => onDragCode(c.id)}
               onDragEnd={() => onDragCode(null)}
               onDropCode={(dragged) => onDropOnCode(c.id, dragged)}
+              onSelect={() => onSelectCode(c.id)}
             />
           ))}
           {loose.length === 0 && groups.length > 0 && (
@@ -296,15 +302,29 @@ function CodeChip({
   onDragStart,
   onDragEnd,
   onDropCode,
+  onSelect,
 }: {
   code: CodeWithRefs;
   onDragStart: () => void;
   onDragEnd: () => void;
   onDropCode: (draggedId: string) => void;
+  onSelect: () => void;
 }) {
   const [over, setOver] = useState(false);
   return (
     <div
+      role="button"
+      tabIndex={0}
+      // A drag FILES the code; a click READS it. Both are needed and they do not fight:
+      // the browser suppresses `click` after a real drag, so a chip you merely tapped
+      // opens in the inspector while a chip you dragged does not.
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
       draggable
       onDragStart={(e) => {
         e.dataTransfer.setData('text/code-id', code.id);

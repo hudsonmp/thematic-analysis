@@ -19,6 +19,7 @@ import { answersFacet, rollUpByValue } from '@/lib/codebook/inheritance';
 import { ancestorsOf, layoutTree, subtreeAt, type LayoutNode } from '@/lib/codebook/treeLayout';
 import FacetEditor from '@/components/matrix/FacetEditor';
 import type { Tables } from '@/lib/types/cb-db';
+import CodeEditor from './CodeEditor';
 import NewCodeDialog, { type DialogTarget } from './NewCodeDialog';
 import StagingBox from './StagingBox';
 import TriageQueue from './TriageQueue';
@@ -85,11 +86,10 @@ export default function FacetCanvas({
   const [interposeAt, setInterposeAt] = useState<string | null>(null);
   const [pinnedCitationId, setPinnedCitationId] = useState<string | null>(null);
   const [schemeOpen, setSchemeOpen] = useState(dimensions.length === 0);
-  // The right rail holds BOTH the inspector and the triage queue, and can be closed
-  // outright — the canvas is the thinking surface, and a panel you cannot dismiss
-  // permanently taxes the width you think in.
-  const [railOpen, setRailOpen] = useState(true);
-  const [rail, setRail] = useState<'inspect' | 'queue'>('inspect');
+  // The triage queue opens as an overlay from the header, like the inspector — neither
+  // is a permanent rail, because the canvas is the thinking surface and a panel you
+  // cannot dismiss permanently taxes the width you think in.
+  const [triageOpen, setTriageOpen] = useState(false);
   // Growing the tree used to mean opening a dialog and picking a tab. A branch is just
   // a name — so a node exposes an inline slot: click the ghost `+`, type, Enter. The
   // dialog is still there for a value that needs a description.
@@ -173,12 +173,11 @@ export default function FacetCanvas({
     [visibleRoots, countByValue],
   );
 
-  /** Selecting anything re-opens the rail on the inspector: a click whose result is
-   *  invisible reads as a broken click. */
+  /** Selecting anything opens the overlay on it. Triage closes: they occupy the same
+   *  window, and a click whose result is hidden behind another panel reads as broken. */
   function inspect(next: Selection) {
     setSelected(next);
-    setRail('inspect');
-    setRailOpen(true);
+    setTriageOpen(false);
   }
 
   function run(fn: () => Promise<unknown>) {
@@ -192,7 +191,7 @@ export default function FacetCanvas({
   const y = (n: number) => n * ROW + 48;
 
   return (
-    <main className="flex h-[calc(100vh-6rem)]">
+    <main className="relative flex h-[calc(100vh-6rem)]">
       <section className="relative flex min-w-0 flex-1 flex-col">
         {/* ---------------- header ---------------------------------------------- */}
         <div className="flex flex-wrap items-center gap-3 border-b border-foreground/15 px-6 py-2.5">
@@ -255,6 +254,28 @@ export default function FacetCanvas({
               ))}
             </select>
           </label>
+
+          <button
+            type="button"
+            onClick={() => {
+              setTriageOpen((o) => !o);
+              setSelected(null);
+            }}
+            className={`border px-2.5 py-1 text-xs transition ${
+              triageOpen
+                ? 'border-foreground bg-foreground text-background'
+                : 'border-foreground/20 hover:border-foreground'
+            }`}
+          >
+            Triage
+            {unansweredHere.length > 0 && (
+              <span
+                className={`ml-1 ${triageOpen ? '' : 'text-amber-700 dark:text-amber-500'}`}
+              >
+                {unansweredHere.length}
+              </span>
+            )}
+          </button>
 
           <span className="ml-auto text-xs text-foreground/40">
             click = inspect · ⌘-click = zoom
@@ -568,6 +589,7 @@ export default function FacetCanvas({
             facetLabel={facet.label}
             unfiled={unansweredHere}
             onDragCode={(id) => setDragging(id === null ? null : { kind: 'code', id })}
+            onSelectCode={(id) => inspect({ kind: 'code', id })}
           />
         )}
 
@@ -586,127 +608,101 @@ export default function FacetCanvas({
 
       </section>
 
-      {/* ---------------- right rail: inspect | triage --------------------------- */}
-      {!railOpen && (
-        // A closed rail must leave a way back, and it should say what is WAITING inside
-        // — an unread count is the only honest reason to reopen a panel you shut.
-        <button
-          type="button"
-          onClick={() => setRailOpen(true)}
-          className="flex w-9 shrink-0 flex-col items-center gap-2 border-l border-foreground/15 py-3 text-xs text-foreground/50 transition hover:bg-foreground/[0.03] hover:text-foreground"
-          aria-label="Open the side panel"
-          title="Open the side panel"
+      {/* ---------------- overlay window: inspect / triage ----------------------- */}
+      {/* Not a rail. A permanent sidebar taxes the width of the canvas even when you are
+          not reading anything — and the canvas IS the thinking surface. The panel appears
+          when you click something and gets out of the way when you are done. It is
+          non-modal (no backdrop): it floats over the canvas so you can still see the tree
+          you are editing against, which a centred modal would hide behind itself. */}
+      {(selected !== null || triageOpen) && (
+        <div
+          role="dialog"
+          aria-label={triageOpen ? 'Triage' : 'Inspect'}
+          className="absolute right-6 top-6 bottom-6 z-40 flex w-[26rem] flex-col border border-foreground/20 bg-background shadow-2xl"
         >
-          <span aria-hidden>‹</span>
-          {unansweredHere.length > 0 && (
-            <span className="rounded-full border border-amber-600/40 px-1 text-[10px] text-amber-700 dark:text-amber-500">
-              {unansweredHere.length}
+          <div className="flex items-center gap-2 border-b border-foreground/15 px-3 py-2">
+            <span className="text-xs font-medium tracking-tight">
+              {triageOpen
+                ? `Triage · ${unansweredHere.length} unclassified`
+                : selected?.kind === 'value'
+                  ? 'Value'
+                  : 'Code'}
             </span>
-          )}
-        </button>
-      )}
-
-      <aside
-        className={`${railOpen ? 'flex' : 'hidden'} w-96 shrink-0 flex-col border-l border-foreground/15`}
-      >
-        <div className="flex items-center gap-1 border-b border-foreground/15 px-3 py-2">
-          {(['inspect', 'queue'] as const).map((t) => (
             <button
-              key={t}
               type="button"
-              onClick={() => setRail(t)}
-              className={`px-2 py-1 text-xs transition ${
-                rail === t
-                  ? 'border-b border-foreground font-medium text-foreground'
-                  : 'text-foreground/50 hover:text-foreground'
-              }`}
-            >
-              {t === 'inspect' ? 'Inspect' : 'Triage'}
-              {t === 'queue' && unansweredHere.length > 0 && (
-                <span className="ml-1 text-amber-700 dark:text-amber-500">
-                  {unansweredHere.length}
-                </span>
-              )}
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={() => setRailOpen(false)}
-            className="ml-auto px-1 text-lg leading-none text-foreground/40 transition hover:text-foreground"
-            aria-label="Close the side panel"
-            title="Close"
-          >
-            ×
-          </button>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        {rail === 'queue' ? (
-          <TriageQueue codes={codes} facets={dimensions} citations={citations} />
-        ) : selected === null ? (
-          <p className="text-xs leading-relaxed text-foreground/45">
-            Click a <strong>value</strong> to edit its description, or a{' '}
-            <strong>code</strong> to see what it answers.
-            <br />
-            <br />A <strong>dimension</strong> is a question askable of every code. A{' '}
-            <strong>value</strong> is an answer to it. A code may give{' '}
-            <em>two</em> answers on one dimension — that is how a cross-cutting code is
-            expressed without duplicating it.
-          </p>
-        ) : selected.kind === 'value' ? (
-          <ValueInspector
-            key={selected.id}
-            value={valueById.get(selected.id)!}
-            childValues={(subtreeAt(forest, selected.id)?.children ?? []).map((c) => ({
-              id: c.id,
-              name: c.name,
-            }))}
-            answering={(rolled.get(selected.id) ?? { direct: [] }).direct}
-            inherited={(rolled.get(selected.id) ?? { inherited: [] }).inherited}
-            allCodes={codes}
-            valueNameById={valueNameById}
-            pending={pending}
-            onAttach={(codeId) => run(() => addCodeFacetValue(codeId, selected.id))}
-            onSaveDescription={(d) =>
-              run(() => updateFacetValue(selected.id, { description: d }))
-            }
-            onRename={(label) => run(() => updateFacetValue(selected.id, { label }))}
-            onZoom={() => setFocusId(selected.id)}
-            onUnnest={
-              valueById.get(selected.id)?.parent_id == null
-                ? undefined
-                : () => run(() => setFacetValueParent(selected.id, null))
-            }
-            onInterpose={() => setInterposeAt(selected.id)}
-            onDissolve={() =>
-              run(async () => {
-                await deleteFacetValue(selected.id);
+              onClick={() => {
+                setTriageOpen(false);
                 setSelected(null);
-                if (focusId === selected.id) setFocusId(null);
-              })
-            }
-            onDetach={(codeId) => run(() => removeCodeFacetValue(codeId, selected.id))}
-          />
-        ) : (
-          <CodeInspector
-            code={codeById.get(selected.id)!}
-            facets={dimensions}
-            valueNameById={valueNameById}
-            pending={pending}
-            onPromote={
-              facet === null
-                ? undefined
-                : () =>
-                    run(async () => {
-                      await promoteCodeToValue(selected.id, facet.id, null);
-                      setSelected(null);
-                    })
-            }
-            promoteTo={facet?.label ?? null}
-          />
-        )}
+              }}
+              className="ml-auto px-1 text-lg leading-none text-foreground/40 transition hover:text-foreground"
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            {triageOpen ? (
+              <TriageQueue codes={codes} facets={dimensions} citations={citations} />
+            ) : selected?.kind === 'value' ? (
+              <ValueInspector
+                key={selected.id}
+                value={valueById.get(selected.id)!}
+                childValues={(subtreeAt(forest, selected.id)?.children ?? []).map((c) => ({
+                  id: c.id,
+                  name: c.name,
+                }))}
+                answering={(rolled.get(selected.id) ?? { direct: [] }).direct}
+                inherited={(rolled.get(selected.id) ?? { inherited: [] }).inherited}
+                allCodes={codes}
+                valueNameById={valueNameById}
+                pending={pending}
+                onAttach={(codeId) => run(() => addCodeFacetValue(codeId, selected.id))}
+                onSaveDescription={(d) =>
+                  run(() => updateFacetValue(selected.id, { description: d }))
+                }
+                onRename={(label) => run(() => updateFacetValue(selected.id, { label }))}
+                onZoom={() => setFocusId(selected.id)}
+                onUnnest={
+                  valueById.get(selected.id)?.parent_id == null
+                    ? undefined
+                    : () => run(() => setFacetValueParent(selected.id, null))
+                }
+                onInterpose={() => setInterposeAt(selected.id)}
+                onDissolve={() =>
+                  run(async () => {
+                    await deleteFacetValue(selected.id);
+                    setSelected(null);
+                    if (focusId === selected.id) setFocusId(null);
+                  })
+                }
+                onDetach={(codeId) => run(() => removeCodeFacetValue(codeId, selected.id))}
+              />
+            ) : selected !== null ? (
+              // The inspector IS the editor. There is no "full anatomy →" link: a link out
+              // says the panel is a preview of the real thing elsewhere, which makes the
+              // panel pointless and the trip expensive — you lose the canvas, and with it
+              // the reason you opened the code.
+              <CodeEditor
+                key={selected.id}
+                code={codeById.get(selected.id)!}
+                facets={dimensions}
+                citations={citations}
+                promoteTo={facet?.label ?? null}
+                onPromote={
+                  facet === null
+                    ? undefined
+                    : () =>
+                        run(async () => {
+                          await promoteCodeToValue(selected.id, facet.id, null);
+                          setSelected(null);
+                        })
+                }
+              />
+            ) : null}
+          </div>
         </div>
-      </aside>
+      )}
 
       {dialog !== null && facet !== null && (
         <NewCodeDialog
@@ -1010,106 +1006,6 @@ function ValueInspector({
               ))}
             </div>
           </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-
-function CodeInspector({
-  code,
-  facets,
-  valueNameById,
-  pending,
-  onPromote,
-  promoteTo,
-}: {
-  code: CodeWithRefs;
-  facets: FacetWithValues[];
-  valueNameById: ReadonlyMap<string, string>;
-  pending: boolean;
-  /** Convert this code into a VALUE of the shown dimension. */
-  onPromote?: () => void;
-  promoteTo: string | null;
-}) {
-  return (
-    <div className="space-y-4">
-      <div>
-        <p className="text-[10px] uppercase tracking-wide text-foreground/40">Code</p>
-        <h2 className="text-base font-medium tracking-tight">
-          <span className="font-mono text-sm text-foreground/60">{code.mnemonic}</span>{' '}
-          {code.name}
-        </h2>
-        <p className="mt-0.5 text-xs text-foreground/50">
-          {code.origin.replace('_', ' ')} · {code.status}
-        </p>
-      </div>
-
-      {code.current?.definition && (
-        <div>
-          <p className="text-xs font-medium text-foreground/80">Definition</p>
-          <p className="mt-0.5 text-sm leading-relaxed text-foreground/75">
-            {code.current.definition}
-          </p>
-        </div>
-      )}
-
-      <div className="space-y-2">
-        <p className="text-xs font-medium text-foreground/80">Answers</p>
-        {facets.map((f) => {
-          const mine = f.values
-            .filter((v) => code.facetValueIds.includes(v.id))
-            .map((v) => valueNameById.get(v.id) ?? v.label);
-          return (
-            <div key={f.id} className="text-xs">
-              <span className="text-foreground/55">{f.label}</span>
-              <span className="mx-1 text-foreground/25">·</span>
-              <span className={mine.length > 0 ? '' : 'text-foreground/30'}>
-                {mine.length > 0 ? mine.join(', ') : 'unanswered'}
-              </span>
-              {mine.length > 1 && (
-                // Two answers on ONE dimension. Legitimate — this is the cross-cutting
-                // case the facet model exists to express — but worth naming, because
-                // it means per-value counts on this dimension will not sum to N.
-                <span className="ml-1 text-amber-700 dark:text-amber-500">
-                  · cross-cuts
-                </span>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="space-y-2 border-t border-foreground/10 pt-3">
-        <Link
-          href={`/codes/${code.id}`}
-          className="inline-block border border-foreground/20 px-2 py-1 text-xs transition hover:border-foreground"
-        >
-          Full anatomy →
-        </Link>
-
-        {/* The move for a code that turned out to be a CATEGORY. The symptom: it wants
-            children. A code is an OBSERVATION — you can point at a transcript line and
-            say "there". A value is an ANSWER — the place you file what you pointed at.
-            If you cannot point until you have decided WHICH sub-thing happened, it was
-            never a code. */}
-        {onPromote && (
-          <div>
-            <button
-              type="button"
-              disabled={pending}
-              onClick={onPromote}
-              className="w-full border border-dashed border-foreground/30 px-2 py-1.5 text-xs text-foreground/60 transition hover:border-foreground hover:text-foreground disabled:opacity-40"
-            >
-              This is really a value of {promoteTo} →
-            </button>
-            <p className="mt-1 text-[11px] leading-snug text-foreground/40">
-              Its name and definition carry over; the code is retired, not deleted. Do
-              this when a code turns out to be the CATEGORY its sub-themes answer.
-            </p>
-          </div>
         )}
       </div>
     </div>

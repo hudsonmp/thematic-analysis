@@ -1,19 +1,10 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
-import { useMemo, useState, useTransition } from 'react';
-import {
-  addCodeFacetValue,
-  removeCodeFacetValue,
-  renameCode,
-  saveNewVersion,
-  setCodeOrigin,
-} from '@/app/actions/codes';
-import { linkCitation, unlinkCitation } from '@/app/actions/citations';
+import { useMemo, useState } from 'react';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { queueStats, triageQueue } from '@/lib/codebook/triage';
 import type { Tables } from '@/lib/types/cb-db';
-import ValueList from './ValueList';
+import CodeEditor from './CodeEditor';
 
 type Citation = Tables<'cb_citations'>;
 
@@ -112,192 +103,18 @@ export default function TriageQueue({
                 </span>
               </div>
 
-              {open && <TriageEditor code={code} facets={facets} citations={citations} />}
+              {open && (
+                <div className="border-t border-foreground/10 p-2">
+                  {/* The SAME editor the inspector uses. A code must be edited identically
+                      wherever you meet it — three partial editors that drift apart is the
+                      failure this avoids. */}
+                  <CodeEditor code={code} facets={facets} citations={citations} />
+                </div>
+              )}
             </div>
           );
         })}
       </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-
-/**
- * The open row. Everything about a captured code is editable HERE, because this is the
- * screen where you meet it again — the moment you can actually tell that the
- * auto-derived mnemonic reads badly, or that the definition you typed mid-reading is too
- * vague to code from.
- */
-function TriageEditor({
-  code,
-  facets,
-  citations,
-}: {
-  code: CodeWithRefs;
-  facets: FacetWithValues[];
-  citations: Citation[];
-}) {
-  const router = useRouter();
-  const [pending, start] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-
-  const [mnemonic, setMnemonic] = useState(code.mnemonic);
-  const [name, setName] = useState(code.name);
-  const [definition, setDefinition] = useState(code.current?.definition ?? '');
-
-  function run(fn: () => Promise<unknown>, onFail?: () => void) {
-    setError(null);
-    start(async () => {
-      try {
-        await fn();
-        router.refresh();
-      } catch (e) {
-        onFail?.();
-        setError(e instanceof Error ? e.message : 'Save failed.');
-      }
-    });
-  }
-
-  return (
-    <div className="space-y-2 border-t border-foreground/10 p-2">
-      <div className="flex gap-1.5">
-        <input
-          value={mnemonic}
-          disabled={pending}
-          onChange={(e) => setMnemonic(e.target.value)}
-          onBlur={() => {
-            const next = mnemonic.trim();
-            if (!next || next === code.mnemonic) {
-              setMnemonic(code.mnemonic); // blank or unchanged is not an edit
-              return;
-            }
-            // A UNIQUE collision restores the old value and surfaces the error rather
-            // than leaving the field showing text that was never saved — a silent no-op
-            // is the worst outcome for a field you deliberately changed.
-            run(
-              () => renameCode(code.id, { mnemonic: next }),
-              () => setMnemonic(code.mnemonic),
-            );
-          }}
-          aria-label="Mnemonic"
-          className="w-28 shrink-0 border border-foreground/20 bg-background px-1.5 py-1 font-mono text-xs focus:border-foreground focus:outline-none"
-        />
-        <input
-          value={name}
-          disabled={pending}
-          onChange={(e) => setName(e.target.value)}
-          onBlur={() => {
-            const next = name.trim();
-            if (!next || next === code.name) {
-              setName(code.name);
-              return;
-            }
-            run(
-              () => renameCode(code.id, { name: next }),
-              () => setName(code.name),
-            );
-          }}
-          aria-label="Name"
-          className="min-w-0 flex-1 border border-foreground/20 bg-background px-1.5 py-1 text-xs focus:border-foreground focus:outline-none"
-        />
-      </div>
-
-      <textarea
-        value={definition}
-        disabled={pending}
-        onChange={(e) => setDefinition(e.target.value)}
-        onBlur={() => {
-          const next = definition.trim();
-          if (!next || next === (code.current?.definition ?? '')) return;
-          // The codebook is APPEND-ONLY: editing a definition writes a NEW version rather
-          // than overwriting, so the instrument's history survives a tightening you later
-          // decide was wrong. The cost is a version per edit — acceptable while a code is
-          // still in triage and nobody has coded against it.
-          run(() =>
-            saveNewVersion(code.id, {
-              definition: next,
-              include_if: [],
-              exclude_if: [],
-              exemplars: [],
-              change_note: 'Tightened during triage',
-            }),
-          );
-        }}
-        rows={3}
-        placeholder="Definition — what must be true of a segment for this to apply."
-        className="w-full border border-foreground/20 bg-background px-1.5 py-1 text-xs leading-snug focus:border-foreground focus:outline-none"
-      />
-
-      {facets.map((f) => {
-        const multi = f.cardinality === 'multi';
-        const mine = f.values.filter((v) => code.facetValueIds.includes(v.id));
-        return (
-          <div key={f.id} className="border-t border-foreground/10 pt-1.5">
-            <p
-              className={`mb-0.5 text-[11px] uppercase tracking-wide ${
-                mine.length === 0 ? 'text-amber-700 dark:text-amber-500' : 'text-foreground/35'
-              }`}
-            >
-              {f.label}
-              {mine.length > 1 && (
-                <span className="ml-1 normal-case tracking-normal">· cross-cuts</span>
-              )}
-            </p>
-            <ValueList
-              facet={f}
-              selectedIds={mine.map((m) => m.id)}
-              disabled={pending}
-              onToggle={(valueId) =>
-                run(async () => {
-                  if (mine.some((m) => m.id === valueId)) {
-                    await removeCodeFacetValue(code.id, valueId);
-                    return;
-                  }
-                  // A `single` dimension admits ONE answer: a new pick replaces the old,
-                  // or the code would silently carry two answers on a dimension declared
-                  // to allow one.
-                  if (!multi) {
-                    for (const m of mine) await removeCodeFacetValue(code.id, m.id);
-                  }
-                  await addCodeFacetValue(code.id, valueId);
-                })
-              }
-            />
-          </div>
-        );
-      })}
-
-      {/* POST-HOC paper. You usually only realise which paper a code came from when you
-          meet the code again — which is here. Attaching one flips origin to a_priori, for
-          the same reason the up-front pin does. */}
-      <div className="border-t border-foreground/10 pt-1.5">
-        <p className="mb-0.5 text-[11px] uppercase tracking-wide text-foreground/35">Paper</p>
-        <select
-          value={code.citationIds[0] ?? ''}
-          disabled={pending}
-          onChange={(e) => {
-            const next = e.target.value;
-            run(async () => {
-              for (const old of code.citationIds) await unlinkCitation(code.id, old);
-              if (next) {
-                await linkCitation(code.id, next, 'derived_from');
-                await setCodeOrigin(code.id, 'a_priori');
-              }
-            });
-          }}
-          className="w-full border border-foreground/20 bg-background px-1.5 py-1 text-xs focus:border-foreground focus:outline-none disabled:opacity-50"
-        >
-          <option value="">none</option>
-          {citations.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.bibtex_key ?? c.title ?? c.id.slice(0, 8)}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {error && <p className="text-[11px] text-red-600">{error}</p>}
     </div>
   );
 }
