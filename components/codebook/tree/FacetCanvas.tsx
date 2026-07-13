@@ -9,7 +9,7 @@ import {
   updateFacetValue,
 } from '@/app/actions/facets';
 import { addCodeFacetValue, removeCodeFacetValue } from '@/app/actions/codes';
-import { createFacetValue } from '@/app/actions/facets';
+import { createFacetValue, promoteCodeToValue } from '@/app/actions/facets';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
 import { buildTree } from '@/lib/codebook/tree';
@@ -18,6 +18,7 @@ import { ancestorsOf, layoutTree, subtreeAt, type LayoutNode } from '@/lib/codeb
 import FacetEditor from '@/components/matrix/FacetEditor';
 import type { Tables } from '@/lib/types/cb-db';
 import NewCodeDialog, { type DialogTarget } from './NewCodeDialog';
+import StagingBox from './StagingBox';
 import TriageQueue from './TriageQueue';
 
 type FacetValue = Tables<'cb_facet_values'>;
@@ -92,6 +93,10 @@ export default function FacetCanvas({
   // dialog is still there for a value that needs a description.
   const [quickBranchAt, setQuickBranchAt] = useState<string | null | undefined>(undefined);
   const [quickBranchName, setQuickBranchName] = useState('');
+  // The code currently being dragged out of the staging box. Non-null turns every value
+  // node into a drop target — targets that only appear DURING a drag, so the canvas is
+  // not permanently littered with affordances for a gesture you are not making.
+  const [dragging, setDragging] = useState<string | null>(null);
 
   const values: FacetValue[] = useMemo(() => facet?.values ?? [], [facet]);
 
@@ -341,7 +346,20 @@ export default function FacetCanvas({
                 return (
                   <div
                     key={n.id}
-                    className="absolute -translate-x-1/2"
+                    onDragOver={(e) => {
+                      if (dragging) e.preventDefault();
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const codeId = e.dataTransfer.getData('text/code-id');
+                      if (codeId) run(() => addCodeFacetValue(codeId, n.id));
+                      setDragging(null);
+                    }}
+                    className={`absolute -translate-x-1/2 ${
+                      dragging
+                        ? 'rounded outline-dashed outline-1 outline-offset-4 outline-foreground/30'
+                        : ''
+                    }`}
                     style={{ left: x(n.x), top: y(n.y) - 14, width: COL - 24 }}
                   >
                     <div className="flex items-center justify-center gap-1">
@@ -467,6 +485,15 @@ export default function FacetCanvas({
           )}
         </div>
 
+        {facet !== null && (
+          <StagingBox
+            facetId={facet.id}
+            facetLabel={facet.label}
+            unfiled={unansweredHere}
+            onDragCode={setDragging}
+          />
+        )}
+
         {/* Capture an uncategorized code. Anchored to the SECTION, not the viewport,
             so it can never sit on top of the right rail — which is what it did when it
             was `fixed` and the rail width was hard-coded into its offset. */}
@@ -582,6 +609,17 @@ export default function FacetCanvas({
             code={codeById.get(selected.id)!}
             facets={dimensions}
             valueNameById={valueNameById}
+            pending={pending}
+            onPromote={
+              facet === null
+                ? undefined
+                : () =>
+                    run(async () => {
+                      await promoteCodeToValue(selected.id, facet.id, null);
+                      setSelected(null);
+                    })
+            }
+            promoteTo={facet?.label ?? null}
           />
         )}
         </div>
@@ -856,10 +894,17 @@ function CodeInspector({
   code,
   facets,
   valueNameById,
+  pending,
+  onPromote,
+  promoteTo,
 }: {
   code: CodeWithRefs;
   facets: FacetWithValues[];
   valueNameById: ReadonlyMap<string, string>;
+  pending: boolean;
+  /** Convert this code into a VALUE of the shown dimension. */
+  onPromote?: () => void;
+  promoteTo: string | null;
 }) {
   return (
     <div className="space-y-4">
@@ -909,12 +954,36 @@ function CodeInspector({
         })}
       </div>
 
-      <Link
-        href={`/codes/${code.id}`}
-        className="inline-block border border-foreground/20 px-2 py-1 text-xs transition hover:border-foreground"
-      >
-        Full anatomy →
-      </Link>
+      <div className="space-y-2 border-t border-foreground/10 pt-3">
+        <Link
+          href={`/codes/${code.id}`}
+          className="inline-block border border-foreground/20 px-2 py-1 text-xs transition hover:border-foreground"
+        >
+          Full anatomy →
+        </Link>
+
+        {/* The move for a code that turned out to be a CATEGORY. The symptom: it wants
+            children. A code is an OBSERVATION — you can point at a transcript line and
+            say "there". A value is an ANSWER — the place you file what you pointed at.
+            If you cannot point until you have decided WHICH sub-thing happened, it was
+            never a code. */}
+        {onPromote && (
+          <div>
+            <button
+              type="button"
+              disabled={pending}
+              onClick={onPromote}
+              className="w-full border border-dashed border-foreground/30 px-2 py-1.5 text-xs text-foreground/60 transition hover:border-foreground hover:text-foreground disabled:opacity-40"
+            >
+              This is really a value of {promoteTo} →
+            </button>
+            <p className="mt-1 text-[11px] leading-snug text-foreground/40">
+              Its name and definition carry over; the code is retired, not deleted. Do
+              this when a code turns out to be the CATEGORY its sub-themes answer.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

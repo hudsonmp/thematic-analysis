@@ -131,6 +131,80 @@ export async function createFacetValue(
   return data;
 }
 
+/**
+ * PROMOTE a code into a facet VALUE.
+ *
+ * The move this exists for: you wrote "Analysis of Behavior" as a CODE, gave it a
+ * definition, and then found it wanted children — "they said the spec would match and
+ * it didn't", "they saw a discrepancy but didn't update the spec". That is the symptom
+ * of a category miscast as an observation.
+ *
+ *   A CODE is an OBSERVATION — you can point at a transcript line and say "there".
+ *   A VALUE is an ANSWER — the place you file what you pointed at.
+ *
+ * If you cannot point until you have decided WHICH sub-thing happened, the thing is a
+ * value, not a code. This converts it: the code's name becomes the value's label, its
+ * definition becomes the value's description, and every code that was going to sit
+ * under it can now simply ANSWER it.
+ *
+ * The code is RETIRED, not deleted. Its id may already be referenced by codings, and a
+ * hard delete would erase the record that this thing was once coded — status 'retired'
+ * keeps the audit trail and takes it out of active use. If it turns out to have been a
+ * mistake, the value is deletable and the code un-retirable; nothing is lost.
+ */
+export async function promoteCodeToValue(
+  codeId: string,
+  facetId: string,
+  parentValueId: string | null = null,
+): Promise<FacetValue> {
+  const code = await cbFrom('cb_codes')
+    .select('id, name, current_version_id')
+    .eq('id', codeId)
+    .single();
+  if (code.error || !code.data) {
+    throw new Error(`promoteCodeToValue failed: ${code.error?.message ?? 'code not found'}`);
+  }
+
+  // The definition, if the code has one, becomes the value's description — the whole
+  // point is that the thinking already done about this category is not thrown away.
+  let description: string | null = null;
+  if (code.data.current_version_id) {
+    const version = await cbFrom('cb_code_versions')
+      .select('definition')
+      .eq('id', code.data.current_version_id)
+      .maybeSingle();
+    description = version.data?.definition ?? null;
+  }
+
+  const position = await nextPosition('cb_facet_values', facetId);
+  const created = await cbFrom('cb_facet_values')
+    .insert({
+      facet_id: facetId,
+      key: code.data.id, // breadcrumb: this value used to be that code
+      label: code.data.name,
+      description,
+      parent_id: parentValueId,
+      color: autoColor(position),
+      position,
+    })
+    .select('*')
+    .single();
+  if (created.error || !created.data) {
+    throw new Error(
+      `promoteCodeToValue (insert value) failed: ${created.error?.message ?? 'no row returned'}`,
+    );
+  }
+
+  const retired = await cbFrom('cb_codes')
+    .update({ status: 'retired', retired_at: new Date().toISOString() })
+    .eq('id', codeId);
+  if (retired.error) {
+    throw new Error(`promoteCodeToValue (retire code) failed: ${retired.error.message}`);
+  }
+
+  return created.data;
+}
+
 /** Every value of one facet — the read the tree ops fold over. */
 export async function listFacetValues(facetId: string): Promise<FacetValue[]> {
   const { data, error } = await cbFrom('cb_facet_values')
