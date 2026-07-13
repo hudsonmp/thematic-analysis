@@ -2,9 +2,14 @@
 
 import { useRouter } from 'next/navigation';
 import { useMemo, useState, useTransition } from 'react';
-import { addCodeFacetValue, removeCodeFacetValue, renameCode } from '@/app/actions/codes';
+import { addCodeFacetValue, removeCodeFacetValue, renameCode, setCodeOrigin } from '@/app/actions/codes';
+import { linkCitation, unlinkCitation } from '@/app/actions/citations';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { queueStats, triageQueue } from '@/lib/codebook/triage';
+import type { Tables } from '@/lib/types/cb-db';
+import ValueList from './ValueList';
+
+type Citation = Tables<'cb_citations'>;
 
 /**
  * The triage queue: classify the codes you captured while reading, later.
@@ -31,11 +36,16 @@ import { queueStats, triageQueue } from '@/lib/codebook/triage';
 export default function TriageQueue({
   codes,
   facets,
+  citations,
 }: {
   codes: CodeWithRefs[];
   /** The answerable dimensions. A facet with no values is a question with no possible
    *  answer — parking codes behind it would be an unclearable debt. */
   facets: FacetWithValues[];
+  /** The citation library — so a paper can be attached POST HOC. Pinning up front is
+   *  the fast path, not the only one: you often only realise which paper a code came
+   *  from once you see the code again. */
+  citations: Citation[];
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -101,82 +111,92 @@ export default function TriageQueue({
         </div>
       </div>
 
-      <div className="border border-foreground/15 p-3">
+      <div className="space-y-2 border border-foreground/15 p-2.5">
         {/* The mnemonic is editable HERE because this is where you SEE it — an
-            auto-derived `ANALYSIS-BEHAVIOR` only looks wrong once it is sitting next to
-            its siblings. It is a display handle, never an identity (everything
-            references cb_codes.id), so renaming it breaks nothing. */}
+            auto-derived `analysis-behavior` only looks wrong once it sits next to its
+            siblings. It is a display HANDLE, never an identity (everything references
+            cb_codes.id), so renaming breaks nothing. */}
         <div className="flex items-baseline gap-2">
           <MnemonicField key={code.id} codeId={code.id} value={code.mnemonic} />
-          <span className="text-sm font-medium">{code.name}</span>
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">{code.name}</span>
         </div>
+
         {code.current?.definition && (
-          <p className="mt-1 text-xs leading-relaxed text-foreground/60">
+          <p className="line-clamp-3 text-xs leading-snug text-foreground/55">
             {code.current.definition}
           </p>
         )}
 
-        <div className="mt-3 space-y-2">
-          {facets.map((f) => {
-            const multi = f.cardinality === 'multi';
-            const mine = f.values.filter((v) => code.facetValueIds.includes(v.id));
-            const isGap = gapIds.has(f.id);
-            return (
-              <div key={f.id} className="flex flex-wrap items-baseline gap-1.5">
-                <span
-                  className={`w-28 shrink-0 text-xs ${
-                    isGap ? 'font-medium text-foreground/80' : 'text-foreground/45'
-                  }`}
-                >
-                  {f.label}
-                  {/* The unanswered dimensions are what this screen is FOR — mark them,
-                      so a code with four answered and one blank reads instantly. */}
-                  {isGap && <span className="ml-1 text-amber-700 dark:text-amber-500">·</span>}
-                </span>
-                <div className="flex flex-wrap gap-1">
-                  {f.values.map((v) => {
-                    const on = mine.some((m) => m.id === v.id);
-                    return (
-                      <button
-                        key={v.id}
-                        type="button"
-                        disabled={pending}
-                        onClick={() =>
-                          run(async () => {
-                            if (on) {
-                              await removeCodeFacetValue(code.id, v.id);
-                              return;
-                            }
-                            // A `single` dimension admits one answer: a new pick
-                            // REPLACES the old, or the code would silently carry two
-                            // answers on a dimension declared to allow only one.
-                            if (!multi) {
-                              for (const m of mine) {
-                                await removeCodeFacetValue(code.id, m.id);
-                              }
-                            }
-                            await addCodeFacetValue(code.id, v.id);
-                          })
-                        }
-                        className={`border px-2 py-0.5 text-xs transition ${
-                          on
-                            ? 'border-foreground bg-foreground text-background'
-                            : 'border-foreground/20 text-foreground/60 enabled:hover:border-foreground/60'
-                        }`}
-                      >
-                        {v.label}
-                      </button>
-                    );
-                  })}
-                </div>
+        {facets.map((f) => {
+          const multi = f.cardinality === 'multi';
+          const mine = f.values.filter((v) => code.facetValueIds.includes(v.id));
+          const isGap = gapIds.has(f.id);
+          return (
+            <div key={f.id} className="border-t border-foreground/10 pt-1.5">
+              <p
+                className={`mb-0.5 text-[11px] uppercase tracking-wide ${
+                  isGap ? 'text-amber-700 dark:text-amber-500' : 'text-foreground/35'
+                }`}
+              >
+                {f.label}
                 {mine.length > 1 && (
-                  <span className="text-xs text-amber-700 dark:text-amber-500">
-                    cross-cuts
-                  </span>
+                  <span className="ml-1 normal-case tracking-normal">· cross-cuts</span>
                 )}
-              </div>
-            );
-          })}
+              </p>
+              <ValueList
+                facet={f}
+                selectedIds={mine.map((m) => m.id)}
+                disabled={pending}
+                onToggle={(valueId) =>
+                  run(async () => {
+                    if (mine.some((m) => m.id === valueId)) {
+                      await removeCodeFacetValue(code.id, valueId);
+                      return;
+                    }
+                    // A `single` dimension admits ONE answer: a new pick replaces the
+                    // old, or the code would silently carry two answers on a dimension
+                    // declared to allow one.
+                    if (!multi) {
+                      for (const m of mine) await removeCodeFacetValue(code.id, m.id);
+                    }
+                    await addCodeFacetValue(code.id, valueId);
+                  })
+                }
+              />
+            </div>
+          );
+        })}
+
+        {/* POST-HOC paper. Pinning before you author is the fast path, not the only one
+            — you often only realise which paper a code came from when you meet the code
+            again. Attaching one here also flips origin to a_priori, for the same reason
+            the pin does: a code you are deriving from a source IS theory-derived. */}
+        <div className="border-t border-foreground/10 pt-1.5">
+          <p className="mb-0.5 text-[11px] uppercase tracking-wide text-foreground/35">
+            Paper
+          </p>
+          <select
+            value={code.citationIds[0] ?? ''}
+            disabled={pending}
+            onChange={(e) => {
+              const next = e.target.value;
+              run(async () => {
+                for (const old of code.citationIds) await unlinkCitation(code.id, old);
+                if (next) {
+                  await linkCitation(code.id, next, 'derived_from');
+                  await setCodeOrigin(code.id, 'a_priori');
+                }
+              });
+            }}
+            className="w-full border border-foreground/20 bg-background px-1.5 py-1 text-xs focus:border-foreground focus:outline-none disabled:opacity-50"
+          >
+            <option value="">none</option>
+            {citations.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.bibtex_key ?? c.title ?? c.id.slice(0, 8)}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
     </div>

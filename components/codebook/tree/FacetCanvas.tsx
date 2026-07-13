@@ -9,6 +9,7 @@ import {
   updateFacetValue,
 } from '@/app/actions/facets';
 import { addCodeFacetValue, removeCodeFacetValue } from '@/app/actions/codes';
+import { createFacetValue } from '@/app/actions/facets';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
 import { buildTree } from '@/lib/codebook/tree';
@@ -86,6 +87,11 @@ export default function FacetCanvas({
   // permanently taxes the width you think in.
   const [railOpen, setRailOpen] = useState(true);
   const [rail, setRail] = useState<'inspect' | 'queue'>('inspect');
+  // Growing the tree used to mean opening a dialog and picking a tab. A branch is just
+  // a name — so a node exposes an inline slot: click the ghost `+`, type, Enter. The
+  // dialog is still there for a value that needs a description.
+  const [quickBranchAt, setQuickBranchAt] = useState<string | null | undefined>(undefined);
+  const [quickBranchName, setQuickBranchName] = useState('');
 
   const values: FacetValue[] = useMemo(() => facet?.values ?? [], [facet]);
 
@@ -363,7 +369,59 @@ export default function FacetCanvas({
                       >
                         +
                       </button>
+                      {/* One click to grow a BRANCH. A sub-value is just a name, so
+                          making you open a dialog and choose a tab to add one taxed the
+                          cheapest move in the tool. */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQuickBranchAt(n.id);
+                          setQuickBranchName('');
+                        }}
+                        className="shrink-0 text-xs leading-4 text-foreground/25 transition hover:text-foreground"
+                        aria-label={`Add a sub-value under ${n.name}`}
+                        title="Add a sub-value — just a name"
+                      >
+                        ⌄
+                      </button>
                     </div>
+
+                    {quickBranchAt === n.id && facet !== null && (
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const label = quickBranchName.trim();
+                          if (!label) {
+                            setQuickBranchAt(undefined);
+                            return;
+                          }
+                          run(async () => {
+                            await createFacetValue(facet.id, {
+                              key: crypto.randomUUID(),
+                              label,
+                              parentId: n.id,
+                            });
+                            // Stay open, cleared: adding one branch usually means
+                            // adding three, and re-clicking the ghost for each is the
+                            // friction this exists to remove.
+                            setQuickBranchName('');
+                          });
+                        }}
+                        className="mt-1"
+                      >
+                        <input
+                          autoFocus
+                          value={quickBranchName}
+                          onChange={(e) => setQuickBranchName(e.target.value)}
+                          onBlur={() => setQuickBranchAt(undefined)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') setQuickBranchAt(undefined);
+                          }}
+                          placeholder="sub-value…"
+                          className="w-full border-b border-dashed border-foreground/40 bg-transparent px-1 text-center text-xs focus:border-solid focus:border-foreground focus:outline-none"
+                        />
+                      </form>
+                    )}
 
                     {(bucket.direct.length > 0 || bucket.inherited.length > 0) && (
                       <div className="mt-1 flex flex-wrap justify-center gap-1">
@@ -480,7 +538,7 @@ export default function FacetCanvas({
 
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
         {rail === 'queue' ? (
-          <TriageQueue codes={codes} facets={dimensions} />
+          <TriageQueue codes={codes} facets={dimensions} citations={citations} />
         ) : selected === null ? (
           <p className="text-xs leading-relaxed text-foreground/45">
             Click a <strong>value</strong> to edit its description, or a{' '}

@@ -228,6 +228,19 @@ export async function listCodeVersions(codeId: string): Promise<CodeVersion[]> {
 }
 
 /** Set a code's lifecycle status. */
+/**
+ * Set a code's ORIGIN. Attaching a paper post hoc flips it to `a_priori` for the same
+ * reason the up-front pin does: a code you are deriving from a source IS
+ * theory-derived. It stays a separate call rather than a side-effect buried inside
+ * `linkCitation`, because linking a paper for PROVENANCE ("this is where I first saw
+ * it") is a different act from deriving a code FROM it, and the caller is the only one
+ * that knows which it meant.
+ */
+export async function setCodeOrigin(codeId: string, origin: CodeOrigin): Promise<void> {
+  const res = await cbFrom('cb_codes').update({ origin }).eq('id', codeId);
+  if (res.error) throw new Error(`setCodeOrigin failed: ${res.error.message}`);
+}
+
 export async function setCodeStatus(codeId: string, status: CodeStatus): Promise<void> {
   const { error } = await cbFrom('cb_codes').update({ status }).eq('id', codeId);
   if (error) throw new Error(`setCodeStatus failed: ${error.message}`);

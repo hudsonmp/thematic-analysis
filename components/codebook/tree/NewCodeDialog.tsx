@@ -10,12 +10,11 @@ import { createFacetValue } from '@/app/actions/facets';
 import type { FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
 import { deriveMnemonic, uniqueMnemonic } from '@/lib/codebook/mnemonic';
-import { buildTree, type TreeNode } from '@/lib/codebook/tree';
 import BulletListEditor from '@/components/code/BulletListEditor';
+import ValueList from './ValueList';
 import type { Tables } from '@/lib/types/cb-db';
 
 type Code = Tables<'cb_codes'>;
-type FacetValue = Tables<'cb_facet_values'>;
 
 /** New code · an existing code answers this · a nested sub-value. */
 type Kind = 'code' | 'existing' | 'subvalue';
@@ -155,48 +154,6 @@ export default function NewCodeDialog({
       // only place that knows the facet.
       return { ...s, [fid]: multi ? [...current, valueId] : [valueId] };
     });
-  }
-
-  /**
-   * Sub-values are shown INDENTED under their parent, and picking a parent is a
-   * complete answer on its own.
-   *
-   * The values of a facet are an IS-A chain: `Experiment -> Design` says Design is a
-   * kind of Experiment. So answering the parent is simply the COARSER answer — a
-   * legitimate claim, not an incomplete one — and answering the child ENTAILS the
-   * parent, which is why only the deepest value is ever stored. Storing both would
-   * let them disagree, and would make "which granularity did this code claim?"
-   * unanswerable.
-   */
-  function renderValueTree(
-    f: FacetWithValues,
-    nodes: TreeNode<FacetValue>[],
-    depth = 0,
-  ): React.ReactNode[] {
-    const multi = f.cardinality === 'multi';
-    const mine = answers[f.id] ?? [];
-    return nodes.flatMap((v) => [
-      <button
-        key={v.id}
-        type="button"
-        onClick={() => toggleAnswer(f.id, v.id, multi)}
-        style={{ marginLeft: depth * 14 }}
-        className={`border px-2 py-1 text-xs transition ${
-          mine.includes(v.id)
-            ? 'border-foreground bg-foreground text-background'
-            : 'border-foreground/20 text-foreground/60 hover:border-foreground/50'
-        }`}
-        title={
-          depth > 0
-            ? `A finer answer. Choosing it entails its parent — you do not select both.`
-            : undefined
-        }
-      >
-        {depth > 0 && <span className="mr-1 text-foreground/30">↳</span>}
-        {v.label}
-      </button>,
-      ...renderValueTree(f, v.children, depth + 1),
-    ]);
   }
 
   /** An EXISTING code answers this value. May make it cross-cut — deliberately; the
@@ -541,17 +498,16 @@ export default function NewCodeDialog({
                         : undefined
                     }
                   >
-                    <div className="flex flex-wrap items-center gap-1">
-                      {/* The value TREE, not a flat list. Picking a parent is a complete
-                          (coarser) answer; picking a child entails the parent, so you
-                          never select both. */}
-                      {renderValueTree(f, buildTree(f.values))}
-                      {f.values.length === 0 && (
-                        <span className="text-xs italic text-foreground/40">
-                          no values yet
-                        </span>
-                      )}
-                    </div>
+                    {/* A LIST, not a wrapped row of boxes: a picker whose geometry
+                        reflows as values are added can never be learned. Nesting is
+                        indent alone; picking a parent is a complete, coarser answer. */}
+                    <ValueList
+                      facet={f}
+                      selectedIds={answers[f.id] ?? []}
+                      onToggle={(valueId) =>
+                        toggleAnswer(f.id, valueId, f.cardinality === 'multi')
+                      }
+                    />
                   </Field>
                 ))
               )}
