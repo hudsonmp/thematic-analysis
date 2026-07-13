@@ -1,31 +1,24 @@
 import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
-import CodebookEntry from '@/components/codebook/CodebookEntry';
+import CodebookViews from './CodebookViews';
 
 /**
- * The Codebook page (server). A fast, scheme-derived spreadsheet surface for
- * bulk code entry — the complement to the Scheme page's single inline "New code"
- * form.
+ * The Codebook page (server). ONE surface for the whole instrument: the construct
+ * tree, the codes placed on it, the scheme that defines a code, and the codes not
+ * yet placed anywhere.
  *
- * Server Component: it resolves the active codebook and reads the codebook tree
- * (for the facets that define the grid's COLUMNS, the citation library for the
- * session binding, and the LABEL vocabulary the grid's per-row label picker tags
- * from), then hands them to the client `CodebookEntry`. The grid renders one
- * column per facet, by the facet's TYPE, plus a Labels column. The bulk create is
- * a Server Action (`createCodesBulkWithFacets`) the client invokes from a handler
- * — no Server Action runs during client render. The session "mode" (origin) and
- * optional bound citation are client state that apply to every code created in
- * the session.
+ * Server Component: it resolves the active codebook and reads the whole codebook
+ * tree ONCE — labels (the construct tree), codes (with their placements, facet
+ * values and citations), facets (the SCHEME, which is what the New Code dialog
+ * asks for — the dialog invents no fields), and the citation library (the
+ * deductive-mode paper pin). The client shell switches between the two views over
+ * that single load, so neither view refetches.
+ *
+ * Server Actions (create / attach / interpose / …) are invoked from client
+ * handlers, never during client render; the page re-reads via router.refresh().
  */
 export default async function CodebookPage() {
   const cb = await getOrCreateCodebook();
   const tree = await listCodebookTree(cb.id);
 
-  return (
-    <CodebookEntry
-      codebookId={cb.id}
-      facets={tree.facets}
-      citations={tree.citations}
-      labels={tree.labels}
-    />
-  );
+  return <CodebookViews tree={tree} />;
 }

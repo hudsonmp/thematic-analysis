@@ -45,11 +45,14 @@ export default function CodebookNav({
   // while a menu is open so the listeners aren't live for the whole session.
   useEffect(() => {
     if (openKey === null) return;
+    // `setOpened(null)` directly, not the `setOpenKey` wrapper: the wrapper closes
+    // over `pathname` and is recreated every render, so depending on it would
+    // rebind these listeners on each one. Closing needs no pathname anyway.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpenKey(null);
+      if (e.key === 'Escape') setOpened(null);
     };
     const onDown = (e: PointerEvent) => {
-      if (!navRef.current?.contains(e.target as Node)) setOpenKey(null);
+      if (!navRef.current?.contains(e.target as Node)) setOpened(null);
     };
     document.addEventListener('keydown', onKey);
     document.addEventListener('pointerdown', onDown);
