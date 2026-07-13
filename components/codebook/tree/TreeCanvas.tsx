@@ -12,7 +12,9 @@ import {
 } from '@/app/actions/labels';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { buildLabelTree } from '@/lib/codebook/labelTree';
+import { searchCodes } from '@/lib/codebook/codePicker';
 import { ancestorsOf, layoutTree, subtreeAt } from '@/lib/codebook/treeLayout';
+import FacetEditor from '@/components/matrix/FacetEditor';
 import type { Tables } from '@/lib/types/cb-db';
 import NewCodeDialog from './NewCodeDialog';
 
@@ -68,6 +70,7 @@ export default function TreeCanvas({
   );
   const [interposeAt, setInterposeAt] = useState<string | null>(null);
   const [pinnedCitationId, setPinnedCitationId] = useState<string | null>(null);
+  const [schemeOpen, setSchemeOpen] = useState(false);
 
   const forest = useMemo(() => buildLabelTree(labels), [labels]);
 
@@ -113,6 +116,10 @@ export default function TreeCanvas({
 
   const labelById = useMemo(() => new Map(labels.map((l) => [l.id, l])), [labels]);
   const codeById = useMemo(() => new Map(codes.map((c) => [c.id, c])), [codes]);
+  const nodeNameById = useMemo(
+    () => new Map(labels.map((l) => [l.id, l.name])),
+    [labels],
+  );
 
   function run(fn: () => Promise<unknown>) {
     start(async () => {
@@ -161,10 +168,31 @@ export default function TreeCanvas({
             </span>
           )}
 
+          {/* The SCHEME is editable HERE, not on another page. The New Code dialog
+              renders whatever facets are declared, so declaring a facet and using
+              it must not be two destinations — otherwise the researcher discovers
+              a missing field mid-authoring and has to abandon the code to go add
+              it. Same FacetEditor the matrix uses; no second implementation. */}
+          <button
+            type="button"
+            onClick={() => setSchemeOpen((s) => !s)}
+            className="border border-foreground/20 px-2.5 py-1 text-xs transition hover:border-foreground"
+            aria-expanded={schemeOpen}
+          >
+            {schemeOpen ? 'Hide scheme' : 'Edit scheme'}
+            <span className="ml-1 text-foreground/40">({facets.length})</span>
+          </button>
+
           <span className="ml-auto text-xs text-foreground/40">
             click = inspect · ⌘-click = zoom
           </span>
         </div>
+
+        {schemeOpen && (
+          <div className="border-b border-foreground/15 bg-foreground/[0.02] px-6 py-3">
+            <FacetEditor codebookId={codebookId} facets={facets} />
+          </div>
+        )}
 
         {/* ---------------- zoom trail: ancestors, dimmed but clickable --------- */}
         {focusId !== null && (
@@ -354,7 +382,10 @@ export default function TreeCanvas({
               name: c.name,
             }))}
             placed={codesByLabel.get(selected.id) ?? []}
+            allCodes={codes}
+            nodeNameById={nodeNameById}
             pending={pending}
+            onAttach={(codeId) => run(() => attachCodeToLabel(codeId, selected.id))}
             onSaveNote={(note) => run(() => setLabelNote(selected.id, note))}
             onZoom={() => setFocusId(selected.id)}
             onInterpose={() => setInterposeAt(selected.id)}
@@ -419,7 +450,10 @@ function NodeInspector({
   node,
   childNodes,
   placed,
+  allCodes,
+  nodeNameById,
   pending,
+  onAttach,
   onSaveNote,
   onZoom,
   onInterpose,
@@ -429,7 +463,12 @@ function NodeInspector({
   node: Label;
   childNodes: { id: string; name: string }[];
   placed: CodeWithRefs[];
+  /** EVERY code, not just the homeless ones — placing an already-placed code here
+   *  is how a duplicate gets made, and duplicates are the point. */
+  allCodes: CodeWithRefs[];
+  nodeNameById: ReadonlyMap<string, string>;
   pending: boolean;
+  onAttach: (codeId: string) => void;
   onSaveNote: (note: string) => void;
   onZoom: () => void;
   onInterpose: () => void;
@@ -437,6 +476,13 @@ function NodeInspector({
   onDetach: (codeId: string) => void;
 }) {
   const [note, setNote] = useState(node.note ?? '');
+  const [query, setQuery] = useState('');
+  const [picking, setPicking] = useState(false);
+
+  const hits = useMemo(
+    () => (picking ? searchCodes(allCodes, query, node.id, nodeNameById) : []),
+    [picking, allCodes, query, node.id, nodeNameById],
+  );
 
   return (
     <div className="space-y-4">
@@ -519,6 +565,83 @@ function NodeInspector({
           ))}
         </div>
       )}
+
+      {/* ---- place an EXISTING code here: the affordance that makes duplicates
+           reachable. A tray of only-unplaced codes can never produce a second
+           placement, so the data model would allow duplicates while the interface
+           quietly forbade them. This searches ALL codes. ---- */}
+      <div className="space-y-1.5 border-t border-foreground/10 pt-3">
+        {!picking ? (
+          <button
+            type="button"
+            onClick={() => setPicking(true)}
+            className="w-full border border-dashed border-foreground/30 px-2 py-1.5 text-xs text-foreground/60 transition hover:border-foreground hover:text-foreground"
+          >
+            + Place an existing code here
+          </button>
+        ) : (
+          <>
+            <div className="flex items-center gap-2">
+              <input
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search all codes…"
+                className="min-w-0 flex-1 border border-foreground/20 bg-background px-2 py-1 text-xs focus:border-foreground focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setPicking(false);
+                  setQuery('');
+                }}
+                className="shrink-0 text-xs text-foreground/40 hover:text-foreground"
+              >
+                done
+              </button>
+            </div>
+
+            <div className="max-h-56 space-y-0.5 overflow-y-auto">
+              {hits.length === 0 && (
+                <p className="py-2 text-xs italic text-foreground/40">No code matches.</p>
+              )}
+              {hits.map((h) => (
+                <button
+                  key={h.id}
+                  type="button"
+                  disabled={h.status === 'here' || pending}
+                  onClick={() => onAttach(h.id)}
+                  title={
+                    h.status === 'here'
+                      ? 'Already placed on this node.'
+                      : h.status === 'elsewhere'
+                        ? `Also sits under ${h.otherNodes.join(', ')} — placing it here makes a DUPLICATE (deliberate, but say so out loud).`
+                        : 'Currently unplaced — this files it.'
+                  }
+                  className={`w-full border px-1.5 py-1 text-left text-xs transition ${
+                    h.status === 'here'
+                      ? 'cursor-default border-transparent text-foreground/30'
+                      : 'border-transparent hover:border-foreground/30 hover:bg-foreground/[0.03]'
+                  }`}
+                >
+                  <span className="font-mono">{h.mnemonic}</span>{' '}
+                  <span className="text-foreground/60">{h.name}</span>
+                  {h.status === 'here' && (
+                    <span className="ml-1 text-foreground/30">· already here</span>
+                  )}
+                  {h.status === 'elsewhere' && (
+                    // Naming the other nodes is the whole safeguard: a duplicate
+                    // should be a decision you can see yourself making.
+                    <span className="ml-1 text-amber-700 dark:text-amber-500">
+                      · duplicate of {h.otherNodes.join(', ')}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
