@@ -4,12 +4,14 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState, useTransition } from 'react';
 import {
+  createFacetValue,
   deleteFacetValue,
   interposeFacetValue,
+  promoteCodeToValue,
+  setFacetValueParent,
   updateFacetValue,
 } from '@/app/actions/facets';
 import { addCodeFacetValue, removeCodeFacetValue } from '@/app/actions/codes';
-import { createFacetValue, promoteCodeToValue, setFacetValueParent } from '@/app/actions/facets';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
 import { buildTree } from '@/lib/codebook/tree';
@@ -303,23 +305,37 @@ export default function FacetCanvas({
             if (e.target === e.currentTarget) setDialog({ kind: 'floating' });
           }}
           onDragOver={(e) => {
-            if (dragging?.kind === 'code') e.preventDefault();
+            if (dragging) e.preventDefault();
           }}
           onDrop={(e) => {
-            // Dropping a code on EMPTY canvas unfiles it from this dimension — it returns
-            // to the staging box. Un-filing must be as cheap as filing, or a misdrop is a
-            // trap you can only escape through the inspector.
             if (e.target !== e.currentTarget) return;
-            const codeId = e.dataTransfer.getData('text/code-id');
-            if (!codeId) return;
             e.preventDefault();
-            const from =
-              codes.find((c) => c.id === codeId)?.facetValueIds.filter((id) => valueById.has(id)) ??
-              [];
-            if (from.length > 0) {
-              run(async () => {
-                for (const old of from) await removeCodeFacetValue(codeId, old);
-              });
+
+            const codeId = e.dataTransfer.getData('text/code-id');
+            const valueId = e.dataTransfer.getData('text/value-id');
+
+            // A CODE on empty canvas is unfiled from this dimension and returns to the
+            // staging box. Un-filing must be as cheap as filing, or a misdrop is a trap
+            // you can only escape through the inspector.
+            if (codeId) {
+              const from =
+                codes
+                  .find((c) => c.id === codeId)
+                  ?.facetValueIds.filter((id) => valueById.has(id)) ?? [];
+              if (from.length > 0) {
+                run(async () => {
+                  for (const old of from) await removeCodeFacetValue(codeId, old);
+                });
+              }
+            } else if (valueId && valueById.get(valueId)?.parent_id != null) {
+              // A VALUE on empty canvas is promoted to the TOP LEVEL — its own tree,
+              // carrying its whole sub-chain and every code answering it. This is the
+              // inverse of dropping it onto a parent, and it must exist: realising that a
+              // sub-answer is actually a peer answer is the commonest correction there
+              // is, and without it the only escape from a bad nesting is delete-and-retype.
+              //
+              // It cannot cycle (null parent), so no guard is needed here.
+              run(() => setFacetValueParent(valueId, null));
             }
             setDragging(null);
           }}
@@ -654,7 +670,13 @@ export default function FacetCanvas({
             onSaveDescription={(d) =>
               run(() => updateFacetValue(selected.id, { description: d }))
             }
+            onRename={(label) => run(() => updateFacetValue(selected.id, { label }))}
             onZoom={() => setFocusId(selected.id)}
+            onUnnest={
+              valueById.get(selected.id)?.parent_id == null
+                ? undefined
+                : () => run(() => setFacetValueParent(selected.id, null))
+            }
             onInterpose={() => setInterposeAt(selected.id)}
             onDissolve={() =>
               run(async () => {
@@ -739,7 +761,9 @@ function ValueInspector({
   pending,
   onAttach,
   onSaveDescription,
+  onRename,
   onZoom,
+  onUnnest,
   onInterpose,
   onDissolve,
   onDetach,
@@ -755,12 +779,16 @@ function ValueInspector({
   pending: boolean;
   onAttach: (codeId: string) => void;
   onSaveDescription: (d: string) => void;
+  onRename: (label: string) => void;
   onZoom: () => void;
+  /** Promote to the top level of this dimension. Absent when already a root. */
+  onUnnest?: () => void;
   onInterpose: () => void;
   onDissolve: () => void;
   onDetach: (codeId: string) => void;
 }) {
   const [description, setDescription] = useState(value.description ?? '');
+  const [label, setLabel] = useState(value.label);
   const [query, setQuery] = useState('');
   const [picking, setPicking] = useState(false);
 
@@ -785,7 +813,32 @@ function ValueInspector({
     <div className="space-y-4">
       <div>
         <p className="text-[10px] uppercase tracking-wide text-foreground/40">Value</p>
-        <h2 className="text-base font-medium tracking-tight">{value.label}</h2>
+        {/* Editable in place. The label is what the whole canvas is drawn from, so a
+            value you cannot rename is a naming decision you can only revise by deleting
+            and retyping — and deleting takes its sub-chain and its codes with it. A blank
+            reverts rather than saving: an unnamed value is unusable, not empty. */}
+        <input
+          value={label}
+          disabled={pending}
+          onChange={(e) => setLabel(e.target.value)}
+          onBlur={() => {
+            const next = label.trim();
+            if (!next || next === value.label) {
+              setLabel(value.label);
+              return;
+            }
+            onRename(next);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur();
+            if (e.key === 'Escape') {
+              setLabel(value.label);
+              e.currentTarget.blur();
+            }
+          }}
+          aria-label="Value name"
+          className="w-full border-b border-dashed border-foreground/25 bg-transparent text-base font-medium tracking-tight focus:border-solid focus:border-foreground focus:outline-none"
+        />
       </div>
 
       <div className="space-y-1">
@@ -811,6 +864,20 @@ function ValueInspector({
         >
           Zoom in
         </button>
+        {/* Same as dragging it onto empty canvas — but a drop target you cannot see is
+            not an affordance. The gesture is faster once you know it; the button is what
+            tells you it exists. */}
+        {onUnnest && (
+          <button
+            type="button"
+            onClick={onUnnest}
+            disabled={pending}
+            title="Promote to the top level of this dimension. Its sub-values and every code answering it come along."
+            className="border border-foreground/20 px-2 py-1 text-xs transition enabled:hover:border-foreground disabled:opacity-40"
+          >
+            Make its own tree
+          </button>
+        )}
         <button
           type="button"
           onClick={onInterpose}
