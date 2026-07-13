@@ -5,11 +5,14 @@ import {
   foldAnnotationsIntoVariant,
   listUnfoldedAnnotations,
   saveAnnotation,
-  type AnnotationRow,
   type PromptVariant,
 } from '@/app/actions/eval';
 import type { VerdictRow } from '@/app/actions/runs';
-import { contextLabel, selectableCheckedIds } from '@/lib/eval/playground/annotations';
+import {
+  contextLabel,
+  selectableCheckedIds,
+  type AnnotationRow,
+} from '@/lib/eval/playground/annotations';
 
 // ---------------------------------------------------------------------------
 // Annotate → fold-into-variant surface (Task B3-4, loop closed in B3-4b).
