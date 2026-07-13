@@ -12,6 +12,7 @@ import { addCodeFacetValue, removeCodeFacetValue } from '@/app/actions/codes';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
 import { buildTree } from '@/lib/codebook/tree';
+import { answersFacet, rollUpByValue } from '@/lib/codebook/inheritance';
 import { ancestorsOf, layoutTree, subtreeAt, type LayoutNode } from '@/lib/codebook/treeLayout';
 import FacetEditor from '@/components/matrix/FacetEditor';
 import type { Tables } from '@/lib/types/cb-db';
@@ -95,23 +96,22 @@ export default function FacetCanvas({
     return buildTree(values).map((n) => toLayout(n as never));
   }, [values]);
 
-  // Codes carrying each value. DIRECT answers only — never a roll-up from below: a
-  // value claiming "12 codes" that vanish when you zoom into it is a lie.
-  const codesByValue = useMemo(() => {
-    const m = new Map<string, CodeWithRefs[]>();
-    for (const c of codes) {
-      for (const vid of c.facetValueIds) {
-        const bucket = m.get(vid);
-        if (bucket) bucket.push(c);
-        else m.set(vid, [c]);
-      }
-    }
-    return m;
-  }, [codes]);
+  // Codes on each value, DIRECT and INHERITED. A facet's values are an IS-A chain, so
+  // a code answering `Design` genuinely answers `Experiment` — entailment, not a
+  // display convenience. A parent therefore shows its subtree's codes, and the two
+  // kinds stay distinct because they are different claims: a code pinned AT the parent
+  // said "this granularity, and I decline to be finer".
+  const rolled = useMemo(
+    () => rollUpByValue(values, codes, (c) => c.facetValueIds),
+    [values, codes],
+  );
 
   const countByValue = useMemo(
-    () => new Map([...codesByValue].map(([k, v]) => [k, v.length])),
-    [codesByValue],
+    () =>
+      new Map(
+        [...rolled].map(([k, v]) => [k, v.direct.length + v.inherited.length] as const),
+      ),
+    [rolled],
   );
 
   const valueById = useMemo(() => new Map(values.map((v) => [v.id, v])), [values]);
@@ -126,10 +126,12 @@ export default function FacetCanvas({
     return m;
   }, [dimensions]);
 
-  /** Codes with NO answer on THIS facet — the gap in the dimension you're looking at. */
+  /** Codes with NO answer anywhere on THIS dimension. A code answering only a CHILD
+   *  value HAS answered the dimension — demanding an answer it already gave, more
+   *  precisely, would make the queue unclearable. */
   const unansweredHere = useMemo(() => {
     const ids = new Set(values.map((v) => v.id));
-    return codes.filter((c) => !c.facetValueIds.some((id) => ids.has(id)));
+    return codes.filter((c) => !answersFacet(c.facetValueIds, ids));
   }, [codes, values]);
 
   const visibleRoots = useMemo(() => {
@@ -262,7 +264,17 @@ export default function FacetCanvas({
         )}
 
         {/* ---------------- canvas ---------------------------------------------- */}
-        <div className="relative flex-1 overflow-auto bg-foreground/[0.02] p-6">
+        {/* Clicking EMPTY canvas captures an uncategorized code. Only a code — a value
+            needs a place in the chain, and empty space names none, whereas a code with
+            no answers is exactly what the triage queue is for.
+            `e.target === e.currentTarget` so a click that landed on a node, a chip or
+            the SVG never counts as whitespace. */}
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setDialog({ kind: 'floating' });
+          }}
+          title="Click empty space to capture an uncategorized code"
+          className="relative flex-1 cursor-crosshair overflow-auto bg-foreground/[0.02] p-6">
           {/* A code with NO answers yet, saved for later. It costs nothing and
               interrupts nothing: an idea you have mid-reading should not first demand
               that you decide how to classify it. Deciding is the expensive part;
@@ -316,7 +328,7 @@ export default function FacetCanvas({
               </svg>
 
               {layout.nodes.map((n) => {
-                const answering = codesByValue.get(n.id) ?? [];
+                const bucket = rolled.get(n.id) ?? { direct: [], inherited: [] };
                 const isSel = selected?.kind === 'value' && selected.id === n.id;
                 return (
                   <div
@@ -351,9 +363,9 @@ export default function FacetCanvas({
                       </button>
                     </div>
 
-                    {answering.length > 0 && (
+                    {(bucket.direct.length > 0 || bucket.inherited.length > 0) && (
                       <div className="mt-1 flex flex-wrap justify-center gap-1">
-                        {answering.map((c) => (
+                        {bucket.direct.map((c) => (
                           <button
                             key={c.id}
                             type="button"
@@ -363,7 +375,25 @@ export default function FacetCanvas({
                                 ? 'border-foreground bg-foreground text-background'
                                 : 'border-foreground/25 text-foreground/70 hover:border-foreground'
                             }`}
-                            title={c.name}
+                            title={`${c.name} — answers this value directly`}
+                          >
+                            {c.mnemonic}
+                          </button>
+                        ))}
+                        {/* INHERITED: answers a sub-value, so it answers this one too.
+                            Dashed, because it is a weaker kind of presence — the code
+                            said something MORE precise than this value. */}
+                        {bucket.inherited.map((c) => (
+                          <button
+                            key={c.id}
+                            type="button"
+                            onClick={() => setSelected({ kind: 'code', id: c.id })}
+                            className={`max-w-full truncate border border-dashed px-1.5 py-0.5 text-[10px] transition ${
+                              selected?.kind === 'code' && selected.id === c.id
+                                ? 'border-foreground bg-foreground text-background'
+                                : 'border-foreground/25 text-foreground/45 hover:border-foreground'
+                            }`}
+                            title={`${c.name} — answers a sub-value, so it answers this one by entailment`}
                           >
                             {c.mnemonic}
                           </button>
@@ -422,7 +452,8 @@ export default function FacetCanvas({
               id: c.id,
               name: c.name,
             }))}
-            answering={codesByValue.get(selected.id) ?? []}
+            answering={(rolled.get(selected.id) ?? { direct: [] }).direct}
+            inherited={(rolled.get(selected.id) ?? { inherited: [] }).inherited}
             allCodes={codes}
             valueNameById={valueNameById}
             pending={pending}
@@ -497,6 +528,7 @@ function ValueInspector({
   value,
   childValues,
   answering,
+  inherited,
   allCodes,
   valueNameById,
   pending,
@@ -509,7 +541,10 @@ function ValueInspector({
 }: {
   value: FacetValue;
   childValues: { id: string; name: string }[];
+  /** Codes answering THIS value outright. */
   answering: CodeWithRefs[];
+  /** Codes answering a SUB-value, and so answering this one by entailment. */
+  inherited: CodeWithRefs[];
   allCodes: CodeWithRefs[];
   valueNameById: ReadonlyMap<string, string>;
   pending: boolean;
@@ -618,6 +653,27 @@ function ValueInspector({
                 ×
               </button>
             </div>
+          ))}
+        </div>
+      )}
+
+      {inherited.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-foreground/80">
+            Inherited from sub-values ({inherited.length})
+          </p>
+          <p className="text-xs leading-snug text-foreground/40">
+            These answer a finer value below, so they answer this one too. They are not
+            pinned here and cannot be detached here.
+          </p>
+          {inherited.map((c) => (
+            <Link
+              key={c.id}
+              href={`/codes/${c.id}`}
+              className="block truncate text-xs text-foreground/50 underline-offset-2 hover:underline"
+            >
+              <span className="font-mono">{c.mnemonic}</span> {c.name}
+            </Link>
           ))}
         </div>
       )}

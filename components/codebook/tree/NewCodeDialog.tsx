@@ -9,9 +9,12 @@ import {
 import { createFacetValue } from '@/app/actions/facets';
 import type { FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
+import { buildTree, type TreeNode } from '@/lib/codebook/tree';
+import BulletListEditor from '@/components/code/BulletListEditor';
 import type { Tables } from '@/lib/types/cb-db';
 
 type Code = Tables<'cb_codes'>;
+type FacetValue = Tables<'cb_facet_values'>;
 
 /** New code · an existing code answers this · a nested sub-value. */
 type Kind = 'code' | 'existing' | 'subvalue';
@@ -81,10 +84,28 @@ export default function NewCodeDialog({
 
   const [mnemonic, setMnemonic] = useState('');
   const [name, setName] = useState('');
+
+  // The ANATOMY — first-class, versioned columns on cb_code_versions. These used to
+  // be faked as valueless open_text "facets", which meant include_if lived in two
+  // places with nothing syncing them. They belong here.
   const [definition, setDefinition] = useState('');
-  const [origin, setOrigin] = useState<CodeOrigin>(
-    pinnedCitationId !== null ? 'a_priori' : 'emergent',
-  );
+  const [includeIf, setIncludeIf] = useState<string[]>([]);
+  const [excludeIf, setExcludeIf] = useState<string[]>([]);
+  const [exemplars, setExemplars] = useState<string[]>([]);
+  const [disconfirming, setDisconfirming] = useState('');
+  const [prediction, setPrediction] = useState('');
+  const [falsifier, setFalsifier] = useState('');
+
+  // A pinned paper means a priori: a code you are deriving from a source IS
+  // theory-derived. `originTouched` lets the researcher override afterwards without
+  // the pin snapping it back on the next render.
+  const [originTouched, setOriginTouched] = useState(false);
+  const [originChoice, setOriginChoice] = useState<CodeOrigin>('emergent');
+  const origin: CodeOrigin = originTouched
+    ? originChoice
+    : pinnedCitationId !== null
+      ? 'a_priori'
+      : 'emergent';
 
   // facetId → the value ids this new code answers on that dimension. An ARRAY, not a
   // scalar: a `multi` dimension is exactly what lets a cross-cutting code give two
@@ -123,6 +144,48 @@ export default function NewCodeDialog({
       // only place that knows the facet.
       return { ...s, [fid]: multi ? [...current, valueId] : [valueId] };
     });
+  }
+
+  /**
+   * Sub-values are shown INDENTED under their parent, and picking a parent is a
+   * complete answer on its own.
+   *
+   * The values of a facet are an IS-A chain: `Experiment -> Design` says Design is a
+   * kind of Experiment. So answering the parent is simply the COARSER answer — a
+   * legitimate claim, not an incomplete one — and answering the child ENTAILS the
+   * parent, which is why only the deepest value is ever stored. Storing both would
+   * let them disagree, and would make "which granularity did this code claim?"
+   * unanswerable.
+   */
+  function renderValueTree(
+    f: FacetWithValues,
+    nodes: TreeNode<FacetValue>[],
+    depth = 0,
+  ): React.ReactNode[] {
+    const multi = f.cardinality === 'multi';
+    const mine = answers[f.id] ?? [];
+    return nodes.flatMap((v) => [
+      <button
+        key={v.id}
+        type="button"
+        onClick={() => toggleAnswer(f.id, v.id, multi)}
+        style={{ marginLeft: depth * 14 }}
+        className={`border px-2 py-1 text-xs transition ${
+          mine.includes(v.id)
+            ? 'border-foreground bg-foreground text-background'
+            : 'border-foreground/20 text-foreground/60 hover:border-foreground/50'
+        }`}
+        title={
+          depth > 0
+            ? `A finer answer. Choosing it entails its parent — you do not select both.`
+            : undefined
+        }
+      >
+        {depth > 0 && <span className="mr-1 text-foreground/30">↳</span>}
+        {v.label}
+      </button>,
+      ...renderValueTree(f, v.children, depth + 1),
+    ]);
   }
 
   /** An EXISTING code answers this value. May make it cross-cut — deliberately; the
@@ -170,9 +233,15 @@ export default function NewCodeDialog({
             origin,
             version: {
               definition: definition.trim(),
-              include_if: [],
-              exclude_if: [],
-              exemplars: [],
+              include_if: includeIf,
+              exclude_if: excludeIf,
+              // Exemplars carry an optional pid/episode; captured as plain text here
+              // and enriched later in the full anatomy editor. An exemplar with no
+              // provenance is still worth more than no exemplar.
+              exemplars: exemplars.map((text) => ({ text })),
+              disconfirming_pattern: disconfirming.trim() || undefined,
+              prediction: prediction.trim() || undefined,
+              prediction_falsifier: falsifier.trim() || undefined,
             },
             // The tree placement is gone: a code's home IS its answers.
             labelId: null,
@@ -351,13 +420,70 @@ export default function NewCodeDialog({
                 />
               </Field>
 
+              {/* The rest of the anatomy. These are versioned columns on
+                  cb_code_versions — the same fields the full editor shows — so a code
+                  authored here is not a second-class one that must be reopened later
+                  to become usable. */}
+              <BulletListEditor
+                label="Include if"
+                items={includeIf}
+                onChange={setIncludeIf}
+                placeholder="Add an inclusion clause…"
+              />
+              <BulletListEditor
+                label="Exclude if"
+                items={excludeIf}
+                onChange={setExcludeIf}
+                placeholder="Add an exclusion clause…"
+              />
+              <BulletListEditor
+                label="Exemplars"
+                items={exemplars}
+                onChange={setExemplars}
+                placeholder="Add an example…"
+              />
+
+              <Field
+                label="Counter-example"
+                hint="The near-miss that looks like this code but is NOT it. The single most useful field for inter-coder agreement."
+              >
+                <textarea
+                  value={disconfirming}
+                  onChange={(e) => setDisconfirming(e.target.value)}
+                  rows={2}
+                  className={inputCls}
+                />
+              </Field>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Prediction">
+                  <textarea
+                    value={prediction}
+                    onChange={(e) => setPrediction(e.target.value)}
+                    rows={2}
+                    className={inputCls}
+                  />
+                </Field>
+                <Field label="…falsified by">
+                  <textarea
+                    value={falsifier}
+                    onChange={(e) => setFalsifier(e.target.value)}
+                    rows={2}
+                    className={inputCls}
+                  />
+                </Field>
+              </div>
+
               <Field label="Origin">
                 <div className="flex gap-1 text-xs">
                   {(['a_priori', 'pilot', 'emergent'] as const).map((o) => (
                     <button
                       key={o}
                       type="button"
-                      onClick={() => setOrigin(o)}
+                      onClick={() => {
+                        setOriginTouched(true);
+                        setOriginChoice(o);
+                      }}
                       className={`border px-2.5 py-1 transition ${
                         origin === o
                           ? 'border-foreground bg-foreground text-background'
@@ -379,39 +505,29 @@ export default function NewCodeDialog({
                   No dimensions declared yet. This code will be created unclassified.
                 </p>
               ) : (
-                facets.map((f) => {
-                  const multi = f.cardinality === 'multi';
-                  const mine = answers[f.id] ?? [];
-                  return (
-                    <Field
-                      key={f.id}
-                      label={f.label}
-                      hint={multi ? 'more than one answer allowed' : undefined}
-                    >
-                      <div className="flex flex-wrap gap-1">
-                        {f.values.map((v) => (
-                          <button
-                            key={v.id}
-                            type="button"
-                            onClick={() => toggleAnswer(f.id, v.id, multi)}
-                            className={`border px-2 py-1 text-xs transition ${
-                              mine.includes(v.id)
-                                ? 'border-foreground bg-foreground text-background'
-                                : 'border-foreground/20 text-foreground/60 hover:border-foreground/50'
-                            }`}
-                          >
-                            {v.label}
-                          </button>
-                        ))}
-                        {f.values.length === 0 && (
-                          <span className="text-xs italic text-foreground/40">
-                            no values yet
-                          </span>
-                        )}
-                      </div>
-                    </Field>
-                  );
-                })
+                facets.map((f) => (
+                  <Field
+                    key={f.id}
+                    label={f.label}
+                    hint={
+                      f.cardinality === 'multi'
+                        ? 'more than one answer allowed — that is how a cross-cutting code is expressed'
+                        : undefined
+                    }
+                  >
+                    <div className="flex flex-wrap items-center gap-1">
+                      {/* The value TREE, not a flat list. Picking a parent is a complete
+                          (coarser) answer; picking a child entails the parent, so you
+                          never select both. */}
+                      {renderValueTree(f, buildTree(f.values))}
+                      {f.values.length === 0 && (
+                        <span className="text-xs italic text-foreground/40">
+                          no values yet
+                        </span>
+                      )}
+                    </div>
+                  </Field>
+                ))
               )}
             </>
           )}
