@@ -795,6 +795,7 @@ export type Database = {
           created_at: string
           id: string
           name: string
+          note: string | null
           parent_id: string | null
           position: number
         }
@@ -804,6 +805,7 @@ export type Database = {
           created_at?: string
           id?: string
           name: string
+          note?: string | null
           parent_id?: string | null
           position?: number
         }
@@ -813,6 +815,7 @@ export type Database = {
           created_at?: string
           id?: string
           name?: string
+          note?: string | null
           parent_id?: string | null
           position?: number
         }

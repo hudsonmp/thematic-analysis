@@ -2,7 +2,7 @@
 
 import { cbFrom } from '@/lib/supabase/guard';
 import { linkCitation } from '@/app/actions/citations';
-import { setCodeLabels } from '@/app/actions/labels';
+import { attachCodeToLabel, setCodeLabels } from '@/app/actions/labels';
 import { resolveRows, writeOnlyRowErrors, type CodebookRow } from '@/lib/codebook/mnemonic';
 import type { RowFacetWrites } from '@/lib/codebook/grid';
 import { CodeVersionInput, type CodeVersionInputT } from '@/lib/types/contracts';
@@ -110,6 +110,62 @@ export async function createCode({
   }
 
   return code.id;
+}
+
+/**
+ * Create a code FROM THE TREE — the New Code dialog behind the `+` on a node.
+ *
+ * Three things that were separate calls, made one, because they are one act:
+ *
+ *  1. the CODE + its first version (the scheme: anatomy + facets, `createCode`);
+ *  2. its PLACEMENT at `labelId` — the node whose `+` was clicked. `labelId: null`
+ *     means the code is authored UNPLACED, which is the ad-hoc path: structure can
+ *     be difficult to impose up front, so a code is allowed to exist before it has
+ *     a home and be dragged into the tree later. Placement is ADDITIVE
+ *     (`attachCodeToLabel`), never `setCodeLabels`, so it cannot clobber the other
+ *     placements a duplicated code holds elsewhere.
+ *  3. its CITATION link, when a paper is pinned — DEDUCTIVE mode. The point of the
+ *     pin is that a codebook derived from a paper should not make the researcher
+ *     re-select that paper on every single code; the pin is the standing default,
+ *     and the caller passes `citationId: null` when the pin is off.
+ *
+ * `origin` is passed explicitly rather than inferred from the pin, because "came
+ * from a paper" and "is a priori" are NOT the same claim: a code can be pinned to
+ * the paper it was inspired by while still being `emergent` from pilot data. The UI
+ * defaults origin to `a_priori` in deductive mode; it does not force it.
+ *
+ * NON-ATOMIC: three PostgREST statements. A failure after step 1 leaves a real,
+ * visible code that is merely unplaced or unlinked — recoverable by hand, not
+ * corrupting. (Contrast with the reverse order, where a failed code insert would
+ * strand a placement pointing at nothing.)
+ */
+export async function createCodeInTree({
+  codebookId,
+  mnemonic,
+  name,
+  origin,
+  version,
+  labelId,
+  citationId,
+  studyLabel,
+}: {
+  codebookId: string;
+  mnemonic: string;
+  name: string;
+  origin: CodeOrigin;
+  version: CodeVersionInputT;
+  /** The node whose `+` was clicked. `null` = author into the Unplaced tray. */
+  labelId: string | null;
+  /** The pinned paper, when deductive mode is on. `null` = pin off. */
+  citationId: string | null;
+  studyLabel?: string | null;
+}): Promise<string> {
+  const codeId = await createCode({ codebookId, mnemonic, name, origin, version, studyLabel });
+
+  if (labelId !== null) await attachCodeToLabel(codeId, labelId);
+  if (citationId !== null) await linkCitation(codeId, citationId, 'derived_from');
+
+  return codeId;
 }
 
 /**

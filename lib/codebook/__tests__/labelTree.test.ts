@@ -28,6 +28,10 @@ function label(
     created_at,
     codebook_id: 'cb',
     color: null,
+    // A node's free text (migration 34). The tree fold never reads it — a node's
+    // note is what it carries INSTEAD of a scheme, and structure is independent
+    // of content — so it stays inert here.
+    note: null,
     name: id,
   };
 }
