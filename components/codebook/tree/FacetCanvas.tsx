@@ -81,7 +81,11 @@ export default function FacetCanvas({
   const [interposeAt, setInterposeAt] = useState<string | null>(null);
   const [pinnedCitationId, setPinnedCitationId] = useState<string | null>(null);
   const [schemeOpen, setSchemeOpen] = useState(dimensions.length === 0);
-  const [queueOpen, setQueueOpen] = useState(false);
+  // The right rail holds BOTH the inspector and the triage queue, and can be closed
+  // outright — the canvas is the thinking surface, and a panel you cannot dismiss
+  // permanently taxes the width you think in.
+  const [railOpen, setRailOpen] = useState(true);
+  const [rail, setRail] = useState<'inspect' | 'queue'>('inspect');
 
   const values: FacetValue[] = useMemo(() => facet?.values ?? [], [facet]);
 
@@ -150,6 +154,14 @@ export default function FacetCanvas({
     [visibleRoots, countByValue],
   );
 
+  /** Selecting anything re-opens the rail on the inspector: a click whose result is
+   *  invisible reads as a broken click. */
+  function inspect(next: Selection) {
+    setSelected(next);
+    setRail('inspect');
+    setRailOpen(true);
+  }
+
   function run(fn: () => Promise<unknown>) {
     start(async () => {
       await fn();
@@ -162,7 +174,7 @@ export default function FacetCanvas({
 
   return (
     <main className="flex h-[calc(100vh-6rem)]">
-      <section className="flex min-w-0 flex-1 flex-col">
+      <section className="relative flex min-w-0 flex-1 flex-col">
         {/* ---------------- header ---------------------------------------------- */}
         <div className="flex flex-wrap items-center gap-3 border-b border-foreground/15 px-6 py-2.5">
           {/* Switching facet switches the tree. Each dimension has its own answer
@@ -279,16 +291,6 @@ export default function FacetCanvas({
               interrupts nothing: an idea you have mid-reading should not first demand
               that you decide how to classify it. Deciding is the expensive part;
               deferring it is the feature. It lands in the triage queue. */}
-          <button
-            type="button"
-            onClick={() => setDialog({ kind: 'floating' })}
-            title="New floating code — unclassified, triage it later"
-            aria-label="New floating code"
-            className="fixed bottom-28 right-[22rem] z-30 flex h-11 w-11 items-center justify-center rounded-full border border-foreground/20 bg-background text-lg shadow-lg transition hover:border-foreground hover:bg-foreground hover:text-background"
-          >
-            +
-          </button>
-
           {dimensions.length === 0 ? (
             <p className="mt-16 text-center text-sm text-foreground/45">
               No dimensions yet. A dimension is a question you can ask of{' '}
@@ -341,7 +343,7 @@ export default function FacetCanvas({
                         type="button"
                         onClick={(e) => {
                           if (e.metaKey || e.ctrlKey) setFocusId(n.id);
-                          else setSelected({ kind: 'value', id: n.id });
+                          else inspect({ kind: 'value', id: n.id });
                         }}
                         className={`max-w-full truncate border-b px-1 text-sm transition ${
                           isSel
@@ -369,7 +371,7 @@ export default function FacetCanvas({
                           <button
                             key={c.id}
                             type="button"
-                            onClick={() => setSelected({ kind: 'code', id: c.id })}
+                            onClick={() => inspect({ kind: 'code', id: c.id })}
                             className={`max-w-full truncate border px-1.5 py-0.5 text-[10px] transition ${
                               selected?.kind === 'code' && selected.id === c.id
                                 ? 'border-foreground bg-foreground text-background'
@@ -387,7 +389,7 @@ export default function FacetCanvas({
                           <button
                             key={c.id}
                             type="button"
-                            onClick={() => setSelected({ kind: 'code', id: c.id })}
+                            onClick={() => inspect({ kind: 'code', id: c.id })}
                             className={`max-w-full truncate border border-dashed px-1.5 py-0.5 text-[10px] transition ${
                               selected?.kind === 'code' && selected.id === c.id
                                 ? 'border-foreground bg-foreground text-background'
@@ -407,34 +409,79 @@ export default function FacetCanvas({
           )}
         </div>
 
-        {/* ---------------- triage queue ---------------------------------------- */}
-        <div className="border-t border-foreground/15">
-          <button
-            type="button"
-            onClick={() => setQueueOpen((s) => !s)}
-            className="flex w-full items-baseline gap-2 px-6 py-2 text-left transition hover:bg-foreground/[0.03]"
-          >
-            <span className="text-xs font-medium tracking-tight">Triage queue</span>
-            <span className="text-xs text-foreground/45">
-              {unansweredHere.length === 0
-                ? `every code answers ${facet?.label ?? 'this dimension'}`
-                : `${unansweredHere.length} code${unansweredHere.length === 1 ? '' : 's'} unanswered on ${facet?.label ?? 'this dimension'}`}
-            </span>
-            <span className="ml-auto text-xs text-foreground/40">
-              {queueOpen ? 'hide' : 'open'}
-            </span>
-          </button>
-          {queueOpen && (
-            <div className="max-h-72 overflow-y-auto border-t border-foreground/10 px-6 py-3">
-              <TriageQueue codes={codes} facets={dimensions} />
-            </div>
-          )}
-        </div>
+        {/* Capture an uncategorized code. Anchored to the SECTION, not the viewport,
+            so it can never sit on top of the right rail — which is what it did when it
+            was `fixed` and the rail width was hard-coded into its offset. */}
+        <button
+          type="button"
+          onClick={() => setDialog({ kind: 'floating' })}
+          title="New code — unclassified, triage it later"
+          aria-label="New code"
+          className="absolute bottom-6 right-6 z-30 flex h-11 w-11 items-center justify-center rounded-full border border-foreground/20 bg-background text-lg shadow-lg transition hover:border-foreground hover:bg-foreground hover:text-background"
+        >
+          +
+        </button>
+
       </section>
 
-      {/* ---------------- inspector ------------------------------------------- */}
-      <aside className="w-80 shrink-0 overflow-y-auto border-l border-foreground/15 p-5">
-        {selected === null ? (
+      {/* ---------------- right rail: inspect | triage --------------------------- */}
+      {!railOpen && (
+        // A closed rail must leave a way back, and it should say what is WAITING inside
+        // — an unread count is the only honest reason to reopen a panel you shut.
+        <button
+          type="button"
+          onClick={() => setRailOpen(true)}
+          className="flex w-9 shrink-0 flex-col items-center gap-2 border-l border-foreground/15 py-3 text-xs text-foreground/50 transition hover:bg-foreground/[0.03] hover:text-foreground"
+          aria-label="Open the side panel"
+          title="Open the side panel"
+        >
+          <span aria-hidden>‹</span>
+          {unansweredHere.length > 0 && (
+            <span className="rounded-full border border-amber-600/40 px-1 text-[10px] text-amber-700 dark:text-amber-500">
+              {unansweredHere.length}
+            </span>
+          )}
+        </button>
+      )}
+
+      <aside
+        className={`${railOpen ? 'flex' : 'hidden'} w-96 shrink-0 flex-col border-l border-foreground/15`}
+      >
+        <div className="flex items-center gap-1 border-b border-foreground/15 px-3 py-2">
+          {(['inspect', 'queue'] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setRail(t)}
+              className={`px-2 py-1 text-xs transition ${
+                rail === t
+                  ? 'border-b border-foreground font-medium text-foreground'
+                  : 'text-foreground/50 hover:text-foreground'
+              }`}
+            >
+              {t === 'inspect' ? 'Inspect' : 'Triage'}
+              {t === 'queue' && unansweredHere.length > 0 && (
+                <span className="ml-1 text-amber-700 dark:text-amber-500">
+                  {unansweredHere.length}
+                </span>
+              )}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setRailOpen(false)}
+            className="ml-auto px-1 text-lg leading-none text-foreground/40 transition hover:text-foreground"
+            aria-label="Close the side panel"
+            title="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        {rail === 'queue' ? (
+          <TriageQueue codes={codes} facets={dimensions} />
+        ) : selected === null ? (
           <p className="text-xs leading-relaxed text-foreground/45">
             Click a <strong>value</strong> to edit its description, or a{' '}
             <strong>code</strong> to see what it answers.
@@ -479,6 +526,7 @@ export default function FacetCanvas({
             valueNameById={valueNameById}
           />
         )}
+        </div>
       </aside>
 
       {dialog !== null && facet !== null && (

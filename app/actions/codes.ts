@@ -281,6 +281,39 @@ export async function setCodeFacetValues(codeId: string, facetValueIds: string[]
  * passes neither is treated as a clear.
  */
 /**
+ * Rename a code's MNEMONIC (and/or name). The mnemonic is a display handle, not an
+ * identity: every reference is by `cb_codes.id`, so changing it breaks nothing — which
+ * is exactly why it is safe to auto-derive one at capture time and let the researcher
+ * fix it later, when they can see it next to its siblings and notice that the derived
+ * `ANALYSIS-BEHAVIOR` should have been `ANLZ`.
+ *
+ * UNIQUE(codebook_id, mnemonic) is enforced by Postgres; a collision surfaces as a
+ * clear error rather than being silently de-duplicated, because two codes the
+ * researcher WANTED to call the same thing is a naming decision to make, not a
+ * conflict to paper over.
+ */
+export async function renameCode(
+  codeId: string,
+  { mnemonic, name }: { mnemonic?: string; name?: string },
+): Promise<void> {
+  const patch: { mnemonic?: string; name?: string } = {};
+  if (mnemonic !== undefined) {
+    const trimmed = mnemonic.trim();
+    if (!trimmed) throw new Error('renameCode: a mnemonic cannot be blank.');
+    patch.mnemonic = trimmed;
+  }
+  if (name !== undefined) {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('renameCode: a name cannot be blank.');
+    patch.name = trimmed;
+  }
+  if (Object.keys(patch).length === 0) return;
+
+  const res = await cbFrom('cb_codes').update(patch).eq('id', codeId);
+  if (res.error) throw new Error(`renameCode failed: ${res.error.message}`);
+}
+
+/**
  * ADD one facet value to a code — an ADDITIVE membership.
  *
  * Deliberately NOT `setCodeFacetValues`, which is a delete-all-then-insert of a

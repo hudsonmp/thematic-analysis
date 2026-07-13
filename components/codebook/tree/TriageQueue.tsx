@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useMemo, useState, useTransition } from 'react';
-import { addCodeFacetValue, removeCodeFacetValue } from '@/app/actions/codes';
+import { addCodeFacetValue, removeCodeFacetValue, renameCode } from '@/app/actions/codes';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { queueStats, triageQueue } from '@/lib/codebook/triage';
 
@@ -102,10 +102,14 @@ export default function TriageQueue({
       </div>
 
       <div className="border border-foreground/15 p-3">
-        <p className="text-sm">
-          <span className="font-mono text-foreground/60">{code.mnemonic}</span>{' '}
-          <span className="font-medium">{code.name}</span>
-        </p>
+        {/* The mnemonic is editable HERE because this is where you SEE it — an
+            auto-derived `ANALYSIS-BEHAVIOR` only looks wrong once it is sitting next to
+            its siblings. It is a display handle, never an identity (everything
+            references cb_codes.id), so renaming it breaks nothing. */}
+        <div className="flex items-baseline gap-2">
+          <MnemonicField key={code.id} codeId={code.id} value={code.mnemonic} />
+          <span className="text-sm font-medium">{code.name}</span>
+        </div>
         {code.current?.definition && (
           <p className="mt-1 text-xs leading-relaxed text-foreground/60">
             {code.current.definition}
@@ -176,5 +180,59 @@ export default function TriageQueue({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Inline mnemonic editor. Commits on blur or Enter, reverts on Escape. A failed commit
+ * (a UNIQUE collision with another code in this codebook) restores the previous value
+ * and surfaces the error, rather than leaving the field showing text that was never
+ * saved — a silent no-op is the worst outcome for a field you deliberately changed.
+ */
+function MnemonicField({ codeId, value }: { codeId: string; value: string }) {
+  const router = useRouter();
+  const [draft, setDraft] = useState(value);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+
+  function commit() {
+    const next = draft.trim();
+    if (next === '' || next === value) {
+      setDraft(value);
+      return;
+    }
+    start(async () => {
+      try {
+        await renameCode(codeId, { mnemonic: next });
+        setError(null);
+        router.refresh();
+      } catch (e) {
+        setDraft(value);
+        setError(e instanceof Error ? e.message : 'Rename failed.');
+      }
+    });
+  }
+
+  return (
+    <span className="inline-flex flex-col">
+      <input
+        value={draft}
+        disabled={pending}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur();
+          if (e.key === 'Escape') {
+            setDraft(value);
+            e.currentTarget.blur();
+          }
+        }}
+        size={Math.max(draft.length, 4)}
+        aria-label="Mnemonic"
+        title="Edit the mnemonic — it is a display handle, not an identity"
+        className="border-b border-dashed border-foreground/25 bg-transparent font-mono text-sm text-foreground/70 focus:border-solid focus:border-foreground focus:outline-none"
+      />
+      {error && <span className="text-[10px] text-red-600">{error}</span>}
+    </span>
   );
 }

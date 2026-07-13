@@ -9,6 +9,7 @@ import {
 import { createFacetValue } from '@/app/actions/facets';
 import type { FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
+import { deriveMnemonic, uniqueMnemonic } from '@/lib/codebook/mnemonic';
 import { buildTree, type TreeNode } from '@/lib/codebook/tree';
 import BulletListEditor from '@/components/code/BulletListEditor';
 import type { Tables } from '@/lib/types/cb-db';
@@ -120,6 +121,16 @@ export default function NewCodeDialog({
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
+  /** What a blank mnemonic will become. Shown as the placeholder, recomputed as the
+   *  name is typed, so the researcher sees the generated value before committing. */
+  const autoMnemonic = useMemo(
+    () =>
+      name.trim()
+        ? uniqueMnemonic(deriveMnemonic(name.trim()), new Set(codes.map((c) => c.mnemonic)))
+        : '',
+    [name, codes],
+  );
+
   const hits = useMemo(
     () =>
       kind === 'existing'
@@ -222,13 +233,25 @@ export default function NewCodeDialog({
             parentId: parentValueId,
           });
         } else {
-          if (!mnemonic.trim() || !name.trim() || !definition.trim()) {
-            setError('A code needs a mnemonic, a name, and a definition.');
+          if (!name.trim() || !definition.trim()) {
+            setError('A code needs a name and a definition.');
             return;
           }
+          // A BLANK mnemonic is derived from the name, made unique against every
+          // mnemonic already in the codebook. cb_codes has UNIQUE(codebook_id,
+          // mnemonic) and NOT NULL, so a blank one would otherwise be a hard failure —
+          // and demanding it up front taxes capture for a field that is almost always
+          // just the name in short form. Same pure helpers the bulk grid uses.
+          const resolvedMnemonic =
+            mnemonic.trim() ||
+            uniqueMnemonic(
+              deriveMnemonic(name.trim()),
+              new Set(codes.map((c) => c.mnemonic)),
+            );
+
           const codeId = await createCodeInTree({
             codebookId,
-            mnemonic: mnemonic.trim(),
+            mnemonic: resolvedMnemonic,
             name: name.trim(),
             origin,
             version: {
@@ -393,16 +416,19 @@ export default function NewCodeDialog({
             <>
               <div className="grid grid-cols-[7rem_1fr] gap-3">
                 <Field label="Mnemonic">
+                  {/* Optional. Left blank it is derived from the name — and the
+                      derivation is SHOWN as the placeholder, so the value that will be
+                      saved is never a surprise you discover after the fact. */}
                   <input
-                    autoFocus
                     value={mnemonic}
                     onChange={(e) => setMnemonic(e.target.value)}
-                    className={inputCls}
-                    placeholder="CONF"
+                    className={`${inputCls} font-mono`}
+                    placeholder={autoMnemonic || 'auto'}
                   />
                 </Field>
                 <Field label="Name">
                   <input
+                    autoFocus
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     className={inputCls}
