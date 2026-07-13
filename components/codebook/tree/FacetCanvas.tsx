@@ -141,6 +141,20 @@ export default function FacetCanvas({
   const valueById = useMemo(() => new Map(values.map((v) => [v.id, v])), [values]);
   const codeById = useMemo(() => new Map(codes.map((c) => [c.id, c])), [codes]);
 
+  // Selection is STATE, and state outlives the data it points at. A value can vanish
+  // under a live selection in at least four ways: it was dissolved, the dimension was
+  // switched, another tab deleted it, or — the one that actually crashed — ⌘D selected
+  // the COPY by id before router.refresh() had delivered it into props.
+  //
+  // So the selection is RESOLVED, never asserted. `valueById.get(id)!` turned a
+  // one-frame absence into a TypeError; resolving turns it into an empty panel that
+  // fills in on the next render, which is what an absent-then-present row should do.
+  const selectedValue =
+    selected?.kind === 'value' ? (valueById.get(selected.id) ?? null) : null;
+  const selectedCode =
+    selected?.kind === 'code' ? (codeById.get(selected.id) ?? null) : null;
+  const interposeValue = interposeAt !== null ? (valueById.get(interposeAt) ?? null) : null;
+
   // Names for EVERY value across ALL facets — the picker must be able to say "this
   // code already answers Experiment on the Space dimension", even while you are
   // looking at a different dimension.
@@ -679,10 +693,10 @@ export default function FacetCanvas({
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
             {triageOpen ? (
               <TriageQueue codes={codes} facets={dimensions} citations={citations} />
-            ) : selected?.kind === 'value' ? (
+            ) : selectedValue !== null && selected !== null ? (
               <ValueInspector
                 key={selected.id}
-                value={valueById.get(selected.id)!}
+                value={selectedValue}
                 childValues={(subtreeAt(forest, selected.id)?.children ?? []).map((c) => ({
                   id: c.id,
                   name: c.name,
@@ -714,14 +728,14 @@ export default function FacetCanvas({
                 }
                 onDetach={(codeId) => run(() => removeCodeFacetValue(codeId, selected.id))}
               />
-            ) : selected !== null ? (
+            ) : selectedCode !== null && selected !== null ? (
               // The inspector IS the editor. There is no "full anatomy →" link: a link out
               // says the panel is a preview of the real thing elsewhere, which makes the
               // panel pointless and the trip expensive — you lose the canvas, and with it
               // the reason you opened the code.
               <CodeEditor
                 key={selected.id}
-                code={codeById.get(selected.id)!}
+                code={selectedCode}
                 facets={dimensions}
                 citations={citations}
                 promoteTo={facet?.label ?? null}
@@ -735,7 +749,11 @@ export default function FacetCanvas({
                         })
                 }
               />
-            ) : null}
+            ) : (
+              <p className="text-xs italic text-foreground/40">
+                That item is no longer here.
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -757,9 +775,9 @@ export default function FacetCanvas({
         />
       )}
 
-      {interposeAt !== null && facet !== null && (
+      {interposeAt !== null && interposeValue !== null && facet !== null && (
         <InterposeDialog
-          parentLabel={valueById.get(interposeAt)!.label}
+          parentLabel={interposeValue.label}
           candidates={(subtreeAt(forest, interposeAt)?.children ?? []).map((c) => ({
             id: c.id,
             name: c.name,
