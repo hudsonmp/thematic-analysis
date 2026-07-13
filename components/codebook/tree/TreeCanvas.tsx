@@ -16,7 +16,7 @@ import { searchCodes } from '@/lib/codebook/codePicker';
 import { ancestorsOf, layoutTree, subtreeAt } from '@/lib/codebook/treeLayout';
 import FacetEditor from '@/components/matrix/FacetEditor';
 import type { Tables } from '@/lib/types/cb-db';
-import NewCodeDialog from './NewCodeDialog';
+import NewCodeDialog, { type DialogTarget } from './NewCodeDialog';
 
 type Label = Tables<'cb_labels'>;
 type Citation = Tables<'cb_citations'>;
@@ -65,9 +65,7 @@ export default function TreeCanvas({
 
   const [focusId, setFocusId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Selection>(null);
-  const [dialogParent, setDialogParent] = useState<{ id: string | null; name: string | null } | null>(
-    null,
-  );
+  const [dialog, setDialog] = useState<DialogTarget | null>(null);
   const [interposeAt, setInterposeAt] = useState<string | null>(null);
   const [pinnedCitationId, setPinnedCitationId] = useState<string | null>(null);
   const [schemeOpen, setSchemeOpen] = useState(false);
@@ -138,7 +136,7 @@ export default function TreeCanvas({
         <div className="flex items-center gap-4 border-b border-foreground/15 px-6 py-2.5">
           <button
             type="button"
-            onClick={() => setDialogParent({ id: null, name: null })}
+            onClick={() => setDialog({ kind: 'root' })}
             className="border border-foreground px-2.5 py-1 text-xs transition hover:bg-foreground hover:text-background"
           >
             + New root
@@ -223,7 +221,24 @@ export default function TreeCanvas({
         )}
 
         {/* ---------------- canvas ---------------------------------------------- */}
-        <div className="flex-1 overflow-auto bg-foreground/[0.02] p-6">
+        <div className="relative flex-1 overflow-auto bg-foreground/[0.02] p-6">
+          {/* The corner `+`: a code with NO home, saved for later. The whole point
+              is that it costs nothing and interrupts nothing — an idea you have
+              mid-thought should not first demand that you decide where it belongs.
+              Deciding is the expensive part; deferring it is the feature.
+
+              It offers only "new code": a floating code has no node to attach to,
+              so "existing code" would be an attach with no target. */}
+          <button
+            type="button"
+            onClick={() => setDialog({ kind: 'floating' })}
+            title="New floating code — no home yet, file it later"
+            aria-label="New floating code"
+            className="fixed bottom-28 right-[22rem] z-30 flex h-11 w-11 items-center justify-center rounded-full border border-foreground/20 bg-background text-lg shadow-lg transition hover:border-foreground hover:bg-foreground hover:text-background"
+          >
+            +
+          </button>
+
           {layout.nodes.length === 0 ? (
             <p className="mt-16 text-center text-sm text-foreground/45">
               No nodes yet. <strong>+ New root</strong> starts a tree — or add codes
@@ -289,7 +304,7 @@ export default function TreeCanvas({
                       </button>
                       <button
                         type="button"
-                        onClick={() => setDialogParent({ id: n.id, name: n.name })}
+                        onClick={() => setDialog({ kind: 'child', id: n.id, name: n.name })}
                         className="shrink-0 border border-foreground/20 px-1 text-xs leading-4 text-foreground/50 transition hover:border-foreground hover:text-foreground"
                         aria-label={`Add a child under ${n.name}`}
                         title="Add a child (code or node)"
@@ -409,16 +424,17 @@ export default function TreeCanvas({
         )}
       </aside>
 
-      {dialogParent !== null && (
+      {dialog !== null && (
         <NewCodeDialog
           codebookId={codebookId}
-          parentId={dialogParent.id}
-          parentName={dialogParent.name}
+          target={dialog}
           facets={facets}
+          codes={codes}
+          nodeNameById={nodeNameById}
           pinnedCitationId={pinnedCitationId}
-          onClose={() => setDialogParent(null)}
+          onClose={() => setDialog(null)}
           onDone={() => {
-            setDialogParent(null);
+            setDialog(null);
             router.refresh();
           }}
         />

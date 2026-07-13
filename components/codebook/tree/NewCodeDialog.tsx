@@ -1,14 +1,21 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useMemo, useState, useTransition } from 'react';
 import {
   createCodeInTree,
   setCodeFacetField,
   setCodeFacetValues,
 } from '@/app/actions/codes';
-import { createLabel, setLabelNote } from '@/app/actions/labels';
+import { attachCodeToLabel, createLabel, setLabelNote } from '@/app/actions/labels';
 import type { FacetWithValues } from '@/app/actions/codebook';
 import type { CodeOrigin } from '@/app/actions/codes';
+import { searchCodes } from '@/lib/codebook/codePicker';
+import type { Tables } from '@/lib/types/cb-db';
+
+type Code = Tables<'cb_codes'>;
+
+/** New code · attach an existing code · new child node. */
+type Kind = 'code' | 'existing' | 'node';
 
 /**
  * The dialog behind a node's `+`. It asks WHICH KIND of child, because the tree
@@ -30,28 +37,53 @@ import type { CodeOrigin } from '@/app/actions/codes';
  * paper can still be `emergent` from pilot data. The pin sets the citation; the
  * researcher still owns the origin.
  */
+/**
+ * WHERE the dialog was opened from. This decides which kinds of child are even
+ * offered, and it is the reason the `+` buttons are not interchangeable:
+ *
+ *   child    — a node's `+`. All three: a new code, an EXISTING code (which may
+ *              make a duplicate), or a child node.
+ *   root     — the header `+`. A node only: a root code with no construct above it
+ *              would be a code pretending to be a tree.
+ *   floating — the corner `+`. A new code with NO home, saved for later. "Existing
+ *              code" is meaningless here: there is nothing to attach it TO.
+ */
+export type DialogTarget =
+  | { kind: 'child'; id: string; name: string }
+  | { kind: 'root' }
+  | { kind: 'floating' };
+
 export default function NewCodeDialog({
   codebookId,
-  parentId,
-  parentName,
+  target,
   facets,
+  codes,
+  nodeNameById,
   pinnedCitationId,
   onClose,
   onDone,
 }: {
   codebookId: string;
-  /** The node whose `+` was clicked. `null` = a new ROOT (the top-of-screen `+`). */
-  parentId: string | null;
-  parentName: string | null;
+  target: DialogTarget;
   facets: FacetWithValues[];
+  /** Every code — so the dialog can offer an EXISTING one, not only a new one. */
+  codes: (Pick<Code, 'id' | 'mnemonic' | 'name'> & { labelIds: string[] })[];
+  nodeNameById: ReadonlyMap<string, string>;
   /** Deductive-mode pin. When set, a new code auto-links this citation. */
   pinnedCitationId: string | null;
   onClose: () => void;
   onDone: () => void;
 }) {
-  // A new ROOT is always a node: a root code with no construct above it would be
-  // a code pretending to be a tree, so the kind switch is hidden at the top level.
-  const [kind, setKind] = useState<'code' | 'node'>(parentId === null ? 'node' : 'code');
+  const parentId = target.kind === 'child' ? target.id : null;
+  const parentName = target.kind === 'child' ? target.name : null;
+
+  const [kind, setKind] = useState<Kind>(target.kind === 'root' ? 'node' : 'code');
+  const [query, setQuery] = useState('');
+
+  const hits = useMemo(
+    () => (kind === 'existing' ? searchCodes(codes, query, parentId, nodeNameById) : []),
+    [kind, codes, query, parentId, nodeNameById],
+  );
 
   const [mnemonic, setMnemonic] = useState('');
   const [name, setName] = useState('');
@@ -68,6 +100,21 @@ export default function NewCodeDialog({
 
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
+
+  /** Attach an EXISTING code to this node. May create a duplicate — deliberately;
+   *  the row said so before it was clicked. */
+  function attach(codeId: string) {
+    if (parentId === null) return; // 'existing' is never offered without a target
+    setError(null);
+    start(async () => {
+      try {
+        await attachCodeToLabel(codeId, parentId);
+        onDone();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to place the code.');
+      }
+    });
+  }
 
   function submit() {
     setError(null);
@@ -134,9 +181,20 @@ export default function NewCodeDialog({
       >
         <div className="flex items-baseline justify-between border-b border-foreground/15 px-4 py-3">
           <h2 className="text-sm font-medium tracking-tight">
-            {kind === 'code' ? 'New code' : 'New node'}
-            {parentName && (
-              <span className="text-foreground/50 font-normal"> under {parentName}</span>
+            {kind === 'existing'
+              ? 'Place an existing code'
+              : kind === 'code'
+                ? 'New code'
+                : 'New node'}
+            {parentName ? (
+              <span className="font-normal text-foreground/50"> under {parentName}</span>
+            ) : (
+              target.kind === 'floating' && (
+                <span className="font-normal text-foreground/50">
+                  {' '}
+                  · floating, no home yet
+                </span>
+              )
             )}
           </h2>
           <button
@@ -150,9 +208,12 @@ export default function NewCodeDialog({
         </div>
 
         <div className="max-h-[70vh] overflow-y-auto px-4 py-4 space-y-4">
-          {parentId !== null && (
+          {/* Three intents behind ONE `+`, offered only where each makes sense.
+              'existing' needs a node to attach to, so it is absent on the corner
+              (floating) `+` and on the root `+`. */}
+          {target.kind === 'child' && (
             <div className="flex gap-1 text-xs">
-              {(['code', 'node'] as const).map((k) => (
+              {(['code', 'existing', 'node'] as const).map((k) => (
                 <button
                   key={k}
                   type="button"
@@ -163,13 +224,58 @@ export default function NewCodeDialog({
                       : 'border-foreground/20 text-foreground/60 hover:border-foreground/50'
                   }`}
                 >
-                  {k === 'code' ? 'Code (applied to data)' : 'Node (a grouping)'}
+                  {k === 'code'
+                    ? 'New code'
+                    : k === 'existing'
+                      ? 'Existing code'
+                      : 'Node (a grouping)'}
                 </button>
               ))}
             </div>
           )}
 
-          {kind === 'node' ? (
+          {kind === 'existing' ? (
+            <>
+              <input
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search all codes…"
+                className={inputCls}
+              />
+              <div className="max-h-72 space-y-0.5 overflow-y-auto">
+                {hits.length === 0 && (
+                  <p className="py-2 text-xs italic text-foreground/40">No code matches.</p>
+                )}
+                {hits.map((h) => (
+                  <button
+                    key={h.id}
+                    type="button"
+                    disabled={h.status === 'here' || pending}
+                    onClick={() => attach(h.id)}
+                    className={`w-full border px-2 py-1.5 text-left text-xs transition ${
+                      h.status === 'here'
+                        ? 'cursor-default border-transparent text-foreground/30'
+                        : 'border-transparent hover:border-foreground/30 hover:bg-foreground/[0.03]'
+                    }`}
+                  >
+                    <span className="font-mono">{h.mnemonic}</span>{' '}
+                    <span className="text-foreground/60">{h.name}</span>
+                    {h.status === 'here' && (
+                      <span className="ml-1 text-foreground/30">· already here</span>
+                    )}
+                    {h.status === 'elsewhere' && (
+                      // The duplicate is named BEFORE it is made. A second placement
+                      // is legitimate — it just must never be a surprise.
+                      <span className="ml-1 text-amber-700 dark:text-amber-500">
+                        · duplicate of {h.otherNodes.join(', ')}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : kind === 'node' ? (
             <>
               <Field label="Name">
                 <input
@@ -214,7 +320,7 @@ export default function NewCodeDialog({
                 </Field>
               </div>
 
-              <Field label="Definition" hint="What must be true of a segment for this code to apply.">
+              <Field label="Definition">
                 <textarea
                   value={definition}
                   onChange={(e) => setDefinition(e.target.value)}
@@ -223,14 +329,10 @@ export default function NewCodeDialog({
                 />
               </Field>
 
-              <Field
-                label="Origin"
-                hint={
-                  pinnedCitationId !== null
-                    ? 'A pinned paper defaults this to a priori — but a code drawn from a paper can still be emergent from pilot data. Yours to set.'
-                    : undefined
-                }
-              >
+              {/* Origin still DEFAULTS to a_priori under a pinned paper and is still
+                  not forced — the reasoning lives in the action's docs, not as a
+                  paragraph the researcher re-reads on every single code. */}
+              <Field label="Origin">
                 <div className="flex gap-1 text-xs">
                   {(['a_priori', 'pilot', 'emergent'] as const).map((o) => (
                     <button
@@ -312,14 +414,18 @@ export default function NewCodeDialog({
           >
             Cancel
           </button>
-          <button
-            type="button"
-            onClick={submit}
-            disabled={pending}
-            className="border border-foreground bg-foreground px-4 py-1.5 text-sm text-background transition hover:opacity-90 disabled:opacity-40"
-          >
-            {pending ? 'Creating…' : 'Continue'}
-          </button>
+          {/* Browsing existing codes commits on the ROW click, so a Continue button
+              here would have nothing to submit. */}
+          {kind !== 'existing' && (
+            <button
+              type="button"
+              onClick={submit}
+              disabled={pending}
+              className="border border-foreground bg-foreground px-4 py-1.5 text-sm text-background transition hover:opacity-90 disabled:opacity-40"
+            >
+              {pending ? 'Creating…' : 'Continue'}
+            </button>
+          )}
         </div>
       </div>
     </div>
