@@ -2,31 +2,20 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
 import { logoutAction } from '@/app/actions/auth';
-
-type NavLink = { href: string; label: string };
-
-const LINKS: NavLink[] = [
-  { href: '/', label: 'Scheme' },
-  { href: '/codebook', label: 'Codebook' },
-  { href: '/sessions/live', label: 'Live' },
-  { href: '/sessions', label: 'Sessions' },
-  { href: '/progression-analysis', label: 'Progression' },
-  { href: '/progression-analysis/llm', label: 'LLM Eval' },
-  { href: '/episodes', label: 'Events' },
-  { href: '/flag-types', label: 'Flags' },
-  { href: '/labels', label: 'Labels' },
-  { href: '/citations', label: 'Citations' },
-  { href: '/reliability', label: 'Reliability' },
-  { href: '/export', label: 'Export' },
-  { href: '/instructions', label: 'Instructions' },
-];
+import { NAV_GROUPS, activeGroupKey, activeHref } from '@/lib/nav/menu';
 
 /**
  * Shared chrome for every protected page. The session is already gated by the
  * route-group layout, so this is presentation-only; the study + codebook names
  * are fetched server-side in the layout and passed as props (a Client Component
  * must never call server actions during render).
+ *
+ * Thirteen flat links became three menus — Codebook / Recording / Eval. The
+ * grouping and the active-link resolution live in `lib/nav/menu.ts` as pure
+ * data + functions; this file is only the disclosure behaviour (open on click,
+ * close on outside-click / Escape / navigation).
  */
 export default function CodebookNav({
   studyName,
@@ -38,38 +27,111 @@ export default function CodebookNav({
   displayName: string;
 }) {
   const pathname = usePathname();
+  const navRef = useRef<HTMLDivElement | null>(null);
 
-  const isActive = (href: string) => {
-    if (href === '/') return pathname === '/';
-    if (!pathname.startsWith(href)) return false;
-    // Don't let a shorter prefix steal the highlight from a more specific
-    // sibling link (e.g. `/sessions` must NOT light up on `/sessions/live`,
-    // which has its own nav entry). Active iff no longer nav href also matches.
-    return !LINKS.some(
-      (l) => l.href !== href && l.href.startsWith(href) && pathname.startsWith(l.href),
-    );
-  };
+  // The open menu is remembered WITH the route it was opened on, and read back
+  // only while that route still holds. Navigating therefore closes the menu by
+  // derivation — no reset-in-effect, so it never renders open for a frame on the
+  // new page (and the react-hooks/set-state-in-effect rule stays satisfied).
+  const [opened, setOpened] = useState<{ key: string; path: string } | null>(null);
+  const openKey = opened !== null && opened.path === pathname ? opened.key : null;
+  const setOpenKey = (key: string | null) =>
+    setOpened(key === null ? null : { key, path: pathname });
+
+  const currentHref = activeHref(pathname);
+  const currentGroup = activeGroupKey(pathname);
+
+  // Close on Escape, or on a pointer-down anywhere outside the nav. Bound only
+  // while a menu is open so the listeners aren't live for the whole session.
+  useEffect(() => {
+    if (openKey === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenKey(null);
+    };
+    const onDown = (e: PointerEvent) => {
+      if (!navRef.current?.contains(e.target as Node)) setOpenKey(null);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onDown);
+    };
+  }, [openKey]);
 
   return (
     <header className="border-b border-foreground/15">
       <nav className="flex items-center justify-between gap-6 px-6 py-3">
-        <div className="flex items-baseline gap-6">
+        <div className="flex items-baseline gap-6" ref={navRef}>
           <span className="text-sm font-medium tracking-tight">Codebook</span>
-          <ul className="flex items-center gap-4">
-            {LINKS.map((link) => (
-              <li key={link.href}>
-                <Link
-                  href={link.href}
-                  className={`text-sm transition hover:text-foreground ${
-                    isActive(link.href)
-                      ? 'text-foreground border-b border-foreground pb-0.5'
-                      : 'text-foreground/60'
-                  }`}
-                >
-                  {link.label}
-                </Link>
-              </li>
-            ))}
+          <ul className="flex items-center gap-1">
+            {NAV_GROUPS.map((group) => {
+              const isOpen = openKey === group.key;
+              const isCurrent = currentGroup === group.key;
+              return (
+                <li key={group.key} className="relative">
+                  <button
+                    type="button"
+                    aria-haspopup="menu"
+                    aria-expanded={isOpen}
+                    onClick={() => setOpenKey(isOpen ? null : group.key)}
+                    className={`rounded px-2 py-1 text-sm transition hover:bg-foreground/5 hover:text-foreground ${
+                      isCurrent || isOpen ? 'text-foreground' : 'text-foreground/60'
+                    }`}
+                  >
+                    {group.label}
+                    <span
+                      aria-hidden
+                      className={`ml-1.5 inline-block text-[9px] transition-transform ${
+                        isOpen ? 'rotate-180' : ''
+                      }`}
+                    >
+                      ▾
+                    </span>
+                    {isCurrent && (
+                      <span
+                        aria-hidden
+                        className="absolute inset-x-2 -bottom-0.5 block h-px bg-foreground"
+                      />
+                    )}
+                  </button>
+
+                  {isOpen && (
+                    <div
+                      role="menu"
+                      className="absolute left-0 top-full z-50 mt-2 w-60 border border-foreground/15 bg-background py-1 shadow-lg"
+                    >
+                      {group.items.map((item) => {
+                        const active = currentHref === item.href;
+                        return (
+                          <Link
+                            key={item.href}
+                            role="menuitem"
+                            href={item.href}
+                            className={`block px-3 py-2 transition hover:bg-foreground/5 ${
+                              active ? 'bg-foreground/5' : ''
+                            }`}
+                          >
+                            <span
+                              className={`block text-sm ${
+                                active ? 'text-foreground' : 'text-foreground/80'
+                              }`}
+                            >
+                              {item.label}
+                            </span>
+                            {item.hint && (
+                              <span className="block text-xs text-foreground/45">
+                                {item.hint}
+                              </span>
+                            )}
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
         <div className="flex items-center gap-6">

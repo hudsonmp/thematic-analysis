@@ -384,9 +384,14 @@ export async function listAssistantTurnsForFewShot(): Promise<AssistantTurn[]> {
  *  longer needs pasted ids. PII: none — run/verdict ids are the context, never
  *  pid/name/email (spec L5). */
 // AnnotationRow's shape + its snake→camel mapper live in the pure playground
-// module so the mapping is unit-tested (a field transposition type-checks);
-// re-exported here so existing consumers keep importing it from the action.
-export type { AnnotationRow };
+// module so the mapping is unit-tested (a field transposition type-checks).
+//
+// It is deliberately NOT re-exported from here. A 'use server' module may export
+// ONLY async functions: the server-action transform cannot prove a type re-export
+// from ANOTHER module is type-only, so it emits a server reference for a symbol
+// with no runtime value and the Turbopack build fails with "Export AnnotationRow
+// doesn't exist in target module" — invisible to `tsc`, which erases the re-export.
+// Consumers import the type straight from the pure module instead.
 
 export async function saveAnnotation(input: {
   runId?: string;
