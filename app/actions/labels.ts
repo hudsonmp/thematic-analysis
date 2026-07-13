@@ -4,6 +4,7 @@ import { cbFrom } from '@/lib/supabase/guard';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { autoColor } from '@/lib/codebook/color';
 import { wouldCreateCycle } from '@/lib/codebook/labelTree';
+import { describeInterposeError, planInterpose } from '@/lib/codebook/interpose';
 import type { Tables } from '@/lib/types/cb-db';
 
 type Label = Tables<'cb_labels'>;
@@ -237,6 +238,136 @@ export async function setCodeLabels(codeId: string, labelIds: string[]): Promise
   if (ins.error) {
     throw new Error(`setCodeLabels (insert) failed: ${ins.error.message}`);
   }
+}
+
+/**
+ * Set (or clear) a NODE's note — the free text explaining why this grouping
+ * exists and what it does/does not gather (migration 34).
+ *
+ * A note is what a node carries INSTEAD of a scheme. Nodes are never applied to
+ * data, so they have no definition, no include-if/exclude-if, no facets: those
+ * belong to codes. Passing an empty/blank string clears the note to NULL.
+ */
+export async function setLabelNote(id: string, note: string | null): Promise<Label> {
+  await requireAuthUser();
+  const trimmed = (note ?? '').trim();
+  const { data, error } = await cbFrom('cb_labels')
+    .update({ note: trimmed === '' ? null : trimmed })
+    .eq('id', id)
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(`setLabelNote failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
+/**
+ * ATTACH one code to one node — an ADDITIVE placement.
+ *
+ * Deliberately NOT `setCodeLabels`, which is a delete-all-then-insert of a code's
+ * whole label set: calling that from the tree to place a code at one node would
+ * silently DROP its placements everywhere else. Since placement is many-to-many on
+ * purpose (the same code may legitimately hang under two branches), the tree needs
+ * a single-membership add that leaves the others alone.
+ *
+ * Idempotent: the junction PK is (code_id, label_id), so re-attaching where the
+ * row already exists is upserted to a no-op rather than raising a duplicate-key
+ * error — dropping a code twice onto the same node is a slip, not a failure.
+ */
+export async function attachCodeToLabel(codeId: string, labelId: string): Promise<void> {
+  await requireAuthUser();
+  const res = await cbFrom('cb_code_labels').upsert(
+    { code_id: codeId, label_id: labelId },
+    { onConflict: 'code_id,label_id', ignoreDuplicates: true },
+  );
+  if (res.error) {
+    throw new Error(`attachCodeToLabel failed: ${res.error.message}`);
+  }
+}
+
+/**
+ * DETACH one code from one node, leaving its other placements intact. Removing a
+ * code's LAST placement does not delete the code — it returns to the Unplaced
+ * tray, which is the whole point of letting codes exist before they are
+ * structured.
+ */
+export async function detachCodeFromLabel(codeId: string, labelId: string): Promise<void> {
+  await requireAuthUser();
+  const res = await cbFrom('cb_code_labels')
+    .delete()
+    .eq('code_id', codeId)
+    .eq('label_id', labelId);
+  if (res.error) {
+    throw new Error(`detachCodeFromLabel failed: ${res.error.message}`);
+  }
+}
+
+/**
+ * INTERPOSE a new node into an existing edge: create `name` under `parentId`, then
+ * re-parent exactly `childIds` beneath it. The "this turned out too granular, I
+ * need an intermediary parent" move. The exact inverse of `deleteLabel`, which
+ * dissolves a node by promoting its children up one level.
+ *
+ * Validation is PURE (`planInterpose`) — in particular it REFUSES to capture a node
+ * that is not currently a child of `parentId`, which would relocate it from
+ * elsewhere in the tree under the guise of adding a layer here.
+ *
+ * Touches no code: placements live in cb_code_labels and re-parenting a node
+ * changes none of them. Restructuring therefore cannot alter what any code means.
+ *
+ * NON-ATOMIC (same caveat as `deleteLabel`): insert-then-re-parent is two
+ * PostgREST statements, not a transaction. A crash between them leaves an empty
+ * new node with no children captured — visible and trivially deletable, not
+ * corrupting. Acceptable for the single-researcher-per-codebook use here.
+ */
+export async function interposeLabel(
+  codebookId: string,
+  { parentId, name, childIds }: { parentId: string | null; name: string; childIds: string[] },
+): Promise<Label> {
+  await requireAuthUser();
+
+  const labels = await listLabels(codebookId);
+  const planned = planInterpose(labels, { parentId, name, childIds });
+  if (!planned.ok) {
+    throw new Error(
+      `interposeLabel refused: ${planned.errors.map(describeInterposeError).join(' ')}`,
+    );
+  }
+  const plan = planned.plan;
+
+  // The new node takes the position of the FIRST child it captures, so it appears
+  // where the researcher was looking rather than appended to the end of the group.
+  const firstCaptured = labels.find((l) => l.id === plan.childIds[0]);
+  const position = firstCaptured?.position ?? 0;
+
+  const created = await cbFrom('cb_labels')
+    .insert({
+      codebook_id: codebookId,
+      name: plan.name,
+      parent_id: plan.parentId,
+      color: autoColor(position),
+      position,
+    })
+    .select('*')
+    .single();
+  if (created.error || !created.data) {
+    throw new Error(
+      `interposeLabel (insert) failed: ${created.error?.message ?? 'no row returned'}`,
+    );
+  }
+  const node: Label = created.data;
+
+  // Re-parent the captured children under the new node. Their positions carry
+  // over unchanged, so their relative order inside the new node is preserved.
+  const moved = await cbFrom('cb_labels')
+    .update({ parent_id: node.id })
+    .in('id', plan.childIds);
+  if (moved.error) {
+    throw new Error(`interposeLabel (re-parent children) failed: ${moved.error.message}`);
+  }
+
+  return node;
 }
 
 // ---------------------------------------------------------------------------

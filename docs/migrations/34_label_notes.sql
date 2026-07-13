@@ -1,0 +1,25 @@
+-- 34_label_notes.sql
+-- NODE NOTES: give a label (a tree NODE — a construct/folder) a free-text note.
+--
+-- The codebook tree separates two things that are easy to conflate:
+--
+--   NODE (cb_labels)  — a construct/folder. NEVER applied to data. Carries a
+--                       `note`: why this grouping exists, what it does and does
+--                       not gather. This column.
+--   CODE (cb_codes)   — the only thing ever applied to a transcript. Carries the
+--                       SCHEME (cb_facets + the anatomy in cb_code_versions).
+--
+-- A node may hold codes AND child nodes at the same time (a folder with files and
+-- subfolders): there is no "a code-bearing node must be childless" rule, because
+-- what keeps the applied code set flat is "nodes are never codeable" — not
+-- "code-bearing nodes are leaves". Adding a child under a node that holds codes is
+-- therefore an ordinary act, not a state violation, and needs no promotion path.
+--
+-- Placement stays MANY-TO-MANY (cb_code_labels, migration 20): the same code may
+-- appear under several nodes on purpose. Consequence to hold onto: the tree is NOT
+-- a partition, so per-branch counts do not sum to N. The tree is for thinking; the
+-- flat code list is what you count from.
+--
+-- Additive + nullable -> backward-compatible. Touches only cb_labels; does NOT
+-- touch study/onboarding/users tables, nor codes, facets, episodes, or flags.
+alter table cb_labels add column if not exists note text;
