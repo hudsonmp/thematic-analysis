@@ -1,8 +1,9 @@
 /**
  * treeLayout — PURE geometry for the codebook tree canvas.
  *
- * Turns the nested label forest (+ the codes placed on each node) into absolute
- * positions and edges. Pure and I/O-free so the geometry is unit-testable: layout
+ * Turns a nested forest (+ the codes carrying each node) into absolute positions
+ * and edges. The forest is now a FACET'S VALUE CHAIN — the answer taxonomy inside
+ * one dimension — but the geometry is generic over anything with {id, name, children}. Pure and I/O-free so the geometry is unit-testable: layout
  * bugs are invisible in code review and miserable to debug through a screenshot,
  * and this is exactly the kind of logic that silently drifts (a node overlapping a
  * sibling by two pixels looks like a CSS problem for an hour).
@@ -20,15 +21,25 @@
  * That is enough for a bare-bones tree and cannot produce overlaps, because
  * subtree widths never share a slot — each leaf owns its column outright.
  *
- * CODES are NOT laid out as tree nodes. A code is placed ON a node (the
- * cb_code_labels junction), so it renders as a chip attached to that node's card;
- * it never gets its own column. This is the layout consequence of "a node may hold
- * codes AND child nodes at once": if codes were columns, a node with three codes
- * and two child nodes would need five columns and the tree would be a mess of
- * mixed-kind children.
+ * CODES are NOT laid out as tree nodes. A code CARRIES a value (the
+ * cb_code_facet_values junction) and may carry several, so it renders as a chip on
+ * the value it answers, never as a column of its own. If codes were columns, a value
+ * with three codes and two sub-values would need five columns of mixed kinds — and a
+ * code answering two values could not be drawn at all without duplicating it.
  */
 
-import type { LabelNode } from '@/lib/codebook/labelTree';
+/**
+ * The minimum a thing needs to be drawn: an id, a display name, and children.
+ * Deliberately NOT tied to labels or to facet values — the canvas now renders a
+ * FACET'S VALUE CHAIN (an answer taxonomy inside one dimension), and previously
+ * rendered a label tree. The geometry does not care which, and coupling it to
+ * either would mean a second copy of this file the day the other one appears.
+ */
+export type LayoutNode = {
+  id: string;
+  name: string;
+  children: LayoutNode[];
+};
 
 export type PositionedNode = {
   id: string;
@@ -65,7 +76,7 @@ export type Layout = {
  * coexist on one canvas.
  */
 export function layoutTree(
-  roots: LabelNode[],
+  roots: LayoutNode[],
   codeCountByLabel: ReadonlyMap<string, number> = new Map(),
 ): Layout {
   const nodes: PositionedNode[] = [];
@@ -76,7 +87,7 @@ export function layoutTree(
   let maxDepth = -1;
 
   /** Place `node` and its subtree; returns the node's slot-space centre. */
-  function place(node: LabelNode, depth: number, parentId: string | null): number {
+  function place(node: LayoutNode, depth: number, parentId: string | null): number {
     if (depth > maxDepth) maxDepth = depth;
 
     let x: number;
@@ -116,10 +127,10 @@ export function layoutTree(
  * strands the researcher with no way back up. Returns `[]` for a root, and for an
  * id that is not in the forest.
  */
-export function ancestorsOf(roots: LabelNode[], id: string): LabelNode[] {
-  const path: LabelNode[] = [];
+export function ancestorsOf(roots: LayoutNode[], id: string): LayoutNode[] {
+  const path: LayoutNode[] = [];
 
-  function walk(node: LabelNode, trail: LabelNode[]): boolean {
+  function walk(node: LayoutNode, trail: LayoutNode[]): boolean {
     if (node.id === id) {
       path.push(...trail);
       return true;
@@ -141,7 +152,7 @@ export function ancestorsOf(roots: LabelNode[], id: string): LabelNode[] {
  * means laying out ONLY this subtree — which is why zoom works at any level, with
  * no special case for roots: focusing a root is just `subtreeAt(root.id)`.
  */
-export function subtreeAt(roots: LabelNode[], id: string): LabelNode | null {
+export function subtreeAt(roots: LayoutNode[], id: string): LayoutNode | null {
   for (const root of roots) {
     if (root.id === id) return root;
     const found = subtreeAt(root.children, id);

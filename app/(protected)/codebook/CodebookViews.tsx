@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import CodebookEntry from '@/components/codebook/CodebookEntry';
-import TreeCanvas from '@/components/codebook/tree/TreeCanvas';
+import FacetCanvas from '@/components/codebook/tree/FacetCanvas';
 import type { CodebookTree } from '@/app/actions/codebook';
 
 /**
@@ -47,11 +47,10 @@ export default function CodebookViews({ tree }: { tree: CodebookTree }) {
       </div>
 
       {view === 'tree' ? (
-        <TreeCanvas
+        <FacetCanvas
           codebookId={tree.codebook.id}
-          labels={tree.labels}
-          codes={tree.codes}
           facets={tree.facets}
+          codes={tree.codes}
           citations={tree.citations}
         />
       ) : (

@@ -280,6 +280,42 @@ export async function setCodeFacetValues(codeId: string, facetValueIds: string[]
  * decides which); the caller passes the field for the facet's type. A call that
  * passes neither is treated as a clear.
  */
+/**
+ * ADD one facet value to a code — an ADDITIVE membership.
+ *
+ * Deliberately NOT `setCodeFacetValues`, which is a delete-all-then-insert of a
+ * code's ENTIRE facet-value set across ALL facets. Calling that to tag one value
+ * from the canvas would silently strip the code's values on every OTHER dimension —
+ * catastrophic once facets are the primary mechanism and a code carries a value on
+ * several of them at once.
+ *
+ * Idempotent: the junction PK is (code_id, facet_value_id), so re-adding is a no-op
+ * rather than a duplicate-key error. On a `cardinality: 'single'` facet the CALLER
+ * is responsible for clearing the previous value first — enforcing it here would
+ * require reading the facet on every add, and the canvas already knows the facet.
+ */
+export async function addCodeFacetValue(codeId: string, facetValueId: string): Promise<void> {
+  const res = await cbFrom('cb_code_facet_values').upsert(
+    { code_id: codeId, facet_value_id: facetValueId },
+    { onConflict: 'code_id,facet_value_id', ignoreDuplicates: true },
+  );
+  if (res.error) throw new Error(`addCodeFacetValue failed: ${res.error.message}`);
+}
+
+/**
+ * REMOVE one facet value from a code, leaving its values on every other dimension
+ * intact. Removing a code's LAST value does not delete the code — it returns to the
+ * uncategorized queue, which is the whole point of letting a code exist before it has
+ * been classified.
+ */
+export async function removeCodeFacetValue(codeId: string, facetValueId: string): Promise<void> {
+  const res = await cbFrom('cb_code_facet_values')
+    .delete()
+    .eq('code_id', codeId)
+    .eq('facet_value_id', facetValueId);
+  if (res.error) throw new Error(`removeCodeFacetValue failed: ${res.error.message}`);
+}
+
 export async function setCodeFacetField(
   codeId: string,
   facetId: string,

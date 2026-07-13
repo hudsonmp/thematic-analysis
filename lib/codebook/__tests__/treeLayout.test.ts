@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { ancestorsOf, layoutTree, subtreeAt } from '@/lib/codebook/treeLayout';
-import type { LabelNode } from '@/lib/codebook/labelTree';
+import type { LayoutNode } from '@/lib/codebook/treeLayout';
 
-/** Build a LabelNode; layout reads only `id`, `name`, `children`. */
-function node(id: string, children: LabelNode[] = []): LabelNode {
-  return { id, name: id, children } as unknown as LabelNode;
+/** Build a LayoutNode; layout reads only `id`, `name`, `children`. */
+function node(id: string, children: LayoutNode[] = []): LayoutNode {
+  return { id, name: id, children } as unknown as LayoutNode;
 }
 
 //        P                 the drawing: one parent, three children

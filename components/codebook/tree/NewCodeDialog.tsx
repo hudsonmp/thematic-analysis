@@ -2,59 +2,56 @@
 
 import { useMemo, useState, useTransition } from 'react';
 import {
+  addCodeFacetValue,
   createCodeInTree,
-  setCodeFacetField,
-  setCodeFacetValues,
+  type CodeOrigin,
 } from '@/app/actions/codes';
-import { attachCodeToLabel, createLabel, setLabelNote } from '@/app/actions/labels';
+import { createFacetValue } from '@/app/actions/facets';
 import type { FacetWithValues } from '@/app/actions/codebook';
-import type { CodeOrigin } from '@/app/actions/codes';
 import { searchCodes } from '@/lib/codebook/codePicker';
 import type { Tables } from '@/lib/types/cb-db';
 
 type Code = Tables<'cb_codes'>;
 
-/** New code · attach an existing code · new child node. */
-type Kind = 'code' | 'existing' | 'node';
+/** New code · an existing code answers this · a nested sub-value. */
+type Kind = 'code' | 'existing' | 'subvalue';
 
 /**
- * The dialog behind a node's `+`. It asks WHICH KIND of child, because the tree
- * holds two:
+ * WHERE the dialog was opened from. This decides which kinds are even offered, and
+ * it is why the three `+` buttons are NOT interchangeable:
  *
- *   CODE — the thing applied to data. Fill in the SCHEME: the codebook's own
- *          facets (defined on the Scheme page — this dialog does not invent
- *          fields, it renders whatever the researcher declared) plus the
- *          definition every code must have.
- *   NODE — a construct/folder. Never applied to data, so it has no scheme; it
- *          carries a NOTE instead: why this grouping exists, what it gathers.
- *
- * Asking is the honest move. A `+` that always made a code would force every
- * intermediate construct to masquerade as an applicable code — which is exactly
- * the conflation that makes hierarchical codebooks un-κ-able.
- *
- * ORIGIN defaults to `a_priori` when a paper is pinned, but is NOT forced: "came
- * from a paper" and "is a priori" are different claims — a code inspired by a
- * paper can still be `emergent` from pilot data. The pin sets the citation; the
- * researcher still owns the origin.
- */
-/**
- * WHERE the dialog was opened from. This decides which kinds of child are even
- * offered, and it is the reason the `+` buttons are not interchangeable:
- *
- *   child    — a node's `+`. All three: a new code, an EXISTING code (which may
- *              make a duplicate), or a child node.
- *   root     — the header `+`. A node only: a root code with no construct above it
- *              would be a code pretending to be a tree.
- *   floating — the corner `+`. A new code with NO home, saved for later. "Existing
- *              code" is meaningless here: there is nothing to attach it TO.
+ *   child    — a VALUE's `+`. All three: author a new code that answers this value,
+ *              say an EXISTING code answers it (which may make the code cross-cut),
+ *              or add a nested sub-value (a finer answer).
+ *   root     — the header `+`. A new TOP-LEVEL value of this dimension.
+ *   floating — the corner `+`. A code with NO answers, saved for triage. "Existing
+ *              code" is meaningless here: there is no value to answer.
  */
 export type DialogTarget =
   | { kind: 'child'; id: string; name: string }
   | { kind: 'root' }
   | { kind: 'floating' };
 
+/**
+ * The dialog behind a `+`.
+ *
+ * The model it serves:
+ *   FACET (dimension) — a question askable of every code.
+ *   VALUE  — an answer. Values nest.
+ *   CODE   — the only thing applied to data. It ANSWERS values, and may answer two
+ *            on one dimension (the cross-cutting case) without being duplicated.
+ *
+ * A new code's fields are its ANATOMY (mnemonic, name, definition — first-class,
+ * versioned columns on cb_code_versions) plus its ANSWERS on every declared
+ * dimension. The dialog invents no fields: the dimensions come from the codebook.
+ *
+ * ORIGIN defaults to `a_priori` under a pinned paper but is never forced — "came from
+ * a paper" and "is a priori" are different claims, and a code drawn from a paper can
+ * still be emergent from pilot data.
+ */
 export default function NewCodeDialog({
   codebookId,
+  facetId,
   target,
   facets,
   codes,
@@ -64,26 +61,23 @@ export default function NewCodeDialog({
   onDone,
 }: {
   codebookId: string;
+  /** The dimension whose value chain the canvas is showing. */
+  facetId: string;
   target: DialogTarget;
+  /** Every dimension — a new code answers all of them, not just the one on screen. */
   facets: FacetWithValues[];
-  /** Every code — so the dialog can offer an EXISTING one, not only a new one. */
-  codes: (Pick<Code, 'id' | 'mnemonic' | 'name'> & { labelIds: string[] })[];
+  /** Every code — so the dialog can name an EXISTING one, not only author a new one. */
+  codes: (Pick<Code, 'id' | 'mnemonic' | 'name'> & { facetValueIds: string[] })[];
   nodeNameById: ReadonlyMap<string, string>;
-  /** Deductive-mode pin. When set, a new code auto-links this citation. */
   pinnedCitationId: string | null;
   onClose: () => void;
   onDone: () => void;
 }) {
-  const parentId = target.kind === 'child' ? target.id : null;
+  const parentValueId = target.kind === 'child' ? target.id : null;
   const parentName = target.kind === 'child' ? target.name : null;
 
-  const [kind, setKind] = useState<Kind>(target.kind === 'root' ? 'node' : 'code');
+  const [kind, setKind] = useState<Kind>(target.kind === 'root' ? 'subvalue' : 'code');
   const [query, setQuery] = useState('');
-
-  const hits = useMemo(
-    () => (kind === 'existing' ? searchCodes(codes, query, parentId, nodeNameById) : []),
-    [kind, codes, query, parentId, nodeNameById],
-  );
 
   const [mnemonic, setMnemonic] = useState('');
   const [name, setName] = useState('');
@@ -91,27 +85,57 @@ export default function NewCodeDialog({
   const [origin, setOrigin] = useState<CodeOrigin>(
     pinnedCitationId !== null ? 'a_priori' : 'emergent',
   );
-  // facetId → chosen value id (enum) / boolean / free text.
-  const [enumChoice, setEnumChoice] = useState<Record<string, string>>({});
-  const [boolChoice, setBoolChoice] = useState<Record<string, boolean>>({});
-  const [textChoice, setTextChoice] = useState<Record<string, string>>({});
 
-  const [nodeNote, setNodeNote] = useState('');
+  // facetId → the value ids this new code answers on that dimension. An ARRAY, not a
+  // scalar: a `multi` dimension is exactly what lets a cross-cutting code give two
+  // answers instead of being duplicated into two branches.
+  const [answers, setAnswers] = useState<Record<string, string[]>>(() =>
+    parentValueId !== null ? { [facetId]: [parentValueId] } : {},
+  );
+
+  const [valueLabel, setValueLabel] = useState('');
+  const [valueDescription, setValueDescription] = useState('');
 
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
-  /** Attach an EXISTING code to this node. May create a duplicate — deliberately;
-   *  the row said so before it was clicked. */
-  function attach(codeId: string) {
-    if (parentId === null) return; // 'existing' is never offered without a target
+  const hits = useMemo(
+    () =>
+      kind === 'existing'
+        ? searchCodes(
+            codes.map((c) => ({ ...c, labelIds: c.facetValueIds })),
+            query,
+            parentValueId,
+            nodeNameById,
+          )
+        : [],
+    [kind, codes, query, parentValueId, nodeNameById],
+  );
+
+  function toggleAnswer(fid: string, valueId: string, multi: boolean) {
+    setAnswers((s) => {
+      const current = s[fid] ?? [];
+      if (current.includes(valueId)) {
+        return { ...s, [fid]: current.filter((v) => v !== valueId) };
+      }
+      // A `single`-cardinality dimension admits exactly one answer, so a new pick
+      // REPLACES rather than accumulates. Enforced here because the dialog is the
+      // only place that knows the facet.
+      return { ...s, [fid]: multi ? [...current, valueId] : [valueId] };
+    });
+  }
+
+  /** An EXISTING code answers this value. May make it cross-cut — deliberately; the
+   *  row said so before it was clicked. */
+  function attachExisting(codeId: string) {
+    if (parentValueId === null) return;
     setError(null);
     start(async () => {
       try {
-        await attachCodeToLabel(codeId, parentId);
+        await addCodeFacetValue(codeId, parentValueId);
         onDone();
       } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to place the code.');
+        setError(e instanceof Error ? e.message : 'Failed to record the answer.');
       }
     });
   }
@@ -120,16 +144,20 @@ export default function NewCodeDialog({
     setError(null);
     start(async () => {
       try {
-        if (kind === 'node') {
-          const trimmed = name.trim();
+        if (kind === 'subvalue') {
+          const trimmed = valueLabel.trim();
           if (!trimmed) {
-            setError('A node needs a name.');
+            setError('A value needs a name.');
             return;
           }
-          const created = await createLabel(codebookId, { name: trimmed, parentId });
-          // The note is a separate write, and only when non-empty: createLabel does
-          // not take one, and an empty note must stay NULL rather than ''.
-          if (nodeNote.trim()) await setLabelNote(created.id, nodeNote);
+          await createFacetValue(facetId, {
+            // The key is never shown and must be unique within the facet; a slug of
+            // the label would collide the moment two branches use the same word.
+            key: crypto.randomUUID(),
+            label: trimmed,
+            description: valueDescription.trim() || undefined,
+            parentId: parentValueId,
+          });
         } else {
           if (!mnemonic.trim() || !name.trim() || !definition.trim()) {
             setError('A code needs a mnemonic, a name, and a definition.');
@@ -146,21 +174,17 @@ export default function NewCodeDialog({
               exclude_if: [],
               exemplars: [],
             },
-            labelId: parentId,
+            // The tree placement is gone: a code's home IS its answers.
+            labelId: null,
             citationId: pinnedCitationId,
           });
 
-          // Enum facets go to cb_code_facet_values; boolean/open_text to
-          // cb_code_facet_fields. Both are set AFTER creation — the code exists
-          // either way, so a facet write that fails leaves a real code with a
-          // missing facet, not a half-created one.
-          const chosen = Object.values(enumChoice).filter(Boolean);
-          if (chosen.length > 0) await setCodeFacetValues(codeId, chosen);
-          for (const [facetId, v] of Object.entries(boolChoice)) {
-            if (v) await setCodeFacetField(codeId, facetId, { bool_value: true });
-          }
-          for (const [facetId, v] of Object.entries(textChoice)) {
-            if (v.trim()) await setCodeFacetField(codeId, facetId, { text_value: v.trim() });
+          // Answers are written AFTER the code exists, and ADDITIVELY — never through
+          // setCodeFacetValues, which is a delete-all-then-insert across ALL
+          // dimensions. A failure here leaves a real code with a missing answer (it
+          // simply appears in the triage queue), not a half-created one.
+          for (const valueIds of Object.values(answers)) {
+            for (const valueId of valueIds) await addCodeFacetValue(codeId, valueId);
           }
         }
         onDone();
@@ -169,6 +193,15 @@ export default function NewCodeDialog({
       }
     });
   }
+
+  const title =
+    kind === 'existing'
+      ? 'An existing code answers this'
+      : kind === 'code'
+        ? 'New code'
+        : target.kind === 'root'
+          ? 'New value'
+          : 'New sub-value';
 
   return (
     <div
@@ -181,18 +214,14 @@ export default function NewCodeDialog({
       >
         <div className="flex items-baseline justify-between border-b border-foreground/15 px-4 py-3">
           <h2 className="text-sm font-medium tracking-tight">
-            {kind === 'existing'
-              ? 'Place an existing code'
-              : kind === 'code'
-                ? 'New code'
-                : 'New node'}
+            {title}
             {parentName ? (
               <span className="font-normal text-foreground/50"> under {parentName}</span>
             ) : (
               target.kind === 'floating' && (
                 <span className="font-normal text-foreground/50">
                   {' '}
-                  · floating, no home yet
+                  · unclassified, triage later
                 </span>
               )
             )}
@@ -207,13 +236,10 @@ export default function NewCodeDialog({
           </button>
         </div>
 
-        <div className="max-h-[70vh] overflow-y-auto px-4 py-4 space-y-4">
-          {/* Three intents behind ONE `+`, offered only where each makes sense.
-              'existing' needs a node to attach to, so it is absent on the corner
-              (floating) `+` and on the root `+`. */}
+        <div className="max-h-[70vh] space-y-4 overflow-y-auto px-4 py-4">
           {target.kind === 'child' && (
             <div className="flex gap-1 text-xs">
-              {(['code', 'existing', 'node'] as const).map((k) => (
+              {(['code', 'existing', 'subvalue'] as const).map((k) => (
                 <button
                   key={k}
                   type="button"
@@ -228,7 +254,7 @@ export default function NewCodeDialog({
                     ? 'New code'
                     : k === 'existing'
                       ? 'Existing code'
-                      : 'Node (a grouping)'}
+                      : 'Sub-value'}
                 </button>
               ))}
             </div>
@@ -252,7 +278,7 @@ export default function NewCodeDialog({
                     key={h.id}
                     type="button"
                     disabled={h.status === 'here' || pending}
-                    onClick={() => attach(h.id)}
+                    onClick={() => attachExisting(h.id)}
                     className={`w-full border px-2 py-1.5 text-left text-xs transition ${
                       h.status === 'here'
                         ? 'cursor-default border-transparent text-foreground/30'
@@ -262,39 +288,35 @@ export default function NewCodeDialog({
                     <span className="font-mono">{h.mnemonic}</span>{' '}
                     <span className="text-foreground/60">{h.name}</span>
                     {h.status === 'here' && (
-                      <span className="ml-1 text-foreground/30">· already here</span>
+                      <span className="ml-1 text-foreground/30">· already answers this</span>
                     )}
                     {h.status === 'elsewhere' && (
-                      // The duplicate is named BEFORE it is made. A second placement
-                      // is legitimate — it just must never be a surprise.
-                      <span className="ml-1 text-amber-700 dark:text-amber-500">
-                        · duplicate of {h.otherNodes.join(', ')}
+                      <span className="ml-1 text-foreground/45">
+                        · also answers {h.otherNodes.join(', ')}
                       </span>
                     )}
                   </button>
                 ))}
               </div>
             </>
-          ) : kind === 'node' ? (
+          ) : kind === 'subvalue' ? (
             <>
               <Field label="Name">
                 <input
                   autoFocus
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  value={valueLabel}
+                  onChange={(e) => setValueLabel(e.target.value)}
                   className={inputCls}
-                  placeholder="e.g. Impasse"
+                  placeholder="e.g. Evidence evaluation"
                 />
               </Field>
-              <Field
-                label="Note"
-                hint="A node is never applied to data, so it has no scheme. Say why this grouping exists and what it does — and does not — gather."
-              >
+              <Field label="Description">
                 <textarea
-                  value={nodeNote}
-                  onChange={(e) => setNodeNote(e.target.value)}
+                  value={valueDescription}
+                  onChange={(e) => setValueDescription(e.target.value)}
                   rows={3}
                   className={inputCls}
+                  placeholder="What does this answer cover — and what does it deliberately not?"
                 />
               </Field>
             </>
@@ -307,7 +329,7 @@ export default function NewCodeDialog({
                     value={mnemonic}
                     onChange={(e) => setMnemonic(e.target.value)}
                     className={inputCls}
-                    placeholder="AMB"
+                    placeholder="CONF"
                   />
                 </Field>
                 <Field label="Name">
@@ -315,7 +337,7 @@ export default function NewCodeDialog({
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     className={inputCls}
-                    placeholder="Ambiguity unresolved"
+                    placeholder="Confirmation bias in review"
                   />
                 </Field>
               </div>
@@ -329,9 +351,6 @@ export default function NewCodeDialog({
                 />
               </Field>
 
-              {/* Origin still DEFAULTS to a_priori under a pinned paper and is still
-                  not forced — the reasoning lives in the action's docs, not as a
-                  paragraph the researcher re-reads on every single code. */}
               <Field label="Origin">
                 <div className="flex gap-1 text-xs">
                   {(['a_priori', 'pilot', 'emergent'] as const).map((o) => (
@@ -351,54 +370,48 @@ export default function NewCodeDialog({
                 </div>
               </Field>
 
-              {/* THE SCHEME. Rendered from the codebook's own cb_facets — this
-                  dialog invents no fields. An empty scheme is not an error: it
-                  means the researcher has not declared facets yet. */}
+              {/* THE ANSWERS. One block per dimension, rendered from the codebook's own
+                  facets — the dialog invents no fields. Leaving a dimension blank is
+                  allowed: the code lands in the triage queue, which is the point of
+                  letting a code exist before it has been classified. */}
               {facets.length === 0 ? (
-                <p className="text-xs text-foreground/45 italic">
-                  No facets defined yet — the scheme is empty. Declare facets on the
-                  Scheme page and they will appear here.
+                <p className="text-xs italic text-foreground/45">
+                  No dimensions declared yet. This code will be created unclassified.
                 </p>
               ) : (
-                facets.map((f) => (
-                  <Field key={f.id} label={f.label} hint={f.description ?? undefined}>
-                    {f.type === 'enum' ? (
-                      <select
-                        value={enumChoice[f.id] ?? ''}
-                        onChange={(e) =>
-                          setEnumChoice((s) => ({ ...s, [f.id]: e.target.value }))
-                        }
-                        className={inputCls}
-                      >
-                        <option value="">—</option>
+                facets.map((f) => {
+                  const multi = f.cardinality === 'multi';
+                  const mine = answers[f.id] ?? [];
+                  return (
+                    <Field
+                      key={f.id}
+                      label={f.label}
+                      hint={multi ? 'more than one answer allowed' : undefined}
+                    >
+                      <div className="flex flex-wrap gap-1">
                         {f.values.map((v) => (
-                          <option key={v.id} value={v.id}>
+                          <button
+                            key={v.id}
+                            type="button"
+                            onClick={() => toggleAnswer(f.id, v.id, multi)}
+                            className={`border px-2 py-1 text-xs transition ${
+                              mine.includes(v.id)
+                                ? 'border-foreground bg-foreground text-background'
+                                : 'border-foreground/20 text-foreground/60 hover:border-foreground/50'
+                            }`}
+                          >
                             {v.label}
-                          </option>
+                          </button>
                         ))}
-                      </select>
-                    ) : f.type === 'boolean' ? (
-                      <label className="flex items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={boolChoice[f.id] ?? false}
-                          onChange={(e) =>
-                            setBoolChoice((s) => ({ ...s, [f.id]: e.target.checked }))
-                          }
-                        />
-                        <span className="text-foreground/70">yes</span>
-                      </label>
-                    ) : (
-                      <input
-                        value={textChoice[f.id] ?? ''}
-                        onChange={(e) =>
-                          setTextChoice((s) => ({ ...s, [f.id]: e.target.value }))
-                        }
-                        className={inputCls}
-                      />
-                    )}
-                  </Field>
-                ))
+                        {f.values.length === 0 && (
+                          <span className="text-xs italic text-foreground/40">
+                            no values yet
+                          </span>
+                        )}
+                      </div>
+                    </Field>
+                  );
+                })
               )}
             </>
           )}
