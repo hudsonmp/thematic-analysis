@@ -9,7 +9,7 @@ import {
   updateFacetValue,
 } from '@/app/actions/facets';
 import { addCodeFacetValue, removeCodeFacetValue } from '@/app/actions/codes';
-import { createFacetValue, promoteCodeToValue } from '@/app/actions/facets';
+import { createFacetValue, promoteCodeToValue, setFacetValueParent } from '@/app/actions/facets';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
 import { buildTree } from '@/lib/codebook/tree';
@@ -93,10 +93,16 @@ export default function FacetCanvas({
   // dialog is still there for a value that needs a description.
   const [quickBranchAt, setQuickBranchAt] = useState<string | null | undefined>(undefined);
   const [quickBranchName, setQuickBranchName] = useState('');
-  // The code currently being dragged out of the staging box. Non-null turns every value
-  // node into a drop target — targets that only appear DURING a drag, so the canvas is
-  // not permanently littered with affordances for a gesture you are not making.
-  const [dragging, setDragging] = useState<string | null>(null);
+  // What is currently in flight. Non-null turns the legal targets into drop zones —
+  // zones that appear only DURING a drag, so the canvas is not permanently littered with
+  // affordances for a gesture you are not making.
+  //
+  // A code and a VALUE are both draggable, and they mean different things:
+  //   code  -> value : this code answers that value
+  //   value -> value : re-parent the sub-chain (cycle-guarded server-side)
+  const [dragging, setDragging] = useState<
+    { kind: 'code'; id: string } | { kind: 'value'; id: string } | null
+  >(null);
 
   const values: FacetValue[] = useMemo(() => facet?.values ?? [], [facet]);
 
@@ -296,6 +302,27 @@ export default function FacetCanvas({
           onClick={(e) => {
             if (e.target === e.currentTarget) setDialog({ kind: 'floating' });
           }}
+          onDragOver={(e) => {
+            if (dragging?.kind === 'code') e.preventDefault();
+          }}
+          onDrop={(e) => {
+            // Dropping a code on EMPTY canvas unfiles it from this dimension — it returns
+            // to the staging box. Un-filing must be as cheap as filing, or a misdrop is a
+            // trap you can only escape through the inspector.
+            if (e.target !== e.currentTarget) return;
+            const codeId = e.dataTransfer.getData('text/code-id');
+            if (!codeId) return;
+            e.preventDefault();
+            const from =
+              codes.find((c) => c.id === codeId)?.facetValueIds.filter((id) => valueById.has(id)) ??
+              [];
+            if (from.length > 0) {
+              run(async () => {
+                for (const old of from) await removeCodeFacetValue(codeId, old);
+              });
+            }
+            setDragging(null);
+          }}
           title="Click empty space to capture an uncategorized code"
           className="relative flex-1 cursor-crosshair overflow-auto bg-foreground/[0.02] p-6">
           {/* A code with NO answers yet, saved for later. It costs nothing and
@@ -346,17 +373,44 @@ export default function FacetCanvas({
                 return (
                   <div
                     key={n.id}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('text/value-id', n.id);
+                      e.dataTransfer.effectAllowed = 'move';
+                      setDragging({ kind: 'value', id: n.id });
+                    }}
+                    onDragEnd={() => setDragging(null)}
                     onDragOver={(e) => {
-                      if (dragging) e.preventDefault();
+                      // Never a drop target for ITSELF; the server rejects a cycle anyway,
+                      // but an affordance that always errors is a lie the UI is telling.
+                      if (dragging && !(dragging.kind === 'value' && dragging.id === n.id)) {
+                        e.preventDefault();
+                      }
                     }}
                     onDrop={(e) => {
                       e.preventDefault();
                       const codeId = e.dataTransfer.getData('text/code-id');
-                      if (codeId) run(() => addCodeFacetValue(codeId, n.id));
+                      const valueId = e.dataTransfer.getData('text/value-id');
+                      if (codeId) {
+                        // Dragging a code from ANOTHER value MOVES it: a drag reads as
+                        // relocation, not accumulation. To make a code answer two values
+                        // (the cross-cutting case) use the picker, which says so out loud.
+                        const from = codes
+                          .find((c) => c.id === codeId)
+                          ?.facetValueIds.filter((id) => valueById.has(id)) ?? [];
+                        run(async () => {
+                          for (const old of from) {
+                            if (old !== n.id) await removeCodeFacetValue(codeId, old);
+                          }
+                          await addCodeFacetValue(codeId, n.id);
+                        });
+                      } else if (valueId && valueId !== n.id) {
+                        run(() => setFacetValueParent(valueId, n.id));
+                      }
                       setDragging(null);
                     }}
                     className={`absolute -translate-x-1/2 ${
-                      dragging
+                      dragging && !(dragging.kind === 'value' && dragging.id === n.id)
                         ? 'rounded outline-dashed outline-1 outline-offset-4 outline-foreground/30'
                         : ''
                     }`}
@@ -447,8 +501,15 @@ export default function FacetCanvas({
                           <button
                             key={c.id}
                             type="button"
+                            draggable
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData('text/code-id', c.id);
+                              e.dataTransfer.effectAllowed = 'move';
+                              setDragging({ kind: 'code', id: c.id });
+                            }}
+                            onDragEnd={() => setDragging(null)}
                             onClick={() => inspect({ kind: 'code', id: c.id })}
-                            className={`max-w-full truncate border px-1.5 py-0.5 text-[10px] transition ${
+                            className={`max-w-full cursor-grab truncate border px-1.5 py-0.5 text-[10px] transition active:cursor-grabbing ${
                               selected?.kind === 'code' && selected.id === c.id
                                 ? 'border-foreground bg-foreground text-background'
                                 : 'border-foreground/25 text-foreground/70 hover:border-foreground'
@@ -490,7 +551,7 @@ export default function FacetCanvas({
             facetId={facet.id}
             facetLabel={facet.label}
             unfiled={unansweredHere}
-            onDragCode={setDragging}
+            onDragCode={(id) => setDragging(id === null ? null : { kind: 'code', id })}
           />
         )}
 
