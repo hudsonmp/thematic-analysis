@@ -225,27 +225,58 @@ export async function promoteCodeToValue(
  * symptom; a new facet is the cure.
  */
 export async function duplicateFacetValue(valueId: string): Promise<FacetValue> {
-  const src = await cbFrom('cb_facet_values')
-    .select('facet_id, label, description, color')
-    .eq('id', valueId)
-    .single();
-  if (src.error || !src.data) {
-    throw new Error(`duplicateFacetValue failed: ${src.error?.message ?? 'value not found'}`);
+  const all = await cbFrom('cb_facet_values').select('*');
+  if (all.error) throw new Error(`duplicateFacetValue failed: ${all.error.message}`);
+
+  const src = (all.data ?? []).find((v) => v.id === valueId);
+  if (!src) throw new Error('duplicateFacetValue failed: value not found.');
+
+  const siblings = (all.data ?? []).filter((v) => v.facet_id === src.facet_id);
+
+  // WHERE the copy lands. It is a floating ROOT, and roots lay out left-to-right by
+  // `position` — so appending it (nextPosition) parks it at the far right of the canvas,
+  // underneath the inspector window that just opened on it. A copy you cannot see is a
+  // copy you assume failed.
+  //
+  // Instead it is inserted immediately AFTER the source's own root, so it appears beside
+  // the tree it came from. Walk up to that root (visited-guard against a data cycle).
+  const parentOf = new Map(siblings.map((v) => [v.id, v.parent_id]));
+  let rootId = src.id;
+  const seen = new Set<string>();
+  while (!seen.has(rootId)) {
+    seen.add(rootId);
+    const parent = parentOf.get(rootId) ?? null;
+    if (parent === null) break;
+    rootId = parent;
+  }
+  const rootPosition = siblings.find((v) => v.id === rootId)?.position ?? 0;
+  const slot = rootPosition + 1;
+
+  // Shove the later roots right by one so the new slot is genuinely free — otherwise the
+  // copy shares a position and the sibling sort falls back to created_at, which puts the
+  // newest LAST: back in the corner, which is the thing this is avoiding.
+  const later = siblings.filter((v) => v.parent_id === null && v.position >= slot);
+  for (const v of later) {
+    const bump = await cbFrom('cb_facet_values')
+      .update({ position: v.position + 1 })
+      .eq('id', v.id);
+    if (bump.error) {
+      throw new Error(`duplicateFacetValue (reorder roots) failed: ${bump.error.message}`);
+    }
   }
 
-  const position = await nextPosition('cb_facet_values', src.data.facet_id);
   const { data, error } = await cbFrom('cb_facet_values')
     .insert({
-      facet_id: src.data.facet_id,
+      facet_id: src.facet_id,
       key: crypto.randomUUID(),
-      label: src.data.label,
-      description: src.data.description,
-      color: src.data.color ?? autoColor(position),
+      label: src.label,
+      description: src.description,
+      color: src.color ?? autoColor(slot),
       // Floating: a root of its own until you drag it somewhere. Sub-values are NOT
       // copied either — a duplicate is a seed, not a clone of a whole subtree, and
       // copying the chain would multiply the ambiguity above by its depth.
       parent_id: null,
-      position,
+      position: slot,
     })
     .select('*')
     .single();

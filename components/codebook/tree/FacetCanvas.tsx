@@ -91,6 +91,11 @@ export default function FacetCanvas({
   // is a permanent rail, because the canvas is the thinking surface and a panel you
   // cannot dismiss permanently taxes the width you think in.
   const [triageOpen, setTriageOpen] = useState(false);
+  // ⌘⌫ ARMS a delete; a second ⌘⌫ (or the inspector button) commits it. Deleting a value
+  // destroys every code's answer on it — cb_code_facet_values cascades — and no keystroke
+  // should do that silently. Arming is cheaper than a modal and still makes the second
+  // press a decision rather than a reflex.
+  const [armedDelete, setArmedDelete] = useState<string | null>(null);
   // Growing the tree used to mean opening a dialog and picking a tab. A branch is just
   // a name — so a node exposes an inline slot: click the ghost `+`, type, Enter. The
   // dialog is still there for a value that needs a description.
@@ -193,6 +198,7 @@ export default function FacetCanvas({
   function inspect(next: Selection) {
     setSelected(next);
     setTriageOpen(false);
+    setArmedDelete(null); // an arm must never survive the thing it was aimed at
   }
 
   function run(fn: () => Promise<unknown>) {
@@ -217,6 +223,18 @@ export default function FacetCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
+  const deleteSelected = useCallback(() => {
+    if (selected?.kind !== 'value') return;
+    const id = selected.id;
+    run(async () => {
+      await deleteFacetValue(id); // sub-values collapse UP one level; they are not lost
+      setSelected(null);
+      setArmedDelete(null);
+      if (focusId === id) setFocusId(null);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, focusId]);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       // Ignore while typing: ⌘-D in a text field is the browser's business, not ours.
@@ -227,14 +245,21 @@ export default function FacetCanvas({
         e.preventDefault(); // ⌘-D is "bookmark" otherwise
         duplicateSelected();
       }
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'Backspace' || e.key === 'Delete')) {
+        if (selected?.kind !== 'value') return;
+        e.preventDefault();
+        if (armedDelete === selected.id) deleteSelected();
+        else setArmedDelete(selected.id);
+      }
       if (e.key === 'Escape') {
         setSelected(null);
         setTriageOpen(false);
+        setArmedDelete(null);
       }
     }
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [selected, duplicateSelected]);
+  }, [selected, duplicateSelected, deleteSelected, armedDelete]);
 
   const x = (n: number) => n * COL + COL / 2;
   const y = (n: number) => n * ROW + 48;
@@ -327,7 +352,7 @@ export default function FacetCanvas({
           </button>
 
           <span className="ml-auto text-xs text-foreground/40">
-            click = inspect · ⌘-click = zoom · ⌘D = duplicate value
+            click = inspect · ⌘-click = zoom · ⌘D duplicate · ⌘⌫ delete
           </span>
         </div>
 
@@ -713,19 +738,17 @@ export default function FacetCanvas({
                 onRename={(label) => run(() => updateFacetValue(selected.id, { label }))}
                 onZoom={() => setFocusId(selected.id)}
                 onDuplicate={duplicateSelected}
+                armed={armedDelete === selected.id}
                 onUnnest={
                   valueById.get(selected.id)?.parent_id == null
                     ? undefined
                     : () => run(() => setFacetValueParent(selected.id, null))
                 }
                 onInterpose={() => setInterposeAt(selected.id)}
-                onDissolve={() =>
-                  run(async () => {
-                    await deleteFacetValue(selected.id);
-                    setSelected(null);
-                    if (focusId === selected.id) setFocusId(null);
-                  })
-                }
+                onDissolve={() => {
+                  if (armedDelete === selected.id) deleteSelected();
+                  else setArmedDelete(selected.id);
+                }}
                 onDetach={(codeId) => run(() => removeCodeFacetValue(codeId, selected.id))}
               />
             ) : selectedCode !== null && selected !== null ? (
@@ -814,6 +837,7 @@ function ValueInspector({
   onRename,
   onZoom,
   onDuplicate,
+  armed,
   onUnnest,
   onInterpose,
   onDissolve,
@@ -834,6 +858,8 @@ function ValueInspector({
   onZoom: () => void;
   /** Copy as a floating root (⌘D). Same label/description, no parent, NO codes. */
   onDuplicate: () => void;
+  /** True once a delete has been armed (⌘⌫ once, or one click of Dissolve). */
+  armed: boolean;
   /** Promote to the top level of this dimension. Absent when already a root. */
   onUnnest?: () => void;
   onInterpose: () => void;
@@ -909,6 +935,14 @@ function ValueInspector({
         <p className="text-xs text-foreground/40">Saves on blur.</p>
       </div>
 
+      {armed && (
+        <p className="border border-red-500/40 bg-red-500/5 px-2 py-1.5 text-[11px] leading-snug text-red-700 dark:text-red-400">
+          Deleting <strong>{value.label}</strong>: its sub-values collapse up one level
+          (they are not lost), but every code answering <em>this</em> value loses that
+          answer. Press ⌘⌫ or the red button again to confirm; Escape cancels.
+        </p>
+      )}
+
       <div className="flex flex-wrap gap-1.5">
         <button
           type="button"
@@ -957,10 +991,18 @@ function ValueInspector({
           type="button"
           onClick={onDissolve}
           disabled={pending}
-          title="Delete this value; its sub-values collapse up one level (the inverse of interpose). Codes are untouched."
-          className="border border-foreground/20 px-2 py-1 text-xs text-foreground/60 transition hover:border-red-500 hover:text-red-600"
+          title={
+            armed
+              ? 'Click again (or ⌘⌫) to delete. Sub-values collapse up one level; every code answering THIS value loses that answer.'
+              : 'Delete this value (⌘⌫). Sub-values collapse up one level; codes answering it lose that answer.'
+          }
+          className={`border px-2 py-1 text-xs transition ${
+            armed
+              ? 'border-red-500 bg-red-500 text-white'
+              : 'border-foreground/20 text-foreground/60 hover:border-red-500 hover:text-red-600'
+          }`}
         >
-          Dissolve
+          {armed ? 'Delete — press again' : 'Dissolve'}
         </button>
       </div>
 
