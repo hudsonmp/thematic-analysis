@@ -34,9 +34,10 @@
  * this module refuses.
  */
 
-import type { Tables } from '@/lib/types/cb-db';
-
-type Label = Tables<'cb_labels'>;
+/** Any adjacency-list row. Generic because the SAME move applies to a facet's nested
+ *  VALUES as to labels — "this answer turned out too granular, it needs an
+ *  intermediate one" is the same operation as "this construct is too granular". */
+type Nested = { id: string; parent_id: string | null };
 
 /** Why an interpose was refused. Rendered to the researcher verbatim. */
 export type InterposeError =
@@ -71,7 +72,7 @@ export type InterposePlan = {
  * selection order is preserved so the new node's sibling order is predictable.
  */
 export function planInterpose(
-  labels: Label[],
+  labels: Nested[],
   { parentId, name, childIds }: InterposePlan,
 ): { ok: true; plan: InterposePlan } | { ok: false; errors: InterposeError[] } {
   const errors: InterposeError[] = [];

@@ -1,0 +1,29 @@
+-- 35_facet_value_nesting.sql
+-- SUB-FACETS: make a facet's VALUE list hierarchical.
+--
+-- A facet is a DIMENSION — a question askable of every code ("which space is this
+-- code about?"). Its values are the answers. A "sub-facet" is a nested VALUE, not a
+-- nested facet:
+--
+--     FACET: Space            <- the question
+--       Hypothesis            <- an answer
+--       Experiment            <- an answer
+--         Design              <- a finer answer (a sub-facet)
+--         Execution
+--       Evidence evaluation
+--
+-- This is a taxonomy INSIDE one dimension (Ranganathan's chain), which is exactly
+-- what a tree is good at. It is NOT a facet that depends on another facet's value
+-- ("ask Bias type only when Space = Evidence") — that would be a DEPENDENCY between
+-- dimensions, destroying the orthogonality that is the entire reason facets solve
+-- cross-classification. Facets stay independent of each other; only values nest.
+--
+-- Mirrors 32_label_nesting exactly: adjacency list, no depth cap, `on delete set
+-- null` as the DB safety net while the application DELETE promotes children up one
+-- level so a removed value collapses rather than orphaning its children to root.
+-- `position` keeps ordering values, now within a sibling group.
+--
+-- Additive + nullable -> backward-compatible. Touches only cb_facet_values; does
+-- NOT touch study/onboarding/users tables.
+alter table cb_facet_values add column if not exists parent_id uuid references cb_facet_values(id) on delete set null;
+create index if not exists cb_facet_values_parent_idx on cb_facet_values(facet_id, parent_id);

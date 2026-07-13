@@ -677,6 +677,7 @@ export type Database = {
           id: string
           key: string
           label: string
+          parent_id: string | null
           position: number
         }
         Insert: {
@@ -687,6 +688,7 @@ export type Database = {
           id?: string
           key: string
           label: string
+          parent_id?: string | null
           position?: number
         }
         Update: {
@@ -697,6 +699,7 @@ export type Database = {
           id?: string
           key?: string
           label?: string
+          parent_id?: string | null
           position?: number
         }
         Relationships: [
