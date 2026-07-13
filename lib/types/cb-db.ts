@@ -1129,6 +1129,32 @@ export type Database = {
           },
         ]
       }
+      cb_session_coding_status: {
+        Row: {
+          coder_id: string
+          done_at: string
+          session_id: string
+        }
+        Insert: {
+          coder_id: string
+          done_at?: string
+          session_id: string
+        }
+        Update: {
+          coder_id?: string
+          done_at?: string
+          session_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_session_coding_status_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_session_episodes: {
         Row: {
           created_at: string
@@ -1263,6 +1289,257 @@ export type Database = {
             columns: ["session_id"]
             isOneToOne: false
             referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      eval_annotations: {
+        Row: {
+          created_at: string
+          folded_into_variant_id: string | null
+          id: string
+          note: string
+          phase_ordinal: number | null
+          pid: string | null
+          run_id: string | null
+          scenario_idx: number | null
+          verdict_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          folded_into_variant_id?: string | null
+          id?: string
+          note: string
+          phase_ordinal?: number | null
+          pid?: string | null
+          run_id?: string | null
+          scenario_idx?: number | null
+          verdict_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          folded_into_variant_id?: string | null
+          id?: string
+          note?: string
+          phase_ordinal?: number | null
+          pid?: string | null
+          run_id?: string | null
+          scenario_idx?: number | null
+          verdict_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "eval_annotations_folded_into_variant_id_fkey"
+            columns: ["folded_into_variant_id"]
+            isOneToOne: false
+            referencedRelation: "eval_prompt_variants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      eval_artifacts: {
+        Row: {
+          content: string
+          created_at: string
+          hash: string
+          id: string
+          kind: string
+          name: string
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          hash: string
+          id?: string
+          kind: string
+          name: string
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          hash?: string
+          id?: string
+          kind?: string
+          name?: string
+        }
+        Relationships: []
+      }
+      eval_few_shot_sets: {
+        Row: {
+          created_at: string
+          examples: Json
+          id: string
+          name: string
+        }
+        Insert: {
+          created_at?: string
+          examples?: Json
+          id?: string
+          name: string
+        }
+        Update: {
+          created_at?: string
+          examples?: Json
+          id?: string
+          name?: string
+        }
+        Relationships: []
+      }
+      eval_prompt_variants: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          parent_id: string | null
+          system_prompt: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          parent_id?: string | null
+          system_prompt: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          parent_id?: string | null
+          system_prompt?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "eval_prompt_variants_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "eval_prompt_variants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      eval_runs: {
+        Row: {
+          created_at: string
+          error: string | null
+          few_shot_set_id: string | null
+          grader_id: string
+          id: string
+          llm_config: Json
+          metric_artifact_id: string | null
+          name: string
+          oracle_artifact_id: string | null
+          participant_pids: string[]
+          prompt_variant_id: string | null
+          sim_backend: string | null
+          status: string
+        }
+        Insert: {
+          created_at?: string
+          error?: string | null
+          few_shot_set_id?: string | null
+          grader_id: string
+          id?: string
+          llm_config: Json
+          metric_artifact_id?: string | null
+          name: string
+          oracle_artifact_id?: string | null
+          participant_pids: string[]
+          prompt_variant_id?: string | null
+          sim_backend?: string | null
+          status?: string
+        }
+        Update: {
+          created_at?: string
+          error?: string | null
+          few_shot_set_id?: string | null
+          grader_id?: string
+          id?: string
+          llm_config?: Json
+          metric_artifact_id?: string | null
+          name?: string
+          oracle_artifact_id?: string | null
+          participant_pids?: string[]
+          prompt_variant_id?: string | null
+          sim_backend?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "eval_runs_few_shot_set_id_fkey"
+            columns: ["few_shot_set_id"]
+            isOneToOne: false
+            referencedRelation: "eval_few_shot_sets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "eval_runs_metric_artifact_id_fkey"
+            columns: ["metric_artifact_id"]
+            isOneToOne: false
+            referencedRelation: "eval_artifacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "eval_runs_oracle_artifact_id_fkey"
+            columns: ["oracle_artifact_id"]
+            isOneToOne: false
+            referencedRelation: "eval_artifacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "eval_runs_prompt_variant_id_fkey"
+            columns: ["prompt_variant_id"]
+            isOneToOne: false
+            referencedRelation: "eval_prompt_variants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      eval_verdicts: {
+        Row: {
+          config_hash: string
+          created_at: string
+          evidence: Json
+          id: string
+          pass: boolean | null
+          phase_ordinal: number
+          pid: string
+          rationale: string
+          run_id: string
+          scenario_idx: number | null
+          score: number | null
+        }
+        Insert: {
+          config_hash?: string
+          created_at?: string
+          evidence?: Json
+          id?: string
+          pass?: boolean | null
+          phase_ordinal: number
+          pid: string
+          rationale?: string
+          run_id: string
+          scenario_idx?: number | null
+          score?: number | null
+        }
+        Update: {
+          config_hash?: string
+          created_at?: string
+          evidence?: Json
+          id?: string
+          pass?: boolean | null
+          phase_ordinal?: number
+          pid?: string
+          rationale?: string
+          run_id?: string
+          scenario_idx?: number | null
+          score?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "eval_verdicts_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "eval_runs"
             referencedColumns: ["id"]
           },
         ]

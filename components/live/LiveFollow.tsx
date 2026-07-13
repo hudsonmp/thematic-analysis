@@ -147,6 +147,9 @@ export default function LiveFollow({
   // placeholder and agree; the effect flips it true post-mount and the live
   // values take over. Gate every time-derived clock leaf on `mounted`.
   const [mounted, setMounted] = useState(false);
+  // One-shot post-mount flip — the sanctioned mounted-gate exception to the
+  // set-state-in-effect rule ([] deps, fires once, no cascade; see comment above).
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
 
   // Inline-create UI: whether the flag composer is open, and its draft text.

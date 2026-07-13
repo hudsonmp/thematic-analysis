@@ -1,6 +1,7 @@
 'use server';
 
 import { getShownStudy } from '@/app/actions/codebook';
+import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { enumerateScreens, type ScreenKind } from '@/lib/study/screens';
 import type { ProjectContent } from '@/lib/study/study';
 import type { EpisodeRefT } from '@/lib/types/contracts';
@@ -76,8 +77,13 @@ function phaseForKind(kind: ScreenKind): EpisodeRefT['phase'] | null {
  * by the full coordinate to keep the picker one-row-per-moment.
  *
  * Returns `[]` if there is no shown study.
+ *
+ * Auth: gated by `requireAuthUser()` like every sibling action. Previously
+ * safety was inherited from caller gating + RLS on the underlying read; it is
+ * now stated locally so this exported server action is self-defending.
  */
 export async function getProtocolEpisodes(): Promise<ProtocolEpisode[]> {
+  await requireAuthUser();
   const study = await getShownStudy();
   if (!study) return [];
 

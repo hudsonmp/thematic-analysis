@@ -94,8 +94,9 @@ function latestAtOrBefore(edits: SpecEdit[], atMs: number): SpecEdit | null {
 /** Parse an `entities_edit` payload value into `Entity[]`. GUARDED: a malformed
  *  JSON string, or a parse that is not an array of entity-shaped objects, yields
  *  `[]` rather than throwing. Coerces each element defensively so a partially-
- *  malformed entity does not crash the replay. */
-function parseEntities(value: string): Entity[] {
+ *  malformed entity does not crash the replay.
+ *  For the STRINGIFIED event-stream encoding (`study_events.entities_edit.payload.value`). */
+export function parseEntities(value: string): Entity[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
@@ -106,8 +107,10 @@ function parseEntities(value: string): Entity[] {
   return parsed.map(coerceEntity);
 }
 
-/** Coerce one parsed value into an Entity, tolerating missing/odd fields. */
-function coerceEntity(raw: unknown): Entity {
+/** Coerce one parsed value into an Entity, tolerating missing/odd fields.
+ *  Entry point for the ALREADY-PARSED `study_snapshots.entities` jsonb — never
+ *  JSON.parse a snapshot's entities (already an array; parsing would throw). */
+export function coerceEntity(raw: unknown): Entity {
   if (!raw || typeof raw !== 'object') {
     return { id: '', name: '', elements: [] };
   }
@@ -120,8 +123,10 @@ function coerceEntity(raw: unknown): Entity {
   };
 }
 
-/** Coerce one parsed value into an Element, tolerating missing/odd fields. */
-function coerceElement(raw: unknown): Element {
+/** Coerce one parsed value into an Element, tolerating missing/odd fields.
+ *  Entry point for the ALREADY-PARSED `study_snapshots.entities` jsonb — never
+ *  JSON.parse a snapshot's entities (already an array; parsing would throw). */
+export function coerceElement(raw: unknown): Element {
   if (!raw || typeof raw !== 'object') {
     return { id: '', name: '' };
   }

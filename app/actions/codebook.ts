@@ -1,6 +1,7 @@
 'use server';
 
 import { createServiceRoleClient } from '@/lib/supabase/service';
+import { studyFrom } from '@/lib/supabase/study-guard';
 import { cbFrom } from '@/lib/supabase/guard';
 import type { Json } from '@/lib/types/cb-db';
 import type { Tables } from '@/lib/types/cb-db';
@@ -56,13 +57,14 @@ export type CodebookTree = {
 /**
  * The shown study is the single `studies` row with `visibility='shown'`; the
  * codebook binds to it. READ-ONLY: study data is IRB-covered and never written
- * by this app, so we use the service-role client's `.from('studies').select()`
- * directly (the `cbFrom` guard is for cb_ WRITES only).
+ * by this app, so the read goes through `studyFrom` — the SELECT-only study-read
+ * guard on the anon-key user client; study-table RLS grants `authenticated`
+ * SELECT only, so a write on this path is refused by Postgres. (The `cbFrom`
+ * guard remains the cb_ WRITE path.)
  */
 export async function getShownStudy(): Promise<ShownStudy | null> {
-  const supabase = createServiceRoleClient();
-  const { data, error } = await supabase
-    .from('studies')
+  const studies = await studyFrom('studies');
+  const { data, error } = await studies
     .select('id, name, authored_data')
     .eq('visibility', 'shown')
     .maybeSingle();
