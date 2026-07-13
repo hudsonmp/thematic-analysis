@@ -205,6 +205,56 @@ export async function promoteCodeToValue(
   return created.data;
 }
 
+/**
+ * DUPLICATE a value as a FLOATING root of the same facet: same label and description,
+ * NO parent, and — critically — NO codes.
+ *
+ * The copy carries none of the original's code memberships, because a code's answer is a
+ * claim about a specific value. Copying the memberships would silently assert that every
+ * code answering the original also answers the copy, which is a claim nobody made.
+ *
+ * WHAT THIS IS FOR: relocating one value ("I want this over there instead") — duplicate,
+ * drag it under the new parent, delete the original.
+ *
+ * WHAT IT IS NOT FOR, and the trap: reusing a recurring SUB-TAXONOMY. If you copy
+ * `Design / Execution` under both `Experiment` and `Analysis`, you now have two `Design`
+ * values in ONE dimension, and a coder who picks "Design" cannot say which they meant —
+ * the answer set is no longer distinguishable, which is the one property a dimension must
+ * have. A sub-chain that recurs under several parents is answerable INDEPENDENTLY of
+ * them, which means it is a second DIMENSION, not a sub-answer. Duplication is the
+ * symptom; a new facet is the cure.
+ */
+export async function duplicateFacetValue(valueId: string): Promise<FacetValue> {
+  const src = await cbFrom('cb_facet_values')
+    .select('facet_id, label, description, color')
+    .eq('id', valueId)
+    .single();
+  if (src.error || !src.data) {
+    throw new Error(`duplicateFacetValue failed: ${src.error?.message ?? 'value not found'}`);
+  }
+
+  const position = await nextPosition('cb_facet_values', src.data.facet_id);
+  const { data, error } = await cbFrom('cb_facet_values')
+    .insert({
+      facet_id: src.data.facet_id,
+      key: crypto.randomUUID(),
+      label: src.data.label,
+      description: src.data.description,
+      color: src.data.color ?? autoColor(position),
+      // Floating: a root of its own until you drag it somewhere. Sub-values are NOT
+      // copied either — a duplicate is a seed, not a clone of a whole subtree, and
+      // copying the chain would multiply the ambiguity above by its depth.
+      parent_id: null,
+      position,
+    })
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(`duplicateFacetValue failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
 /** Every value of one facet — the read the tree ops fold over. */
 export async function listFacetValues(facetId: string): Promise<FacetValue[]> {
   const { data, error } = await cbFrom('cb_facet_values')

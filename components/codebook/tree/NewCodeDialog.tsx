@@ -6,7 +6,8 @@ import {
   createCodeInTree,
   type CodeOrigin,
 } from '@/app/actions/codes';
-import { createFacetValue } from '@/app/actions/facets';
+import { createFacetValue, setFacetValueParent } from '@/app/actions/facets';
+import { descendantIds } from '@/lib/codebook/tree';
 import type { FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
 import { deriveMnemonic, uniqueMnemonic } from '@/lib/codebook/mnemonic';
@@ -16,8 +17,9 @@ import type { Tables } from '@/lib/types/cb-db';
 
 type Code = Tables<'cb_codes'>;
 
-/** New code · an existing code answers this · a nested sub-value. */
-type Kind = 'code' | 'existing' | 'subvalue';
+/** New code · an existing code answers this · a new sub-value · an EXISTING value moved
+ *  under this one. */
+type Kind = 'code' | 'existing' | 'subvalue' | 'existing-value';
 
 /**
  * WHERE the dialog was opened from. This decides which kinds are even offered, and
@@ -129,6 +131,42 @@ export default function NewCodeDialog({
         : '',
     [name, codes],
   );
+
+  /**
+   * Candidate values to MOVE under this node. Excludes the node itself and every
+   * DESCENDANT of it — re-parenting a value under its own descendant would close a cycle.
+   * The server rejects that anyway, but offering a choice that always errors is a lie the
+   * UI is telling.
+   *
+   * Note this MOVES the value (with its whole sub-chain and every code answering it), it
+   * does not copy it. To have the same answer in two places, duplicate first (⌘D) — and
+   * read the warning there, because two identically-named values in one dimension is an
+   * answer set a coder cannot disambiguate.
+   */
+  const valueHits = useMemo(() => {
+    if (kind !== 'existing-value' || parentValueId === null) return [];
+    const all = facets.find((f) => f.id === facetId)?.values ?? [];
+    const banned = descendantIds(all, parentValueId);
+    banned.add(parentValueId);
+    const q = query.trim().toLowerCase();
+    return all
+      .filter((v) => !banned.has(v.id))
+      .filter((v) => q === '' || v.label.toLowerCase().includes(q))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [kind, parentValueId, facets, facetId, query]);
+
+  function moveValueHere(valueId: string) {
+    if (parentValueId === null) return;
+    setError(null);
+    start(async () => {
+      try {
+        await setFacetValueParent(valueId, parentValueId);
+        onDone();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to move the value.');
+      }
+    });
+  }
 
   const hits = useMemo(
     () =>
@@ -246,11 +284,13 @@ export default function NewCodeDialog({
   const title =
     kind === 'existing'
       ? 'An existing code answers this'
-      : kind === 'code'
-        ? 'New code'
-        : target.kind === 'root'
-          ? 'New value'
-          : 'New sub-value';
+      : kind === 'existing-value'
+        ? 'Move an existing value here'
+        : kind === 'code'
+          ? 'New code'
+          : target.kind === 'root'
+            ? 'New value'
+            : 'New sub-value';
 
   return (
     <div
@@ -288,7 +328,7 @@ export default function NewCodeDialog({
         <div className="max-h-[70vh] space-y-4 overflow-y-auto px-4 py-4">
           {target.kind === 'child' && (
             <div className="flex gap-1 text-xs">
-              {(['code', 'existing', 'subvalue'] as const).map((k) => (
+              {(['code', 'existing', 'subvalue', 'existing-value'] as const).map((k) => (
                 <button
                   key={k}
                   type="button"
@@ -303,13 +343,50 @@ export default function NewCodeDialog({
                     ? 'New code'
                     : k === 'existing'
                       ? 'Existing code'
-                      : 'Sub-value'}
+                      : k === 'subvalue'
+                        ? 'Sub-value'
+                        : 'Existing value'}
                 </button>
               ))}
             </div>
           )}
 
-          {kind === 'existing' ? (
+          {kind === 'existing-value' ? (
+            <>
+              <input
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search values on this dimension…"
+                className={inputCls}
+              />
+              <p className="text-xs leading-snug text-foreground/45">
+                This MOVES the value here, with its sub-chain and every code answering it —
+                it does not copy it. To have the same answer in two places, duplicate it
+                first (⌘D). Its own descendants are not listed: re-parenting a value under
+                its own child would close a cycle.
+              </p>
+              <div className="max-h-72 space-y-0.5 overflow-y-auto">
+                {valueHits.length === 0 && (
+                  <p className="py-2 text-xs italic text-foreground/40">No value matches.</p>
+                )}
+                {valueHits.map((v) => (
+                  <button
+                    key={v.id}
+                    type="button"
+                    disabled={pending}
+                    onClick={() => moveValueHere(v.id)}
+                    className="w-full border border-transparent px-2 py-1.5 text-left text-xs transition hover:border-foreground/30 hover:bg-foreground/[0.03]"
+                  >
+                    {v.label}
+                    {v.parent_id === null && (
+                      <span className="ml-1 text-foreground/35">· currently a root</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : kind === 'existing' ? (
             <>
               <input
                 autoFocus

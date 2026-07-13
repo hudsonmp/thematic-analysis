@@ -2,10 +2,11 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useMemo, useState, useTransition } from 'react';
+import { useCallback, useEffect, useMemo, useState, useTransition } from 'react';
 import {
   createFacetValue,
   deleteFacetValue,
+  duplicateFacetValue,
   interposeFacetValue,
   promoteCodeToValue,
   setFacetValueParent,
@@ -187,6 +188,40 @@ export default function FacetCanvas({
     });
   }
 
+  /** ⌘/Ctrl-D duplicates the selected VALUE as a floating root: same label and
+   *  description, no parent, NO codes. The copy carries none of the original's
+   *  memberships, because a code's answer is a claim about a specific value — copying
+   *  them would assert that every code answering the original also answers the copy,
+   *  which is a claim nobody made. */
+  const duplicateSelected = useCallback(() => {
+    if (selected?.kind !== 'value') return;
+    run(async () => {
+      const copy = await duplicateFacetValue(selected.id);
+      setSelected({ kind: 'value', id: copy.id });
+    });
+    // `run` and `selected` are the only inputs; run is stable enough for this handler.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      // Ignore while typing: ⌘-D in a text field is the browser's business, not ours.
+      const el = e.target as HTMLElement | null;
+      if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') {
+        if (selected?.kind !== 'value') return;
+        e.preventDefault(); // ⌘-D is "bookmark" otherwise
+        duplicateSelected();
+      }
+      if (e.key === 'Escape') {
+        setSelected(null);
+        setTriageOpen(false);
+      }
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [selected, duplicateSelected]);
+
   const x = (n: number) => n * COL + COL / 2;
   const y = (n: number) => n * ROW + 48;
 
@@ -278,7 +313,7 @@ export default function FacetCanvas({
           </button>
 
           <span className="ml-auto text-xs text-foreground/40">
-            click = inspect · ⌘-click = zoom
+            click = inspect · ⌘-click = zoom · ⌘D = duplicate value
           </span>
         </div>
 
@@ -663,6 +698,7 @@ export default function FacetCanvas({
                 }
                 onRename={(label) => run(() => updateFacetValue(selected.id, { label }))}
                 onZoom={() => setFocusId(selected.id)}
+                onDuplicate={duplicateSelected}
                 onUnnest={
                   valueById.get(selected.id)?.parent_id == null
                     ? undefined
@@ -759,6 +795,7 @@ function ValueInspector({
   onSaveDescription,
   onRename,
   onZoom,
+  onDuplicate,
   onUnnest,
   onInterpose,
   onDissolve,
@@ -777,6 +814,8 @@ function ValueInspector({
   onSaveDescription: (d: string) => void;
   onRename: (label: string) => void;
   onZoom: () => void;
+  /** Copy as a floating root (⌘D). Same label/description, no parent, NO codes. */
+  onDuplicate: () => void;
   /** Promote to the top level of this dimension. Absent when already a root. */
   onUnnest?: () => void;
   onInterpose: () => void;
@@ -859,6 +898,15 @@ function ValueInspector({
           className="border border-foreground/20 px-2 py-1 text-xs transition hover:border-foreground"
         >
           Zoom in
+        </button>
+        <button
+          type="button"
+          onClick={onDuplicate}
+          disabled={pending}
+          title="Copy as a floating value (⌘D) — same name, no parent, no codes. Drag it under another parent."
+          className="border border-foreground/20 px-2 py-1 text-xs transition enabled:hover:border-foreground disabled:opacity-40"
+        >
+          Duplicate
         </button>
         {/* Same as dragging it onto empty canvas — but a drop target you cannot see is
             not an affordance. The gesture is faster once you know it; the button is what
