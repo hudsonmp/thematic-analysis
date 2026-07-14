@@ -12,7 +12,7 @@ import {
   setFacetValueParent,
   updateFacetValue,
 } from '@/app/actions/facets';
-import { addCodeFacetValue, duplicateCode, removeCodeFacetValue } from '@/app/actions/codes';
+import { addCodeFacetValue, deleteCode, removeCodeFacetValue } from '@/app/actions/codes';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
 import { buildTree } from '@/lib/codebook/tree';
@@ -96,6 +96,11 @@ export default function FacetCanvas({
   // should do that silently. Arming is cheaper than a modal and still makes the second
   // press a decision rather than a reflex.
   const [armedDelete, setArmedDelete] = useState<string | null>(null);
+  // ⌘D on a CODE does NOT make a new code — a code already lives on many values at once
+  // (the junction is many-to-many). It floats a HANDLE to the SAME code that you drag onto
+  // another value, ADDING that answer: the cross-cutting case, made by a deliberate
+  // two-step gesture. Null when nothing is floating.
+  const [floatingCode, setFloatingCode] = useState<string | null>(null);
   // Growing the tree used to mean opening a dialog and picking a tab. A branch is just
   // a name — so a node exposes an inline slot: click the ghost `+`, type, Enter. The
   // dialog is still there for a value that needs a description.
@@ -215,26 +220,30 @@ export default function FacetCanvas({
    *  which is a claim nobody made. */
   const duplicateSelected = useCallback(() => {
     if (selected === null) return;
-    run(async () => {
-      if (selected.kind === 'value') {
+    if (selected.kind === 'value') {
+      // A value IS a tree node, so a copy needs its own row to occupy a second place.
+      run(async () => {
         const copy = await duplicateFacetValue(selected.id);
         setSelected({ kind: 'value', id: copy.id });
-      } else {
-        // A code-copy carries the anatomy, drops the answers, and lands UNFILED — so it
-        // is selected and shown, but it appears in the triage queue rather than on any
-        // value node until you classify it.
-        const copyId = await duplicateCode(selected.id);
-        setSelected({ kind: 'code', id: copyId });
-      }
-    });
+      });
+    } else {
+      // A code is NOT a node — it can answer several values already. So "duplicate" is not
+      // a new code (that would be a different observation with a `-2` mnemonic); it is a
+      // floating handle to the SAME code, dropped onto another value to add that answer.
+      setFloatingCode(selected.id);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
   const deleteSelected = useCallback(() => {
-    if (selected?.kind !== 'value') return;
-    const id = selected.id;
+    if (selected === null) return;
+    const { kind, id } = selected;
     run(async () => {
-      await deleteFacetValue(id); // sub-values collapse UP one level; they are not lost
+      // A VALUE's sub-values collapse UP one level (not lost); a CODE is hard-deleted with
+      // its versions and memberships. Both are irreversible, which is why the caller can
+      // only reach this through an ARMED ⌘⌫, never a bare press.
+      if (kind === 'value') await deleteFacetValue(id);
+      else await deleteCode(id);
       setSelected(null);
       setArmedDelete(null);
       if (focusId === id) setFocusId(null);
@@ -253,7 +262,7 @@ export default function FacetCanvas({
         duplicateSelected();
       }
       if ((e.metaKey || e.ctrlKey) && (e.key === 'Backspace' || e.key === 'Delete')) {
-        if (selected?.kind !== 'value') return;
+        if (selected === null) return;
         e.preventDefault();
         if (armedDelete === selected.id) deleteSelected();
         else setArmedDelete(selected.id);
@@ -262,6 +271,7 @@ export default function FacetCanvas({
         setSelected(null);
         setTriageOpen(false);
         setArmedDelete(null);
+        setFloatingCode(null);
       }
     }
     document.addEventListener('keydown', onKey);
@@ -447,6 +457,27 @@ export default function FacetCanvas({
               interrupts nothing: an idea you have mid-reading should not first demand
               that you decide how to classify it. Deciding is the expensive part;
               deferring it is the feature. It lands in the triage queue. */}
+          {floatingCode !== null && (
+            <div className="pointer-events-none absolute inset-x-0 top-2 z-30 flex justify-center">
+              <div
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData('text/code-id-add', floatingCode);
+                  e.dataTransfer.effectAllowed = 'copy';
+                  setDragging({ kind: 'code', id: floatingCode });
+                }}
+                onDragEnd={() => setDragging(null)}
+                className="pointer-events-auto cursor-grab border border-dashed border-foreground bg-background px-2 py-1 text-[11px] shadow-lg active:cursor-grabbing"
+                title="Drag onto a value to make this code ALSO answer it (a cross-cut). Esc to cancel."
+              >
+                <span className="font-mono text-foreground/60">
+                  {codeById.get(floatingCode)?.mnemonic ?? 'code'}
+                </span>{' '}
+                <span className="text-foreground/45">→ drag onto a value · Esc cancels</span>
+              </div>
+            </div>
+          )}
+
           {dimensions.length === 0 ? (
             <p className="mt-16 text-center text-sm text-foreground/45">
               No dimensions yet. A dimension is a question you can ask of{' '}
@@ -507,9 +538,15 @@ export default function FacetCanvas({
                     }}
                     onDrop={(e) => {
                       e.preventDefault();
+                      const addCodeId = e.dataTransfer.getData('text/code-id-add');
                       const codeId = e.dataTransfer.getData('text/code-id');
                       const valueId = e.dataTransfer.getData('text/value-id');
-                      if (codeId) {
+                      if (addCodeId) {
+                        // The floating duplicate: ADD this answer, never remove the
+                        // others — that is the whole point of a cross-cut.
+                        run(() => addCodeFacetValue(addCodeId, n.id));
+                        setFloatingCode(null);
+                      } else if (codeId) {
                         // Dragging a code from ANOTHER value MOVES it: a drag reads as
                         // relocation, not accumulation. To make a code answer two values
                         // (the cross-cutting case) use the picker, which says so out loud.
@@ -710,11 +747,20 @@ export default function FacetCanvas({
                   ? 'Value'
                   : 'Code'}
             </span>
+            {/* ⌘⌫ on a CODE arms silently otherwise: CodeEditor, unlike ValueInspector, has
+                no armed banner of its own, so the first press would look like nothing
+                happened. Surface it here for both. */}
+            {selected?.kind === 'code' && armedDelete === selected.id && (
+              <span className="rounded border border-red-500 bg-red-500 px-1.5 py-0.5 text-[10px] text-white">
+                Press ⌘⌫ again to delete
+              </span>
+            )}
             <button
               type="button"
               onClick={() => {
                 setTriageOpen(false);
                 setSelected(null);
+                setArmedDelete(null);
               }}
               className="ml-auto px-1 text-lg leading-none text-foreground/40 transition hover:text-foreground"
               aria-label="Close"

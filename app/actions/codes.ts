@@ -3,12 +3,7 @@
 import { cbFrom } from '@/lib/supabase/guard';
 import { linkCitation } from '@/app/actions/citations';
 import { attachCodeToLabel, setCodeLabels } from '@/app/actions/labels';
-import {
-  resolveRows,
-  uniqueMnemonic,
-  writeOnlyRowErrors,
-  type CodebookRow,
-} from '@/lib/codebook/mnemonic';
+import { resolveRows, writeOnlyRowErrors, type CodebookRow } from '@/lib/codebook/mnemonic';
 import type { RowFacetWrites } from '@/lib/codebook/grid';
 import { CodeVersionInput, type CodeVersionInputT } from '@/lib/types/contracts';
 import type { Json, Tables, TablesInsert } from '@/lib/types/cb-db';
@@ -251,6 +246,21 @@ export async function setCodeStatus(codeId: string, status: CodeStatus): Promise
   if (error) throw new Error(`setCodeStatus failed: ${error.message}`);
 }
 
+/**
+ * Hard-DELETE a code. Its versions and facet-value memberships cascade
+ * (cb_code_versions / cb_code_facet_values FKs are on delete cascade).
+ *
+ * This is the destructive counterpart to `retireCode`, and the UI reaches it only through
+ * an armed ⌘⌫ — never a bare keystroke — because it is irreversible. Retire is the right
+ * move for a code that WAS coded against and should leave the working set while keeping
+ * its audit trail; delete is for a capture that was a mistake and has no history worth
+ * keeping. The caller chooses; this action just does the delete.
+ */
+export async function deleteCode(codeId: string): Promise<void> {
+  const { error } = await cbFrom('cb_codes').delete().eq('id', codeId);
+  if (error) throw new Error(`deleteCode failed: ${error.message}`);
+}
+
 /** Retire a code: status='retired', stamp retired_at. */
 export async function retireCode(codeId: string): Promise<void> {
   const { error } = await cbFrom('cb_codes')
@@ -298,79 +308,6 @@ export async function setCodeFacetValues(codeId: string, facetValueIds: string[]
  * decides which); the caller passes the field for the facet's type. A call that
  * passes neither is treated as a clear.
  */
-/**
- * DUPLICATE a code. The copy carries the ANATOMY — its full current version
- * (definition, include/exclude, exemplars, counter-example, prediction) — and its
- * origin, but NONE of its edges: no facet answers, no citation. It lands UNFILED, so it
- * surfaces in the triage queue.
- *
- * Symmetry with duplicateFacetValue, and one rule behind both: duplicating copies the
- * THING, never its edges. A value-copy drops its codes; a code-copy drops its answers.
- * The reason is the same each time — a membership is a CLAIM (this code answers that
- * value), and a claim is not something a copy inherits.
- *
- * And it is the right default specifically for a code, because you duplicate a code to
- * make a VARIANT — "confirmation bias while REVIEWING" vs "while FORMING" — and the
- * answers are exactly what distinguishes the variant from its source. Carrying them would
- * assert the copy belongs precisely where the original does, which is the claim you opened
- * the duplicate to change. The anatomy, meanwhile, is the expensive part worth reusing.
- *
- * The mnemonic must be unique (cb_codes UNIQUE(codebook_id, mnemonic)), so the copy gets
- * `<mnemonic>-2` (…-3, …) and its name a " (copy)" suffix — both editable in triage.
- */
-export async function duplicateCode(codeId: string): Promise<string> {
-  const src = await cbFrom('cb_codes')
-    .select('codebook_id, mnemonic, name, origin, current_version_id')
-    .eq('id', codeId)
-    .single();
-  if (src.error || !src.data) {
-    throw new Error(`duplicateCode failed: ${src.error?.message ?? 'code not found'}`);
-  }
-
-  const used = await cbFrom('cb_codes')
-    .select('mnemonic')
-    .eq('codebook_id', src.data.codebook_id);
-  if (used.error) throw new Error(`duplicateCode (mnemonics) failed: ${used.error.message}`);
-  const mnemonic = uniqueMnemonic(
-    src.data.mnemonic,
-    new Set((used.data ?? []).map((r) => r.mnemonic)),
-  );
-
-  // Rebuild the version input from the source's current version. Absent → a minimal
-  // stub, so a code that somehow has no version still duplicates rather than throwing.
-  let version: CodeVersionInputT = {
-    definition: '(copy — add a definition)',
-    include_if: [],
-    exclude_if: [],
-    exemplars: [],
-  };
-  if (src.data.current_version_id) {
-    const cur = await cbFrom('cb_code_versions')
-      .select('*')
-      .eq('id', src.data.current_version_id)
-      .maybeSingle();
-    if (cur.data) {
-      version = CodeVersionInput.parse({
-        definition: cur.data.definition,
-        include_if: cur.data.include_if,
-        exclude_if: cur.data.exclude_if,
-        exemplars: cur.data.exemplars,
-        disconfirming_pattern: cur.data.disconfirming_pattern ?? undefined,
-        prediction: cur.data.prediction ?? undefined,
-        prediction_falsifier: cur.data.prediction_falsifier ?? undefined,
-      });
-    }
-  }
-
-  return createCode({
-    codebookId: src.data.codebook_id,
-    mnemonic,
-    name: `${src.data.name} (copy)`,
-    origin: src.data.origin as CodeOrigin,
-    version,
-  });
-}
-
 /**
  * Rename a code's MNEMONIC (and/or name). The mnemonic is a display handle, not an
  * identity: every reference is by `cb_codes.id`, so changing it breaks nothing — which
