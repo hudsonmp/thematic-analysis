@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import {
   addCodeFacetValue,
+  duplicateCode,
   removeCodeFacetValue,
   renameCode,
   saveNewVersion,
@@ -314,6 +315,19 @@ export default function CodeEditor({
             </option>
           ))}
         </select>
+      </section>
+
+      {/* ---- DUPLICATE ---- */}
+      <section className="border-t border-foreground/10 pt-3">
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => run(() => duplicateCode(code.id))}
+          title="Copy the anatomy into a new code (⌘D). The copy drops the answers and lands in triage — you duplicate a code to make a variant, and the answers are what you will change."
+          className="w-full border border-foreground/20 px-2 py-1.5 text-xs text-foreground/60 transition hover:border-foreground hover:text-foreground disabled:opacity-40"
+        >
+          Duplicate — anatomy only, lands in triage
+        </button>
       </section>
 
       {/* ---- PROMOTE: this was never a code ---- */}

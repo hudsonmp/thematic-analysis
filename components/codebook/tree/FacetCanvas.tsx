@@ -12,7 +12,7 @@ import {
   setFacetValueParent,
   updateFacetValue,
 } from '@/app/actions/facets';
-import { addCodeFacetValue, removeCodeFacetValue } from '@/app/actions/codes';
+import { addCodeFacetValue, duplicateCode, removeCodeFacetValue } from '@/app/actions/codes';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
 import { buildTree } from '@/lib/codebook/tree';
@@ -214,12 +214,19 @@ export default function FacetCanvas({
    *  them would assert that every code answering the original also answers the copy,
    *  which is a claim nobody made. */
   const duplicateSelected = useCallback(() => {
-    if (selected?.kind !== 'value') return;
+    if (selected === null) return;
     run(async () => {
-      const copy = await duplicateFacetValue(selected.id);
-      setSelected({ kind: 'value', id: copy.id });
+      if (selected.kind === 'value') {
+        const copy = await duplicateFacetValue(selected.id);
+        setSelected({ kind: 'value', id: copy.id });
+      } else {
+        // A code-copy carries the anatomy, drops the answers, and lands UNFILED — so it
+        // is selected and shown, but it appears in the triage queue rather than on any
+        // value node until you classify it.
+        const copyId = await duplicateCode(selected.id);
+        setSelected({ kind: 'code', id: copyId });
+      }
     });
-    // `run` and `selected` are the only inputs; run is stable enough for this handler.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
@@ -241,7 +248,7 @@ export default function FacetCanvas({
       const el = e.target as HTMLElement | null;
       if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') {
-        if (selected?.kind !== 'value') return;
+        if (selected === null) return;
         e.preventDefault(); // ⌘-D is "bookmark" otherwise
         duplicateSelected();
       }
@@ -352,7 +359,7 @@ export default function FacetCanvas({
           </button>
 
           <span className="ml-auto text-xs text-foreground/40">
-            click = inspect · ⌘-click = zoom · ⌘D duplicate · ⌘⌫ delete
+            click = inspect · ⌘-click = zoom · ⌘D duplicate
           </span>
         </div>
 
