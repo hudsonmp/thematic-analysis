@@ -606,6 +606,15 @@ export default function FacetCanvas({
                       </form>
                     )}
 
+                    {/* DIRECT chips only. Inherited codes are NOT drawn as chips here:
+                        on a fully-expanded canvas every inherited chip duplicates a direct
+                        chip already visible on the descendant that owns it, and the
+                        duplication is worst at the root — inheritance accumulates upward,
+                        so the root shows the union of everything, which is no information
+                        stacked on the busiest fan of edges. The roll-up is still real; it
+                        is shown as a COUNT (and in full in the inspector, where you are
+                        focused on one node and it is not a duplicate of anything on
+                        screen). */}
                     {(bucket.direct.length > 0 || bucket.inherited.length > 0) && (
                       <div className="mt-1 flex flex-wrap justify-center gap-1">
                         {bucket.direct.map((c) => (
@@ -630,24 +639,16 @@ export default function FacetCanvas({
                             {c.mnemonic}
                           </button>
                         ))}
-                        {/* INHERITED: answers a sub-value, so it answers this one too.
-                            Dashed, because it is a weaker kind of presence — the code
-                            said something MORE precise than this value. */}
-                        {bucket.inherited.map((c) => (
+                        {bucket.inherited.length > 0 && (
                           <button
-                            key={c.id}
                             type="button"
-                            onClick={() => inspect({ kind: 'code', id: c.id })}
-                            className={`max-w-full truncate border border-dashed px-1.5 py-0.5 text-[10px] transition ${
-                              selected?.kind === 'code' && selected.id === c.id
-                                ? 'border-foreground bg-foreground text-background'
-                                : 'border-foreground/25 text-foreground/45 hover:border-foreground'
-                            }`}
-                            title={`${c.name} — answers a sub-value, so it answers this one by entailment`}
+                            onClick={() => inspect({ kind: 'value', id: n.id })}
+                            className="rounded-full border border-dashed border-foreground/25 px-1.5 py-0.5 text-[10px] text-foreground/40 transition hover:border-foreground hover:text-foreground"
+                            title={`${bucket.inherited.length} more answer a sub-value below and roll up here — open to see them`}
                           >
-                            {c.mnemonic}
+                            +{bucket.inherited.length} below
                           </button>
-                        ))}
+                        )}
                       </div>
                     )}
                   </div>
