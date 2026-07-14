@@ -63,7 +63,7 @@ export default function CodebookNav({
   }, [openKey]);
 
   return (
-    <header className="border-b border-foreground/15">
+    <header className="border-b border-foreground/15 print:hidden">
       <nav className="flex items-center justify-between gap-6 px-6 py-3">
         <div className="flex items-baseline gap-6" ref={navRef}>
           <span className="text-sm font-medium tracking-tight">Codebook</span>
