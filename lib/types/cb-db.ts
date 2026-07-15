@@ -1140,16 +1140,19 @@ export type Database = {
           coder_id: string
           done_at: string
           session_id: string
+          status: string
         }
         Insert: {
           coder_id: string
           done_at?: string
           session_id: string
+          status?: string
         }
         Update: {
           coder_id?: string
           done_at?: string
           session_id?: string
+          status?: string
         }
         Relationships: [
           {
@@ -1215,7 +1218,9 @@ export type Database = {
           drive_file_id: string | null
           duration_ms: number | null
           id: string
+          note: string | null
           pid_label: string
+          reconciliation_at: string | null
           recording_started_at: string | null
           srt_path: string | null
           track_mode: string
@@ -1230,7 +1235,9 @@ export type Database = {
           drive_file_id?: string | null
           duration_ms?: number | null
           id?: string
+          note?: string | null
           pid_label: string
+          reconciliation_at?: string | null
           recording_started_at?: string | null
           srt_path?: string | null
           track_mode?: string
@@ -1245,7 +1252,9 @@ export type Database = {
           drive_file_id?: string | null
           duration_ms?: number | null
           id?: string
+          note?: string | null
           pid_label?: string
+          reconciliation_at?: string | null
           recording_started_at?: string | null
           srt_path?: string | null
           track_mode?: string

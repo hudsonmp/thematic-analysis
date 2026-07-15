@@ -8,6 +8,7 @@ import {
   renameCode,
   saveNewVersion,
   setCodeOrigin,
+  type CodeOrigin,
 } from '@/app/actions/codes';
 import { linkCitation, unlinkCitation } from '@/app/actions/citations';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
@@ -154,9 +155,27 @@ export default function CodeEditor({
         />
       </div>
 
-      <p className="text-xs text-foreground/45">
-        {code.origin.replace('_', ' ')} · {code.status}
-      </p>
+      {/* Origin is editable POST HOC: a code captured during transcript coding lands
+          `emergent`, and you often only know it was really a_priori (or pilot) once you
+          reconcile it against the frameworks later. Commits immediately. */}
+      <div className="flex items-center gap-2 text-xs text-foreground/45">
+        <label className="flex items-center gap-1">
+          <span>origin</span>
+          <select
+            value={code.origin}
+            disabled={pending}
+            onChange={(e) => run(() => setCodeOrigin(code.id, e.target.value as CodeOrigin))}
+            className="border border-foreground/20 bg-background px-1.5 py-0.5 text-xs focus:border-foreground focus:outline-none disabled:opacity-50"
+          >
+            {(['a_priori', 'pilot', 'emergent'] as const).map((o) => (
+              <option key={o} value={o}>
+                {o.replace('_', ' ')}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span>· {code.status}</span>
+      </div>
 
       {/* ---- ANSWERS: what this code says on each dimension ---- */}
       {facets.map((f) => {

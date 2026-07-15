@@ -5,11 +5,48 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   deleteSessionCloud,
-  setSessionCodingDone,
+  setCoderStatus,
+  setReconciliation,
+  setSessionNote,
   updateSessionCollection,
   type SessionListRow,
 } from '@/app/actions/sessions';
 import { collectionOptions } from '@/lib/sessions/collections';
+import {
+  CODER_STATUSES,
+  displayStatus,
+  statusLabel,
+} from '@/lib/codebook/sessionProgress';
+
+/** The shared coordination comment on a session row. Commits on blur; a blank clears it.
+ *  Uncontrolled-by-key: remounts when the saved note changes so it never fights an
+ *  in-flight edit. */
+function NoteField({
+  pid,
+  initial,
+  disabled,
+  onSave,
+}: {
+  pid: string;
+  initial: string;
+  disabled: boolean;
+  onSave: (text: string) => void;
+}) {
+  const [text, setText] = useState(initial);
+  return (
+    <input
+      value={text}
+      disabled={disabled}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={() => {
+        if (text.trim() !== initial.trim()) onSave(text);
+      }}
+      placeholder="Add a comment…"
+      aria-label={`Comment on ${pid}`}
+      className="mt-2 w-full border-b border-dashed border-foreground/20 bg-transparent py-1 text-xs text-foreground/70 focus:border-solid focus:border-foreground focus:outline-none disabled:opacity-50"
+    />
+  );
+}
 
 /** Format a millisecond duration as `mm:ss` (minutes uncapped past 60). */
 function formatDuration(ms: number | null): string {
@@ -76,104 +113,148 @@ export default function SessionsIndex({ rows }: { rows: SessionListRow[] }) {
         </p>
       )}
       {Array.from(byCollection.entries()).map(([collection, group]) => {
-        const codedCount = group.filter((r) => r.done).length;
+        // "coded" now means the coder reached individual_coding OR the session is in
+        // reconciliation — i.e. their independent pass is done.
+        const codedCount = group.filter(
+          (r) =>
+            r.reconciliationAt != null || r.coderStatus === 'individual_coding',
+        ).length;
         return (
-        <section key={collection}>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-foreground/50">
-            {collection}{' '}
-            <span className="font-normal normal-case text-foreground/30">
-              · {group.length} · {codedCount}/{group.length} coded
-            </span>
-          </h2>
-          <table className="w-full max-w-2xl text-sm border-collapse">
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wider text-foreground/50 border-b border-foreground/15">
-                <th className="py-2 pr-4 font-medium">PID</th>
-                <th className="py-2 pr-4 font-medium">Collection</th>
-                <th className="py-2 pr-4 font-medium">Duration</th>
-                <th className="py-2 pr-4 font-medium">Done</th>
-                <th className="py-2 pr-4 font-medium" />
-                <th className="py-2 font-medium" />
-              </tr>
-            </thead>
-            <tbody>
-              {group.map((row) => (
-                <tr
-                  key={row.id}
-                  className={`border-b border-foreground/10${
-                    row.done ? ' text-foreground/40' : ''
-                  }`}
-                >
-                  <td className="py-2 pr-4 font-mono">{row.pidLabel}</td>
-                  <td className="py-2 pr-4">
-                    <select
-                      value={row.collection}
-                      disabled={isPending}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        if (v !== row.collection) {
-                          run(() => updateSessionCollection(row.id, v));
-                        }
-                      }}
-                      aria-label={`Collection for ${row.pidLabel}`}
-                      className="rounded border border-foreground/20 bg-background px-2 py-1 text-sm disabled:opacity-50"
-                    >
-                      {collectionOptions(row.collection).map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="py-2 pr-4 font-mono text-foreground/70">
-                    {formatDuration(row.durationMs)}
-                  </td>
-                  <td className="py-2 pr-4">
-                    <input
-                      type="checkbox"
-                      checked={row.done}
-                      disabled={isPending}
-                      onChange={(e) =>
-                        run(() => setSessionCodingDone(row.id, e.target.checked))
-                      }
-                      aria-label={`Mark session ${row.pidLabel} coded`}
-                      title={row.done ? 'Coded — click to unmark' : 'Mark as coded'}
-                      className="h-4 w-4 cursor-pointer accent-foreground/70 disabled:opacity-50"
-                    />
-                  </td>
-                  <td className="py-2 pr-4">
-                    <Link
-                      href={`/sessions/${row.id}`}
-                      className="text-foreground/70 underline-offset-2 hover:text-foreground hover:underline transition"
-                    >
-                      Open →
-                    </Link>
-                  </td>
-                  <td className="py-2">
-                    <button
-                      type="button"
-                      disabled={isPending}
-                      onClick={() => {
-                        if (
-                          confirm(
-                            `Delete session ${row.pidLabel}?\n\nThis permanently removes its transcript, annotations, codes, and comments. This cannot be undone.`,
+          <section key={collection}>
+            <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-foreground/50">
+              {collection}{' '}
+              <span className="font-normal normal-case text-foreground/30">
+                · {group.length} · {codedCount}/{group.length} through individual coding
+              </span>
+            </h2>
+            <div className="max-w-3xl space-y-3">
+              {group.map((row) => {
+                const shown = displayStatus(row.coderStatus, row.reconciliationAt);
+                const inReconciliation = row.reconciliationAt != null;
+                return (
+                  <div
+                    key={row.id}
+                    className="border border-foreground/15 p-3"
+                  >
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="font-mono text-sm">{row.pidLabel}</span>
+
+                      {/* Per-coder status. Disabled while in reconciliation, because the
+                          session-level override is what's shown — editing your own status
+                          under it would be invisible and misleading. */}
+                      <select
+                        value={inReconciliation ? 'reconciliation' : row.coderStatus}
+                        disabled={isPending || inReconciliation}
+                        onChange={(e) =>
+                          run(() =>
+                            setCoderStatus(
+                              row.id,
+                              e.target.value as (typeof CODER_STATUSES)[number],
+                            ),
                           )
-                        ) {
-                          run(() => deleteSessionCloud(row.id));
                         }
-                      }}
-                      aria-label={`Delete session ${row.pidLabel}`}
-                      title="Delete session"
-                      className="px-1 text-red-600 hover:underline disabled:opacity-50"
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
+                        aria-label={`Your status for ${row.pidLabel}`}
+                        title={
+                          inReconciliation
+                            ? 'Session is in reconciliation — this overrides your per-coder status'
+                            : 'Your coding status (per-coder)'
+                        }
+                        className="rounded border border-foreground/20 bg-background px-2 py-1 text-xs disabled:opacity-60"
+                      >
+                        {inReconciliation ? (
+                          <option value="reconciliation">{statusLabel('reconciliation')}</option>
+                        ) : (
+                          CODER_STATUSES.map((s) => (
+                            <option key={s} value={s}>
+                              {statusLabel(s)}
+                            </option>
+                          ))
+                        )}
+                      </select>
+
+                      {/* Reconciliation is a SESSION toggle (shared, overrides everyone). */}
+                      <label className="flex items-center gap-1 text-xs text-foreground/60">
+                        <input
+                          type="checkbox"
+                          checked={inReconciliation}
+                          disabled={isPending}
+                          onChange={(e) =>
+                            run(() => setReconciliation(row.id, e.target.checked))
+                          }
+                          className="h-3.5 w-3.5 cursor-pointer accent-foreground/70"
+                        />
+                        Reconciliation
+                      </label>
+
+                      <select
+                        value={row.collection}
+                        disabled={isPending}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (v !== row.collection) run(() => updateSessionCollection(row.id, v));
+                        }}
+                        aria-label={`Collection for ${row.pidLabel}`}
+                        className="rounded border border-foreground/20 bg-background px-2 py-1 text-xs disabled:opacity-50"
+                      >
+                        {collectionOptions(row.collection).map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </select>
+
+                      <span className="font-mono text-xs text-foreground/50">
+                        {formatDuration(row.durationMs)}
+                      </span>
+
+                      <span
+                        className={`ml-auto text-xs ${
+                          shown === 'reconciliation'
+                            ? 'text-amber-700 dark:text-amber-500'
+                            : 'text-foreground/50'
+                        }`}
+                      >
+                        {statusLabel(shown)}
+                      </span>
+
+                      <Link
+                        href={`/sessions/${row.id}`}
+                        className="text-xs text-foreground/70 underline-offset-2 transition hover:text-foreground hover:underline"
+                      >
+                        Open →
+                      </Link>
+                      <button
+                        type="button"
+                        disabled={isPending}
+                        onClick={() => {
+                          if (
+                            confirm(
+                              `Delete session ${row.pidLabel}?\n\nThis permanently removes its transcript, annotations, codes, and comments. This cannot be undone.`,
+                            )
+                          ) {
+                            run(() => deleteSessionCloud(row.id));
+                          }
+                        }}
+                        className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                      >
+                        Delete
+                      </button>
+                    </div>
+
+                    {/* Shared coordination comment, PID already labels the row. Commits on
+                        blur; blank clears it. */}
+                    <NoteField
+                      key={`${row.id}:${row.note ?? ''}`}
+                      pid={row.pidLabel}
+                      initial={row.note ?? ''}
+                      disabled={isPending}
+                      onSave={(text) => run(() => setSessionNote(row.id, text))}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </section>
         );
       })}
     </div>
