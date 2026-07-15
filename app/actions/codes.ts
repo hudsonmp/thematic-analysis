@@ -3,7 +3,12 @@
 import { cbFrom } from '@/lib/supabase/guard';
 import { linkCitation } from '@/app/actions/citations';
 import { attachCodeToLabel, setCodeLabels } from '@/app/actions/labels';
-import { resolveRows, writeOnlyRowErrors, type CodebookRow } from '@/lib/codebook/mnemonic';
+import {
+  resolveRows,
+  uniqueMnemonic,
+  writeOnlyRowErrors,
+  type CodebookRow,
+} from '@/lib/codebook/mnemonic';
 import type { RowFacetWrites } from '@/lib/codebook/grid';
 import { CodeVersionInput, type CodeVersionInputT } from '@/lib/types/contracts';
 import type { Json, Tables, TablesInsert } from '@/lib/types/cb-db';
@@ -66,6 +71,7 @@ export async function createCode({
   origin,
   version,
   studyLabel,
+  autoUniqueMnemonic = false,
 }: {
   codebookId: string;
   mnemonic: string;
@@ -73,8 +79,25 @@ export async function createCode({
   origin: CodeOrigin;
   version: CodeVersionInputT;
   studyLabel?: string | null;
+  /** Re-uniquify `mnemonic` against the LIVE codebook before inserting. For callers
+   *  whose mnemonic was derived from a client-side SNAPSHOT of the codes list (the
+   *  coding popup): another coder can mint the same mnemonic between render and
+   *  submit, and UNIQUE(codebook_id, mnemonic) would reject the insert. Off by
+   *  default — bulk entry treats an explicit duplicate as an ERROR to surface, and
+   *  silently mangling a hand-typed mnemonic would hide that. */
+  autoUniqueMnemonic?: boolean;
 }): Promise<string> {
   const parsed = CodeVersionInput.parse(version);
+
+  if (autoUniqueMnemonic) {
+    const used = await cbFrom('cb_codes')
+      .select('mnemonic')
+      .eq('codebook_id', codebookId);
+    if (used.error) {
+      throw new Error(`createCode (mnemonics) failed: ${used.error.message}`);
+    }
+    mnemonic = uniqueMnemonic(mnemonic, new Set((used.data ?? []).map((r) => r.mnemonic)));
+  }
 
   const codeRes = await cbFrom('cb_codes')
     .insert({
