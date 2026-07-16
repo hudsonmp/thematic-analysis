@@ -23,7 +23,10 @@ import {
 // the spawn has its own hard timeout below as the real cap.
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 3600; // seconds (1h) — whisper on a long session is slow
+export const maxDuration = 300; // Vercel serverless ceiling. This route uses node:fs +
+// whisper and is NOT meant to run serverless — real transcription happens on a local
+// dev instance at upload time; on Vercel this exists only to satisfy the build (was 3600,
+// over the plan limit). Long-running ingestion stays off the deployed coder-facing app.
 
 // Hard cap on the child process. Defaults to 1h; override with TRANSCRIBE_TIMEOUT_MS.
 const SPAWN_TIMEOUT_MS = Number(process.env.TRANSCRIBE_TIMEOUT_MS) || 60 * 60 * 1000;

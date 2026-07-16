@@ -13,7 +13,7 @@ import {
 // CORS). The file transits our local server; fine in a local researcher tool.
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 600;
+export const maxDuration = 300; // Vercel serverless ceiling (was 600 — over the plan limit)
 
 export async function POST(req: NextRequest): Promise<Response> {
   const user = await getAuthUser();
