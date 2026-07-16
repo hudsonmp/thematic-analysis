@@ -68,7 +68,16 @@ function formatDuration(ms: number | null): string {
  * the grouping reflects the new state. Controls disable while the round-trip is in
  * flight. Deletion is irreversible and gated behind a `confirm()`.
  */
-export default function SessionsIndex({ rows }: { rows: SessionListRow[] }) {
+export default function SessionsIndex({
+  rows,
+  readOnly = false,
+}: {
+  rows: SessionListRow[];
+  /** Viewer accounts browse and open sessions but mutate nothing — the DB would
+   *  reject them anyway (restrictive RLS); disabling the controls says so up front
+   *  instead of letting every click fail loudly. */
+  readOnly?: boolean;
+}) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -144,7 +153,7 @@ export default function SessionsIndex({ rows }: { rows: SessionListRow[] }) {
                           under it would be invisible and misleading. */}
                       <select
                         value={inReconciliation ? 'reconciliation' : row.coderStatus}
-                        disabled={isPending || inReconciliation}
+                        disabled={isPending || readOnly || inReconciliation}
                         onChange={(e) =>
                           run(() =>
                             setCoderStatus(
@@ -177,7 +186,7 @@ export default function SessionsIndex({ rows }: { rows: SessionListRow[] }) {
                         <input
                           type="checkbox"
                           checked={inReconciliation}
-                          disabled={isPending}
+                          disabled={isPending || readOnly}
                           onChange={(e) =>
                             run(() => setReconciliation(row.id, e.target.checked))
                           }
@@ -188,7 +197,7 @@ export default function SessionsIndex({ rows }: { rows: SessionListRow[] }) {
 
                       <select
                         value={row.collection}
-                        disabled={isPending}
+                        disabled={isPending || readOnly}
                         onChange={(e) => {
                           const v = e.target.value;
                           if (v !== row.collection) run(() => updateSessionCollection(row.id, v));
@@ -225,7 +234,7 @@ export default function SessionsIndex({ rows }: { rows: SessionListRow[] }) {
                       </Link>
                       <button
                         type="button"
-                        disabled={isPending}
+                        disabled={isPending || readOnly}
                         onClick={() => {
                           if (
                             confirm(
@@ -247,7 +256,7 @@ export default function SessionsIndex({ rows }: { rows: SessionListRow[] }) {
                       key={`${row.id}:${row.note ?? ''}`}
                       pid={row.pidLabel}
                       initial={row.note ?? ''}
-                      disabled={isPending}
+                      disabled={isPending || readOnly}
                       onSave={(text) => run(() => setSessionNote(row.id, text))}
                     />
                   </div>

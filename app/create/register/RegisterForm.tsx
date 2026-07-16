@@ -6,7 +6,7 @@ import { registerAction, type AuthFormState } from '@/app/actions/auth';
 
 const initial: AuthFormState = {};
 
-export default function RegisterForm() {
+export default function RegisterForm({ invite }: { invite: string }) {
   const [state, formAction, isPending] = useActionState(registerAction, initial);
 
   return (
@@ -17,7 +17,7 @@ export default function RegisterForm() {
             Researcher registration
           </h1>
           <p className="text-sm text-foreground/60 mt-1">
-            Restricted to study authors. An access code is required.
+            Invite-only: accounts are created from single-use invite links.
           </p>
         </header>
 
@@ -62,18 +62,15 @@ export default function RegisterForm() {
               />
             </label>
 
-            <label className="block">
-              <span className="text-xs uppercase tracking-wider text-foreground/60">
-                Access code
-              </span>
-              <input
-                type="password"
-                name="accessCode"
-                required
-                autoComplete="off"
-                className="mt-1 w-full border border-foreground/15 px-3 py-2 bg-background focus:outline-none focus:border-foreground"
-              />
-            </label>
+            {/* The invite token rides the URL into a hidden field. No token → say so
+                up front instead of letting the submit fail. */}
+            <input type="hidden" name="invite" value={invite} />
+            {invite === '' && (
+              <p className="text-sm text-amber-700 dark:text-amber-300">
+                This page needs an invite link (…/create/register?invite=…). Ask the
+                study admin for one.
+              </p>
+            )}
 
             {state.error && (
               <p className="text-sm text-red-600">{state.error}</p>

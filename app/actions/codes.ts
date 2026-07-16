@@ -12,6 +12,7 @@ import {
 import type { RowFacetWrites } from '@/lib/codebook/grid';
 import { CodeVersionInput, type CodeVersionInputT } from '@/lib/types/contracts';
 import type { Json, Tables, TablesInsert } from '@/lib/types/cb-db';
+import { requireEditor } from '@/lib/auth/roles';
 
 type Code = Tables<'cb_codes'>;
 type CodeVersion = Tables<'cb_code_versions'>;
@@ -87,6 +88,7 @@ export async function createCode({
    *  silently mangling a hand-typed mnemonic would hide that. */
   autoUniqueMnemonic?: boolean;
 }): Promise<string> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const parsed = CodeVersionInput.parse(version);
 
   if (autoUniqueMnemonic) {
@@ -183,6 +185,7 @@ export async function createCodeInTree({
   citationId: string | null;
   studyLabel?: string | null;
 }): Promise<string> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const codeId = await createCode({ codebookId, mnemonic, name, origin, version, studyLabel });
 
   if (labelId !== null) await attachCodeToLabel(codeId, labelId);
@@ -200,6 +203,7 @@ export async function saveNewVersion(
   codeId: string,
   version: CodeVersionInputT,
 ): Promise<CodeVersion> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const parsed = CodeVersionInput.parse(version);
 
   const maxRes = await cbFrom('cb_code_versions')
@@ -260,11 +264,13 @@ export async function listCodeVersions(codeId: string): Promise<CodeVersion[]> {
  * that knows which it meant.
  */
 export async function setCodeOrigin(codeId: string, origin: CodeOrigin): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const res = await cbFrom('cb_codes').update({ origin }).eq('id', codeId);
   if (res.error) throw new Error(`setCodeOrigin failed: ${res.error.message}`);
 }
 
 export async function setCodeStatus(codeId: string, status: CodeStatus): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const { error } = await cbFrom('cb_codes').update({ status }).eq('id', codeId);
   if (error) throw new Error(`setCodeStatus failed: ${error.message}`);
 }
@@ -280,12 +286,14 @@ export async function setCodeStatus(codeId: string, status: CodeStatus): Promise
  * keeping. The caller chooses; this action just does the delete.
  */
 export async function deleteCode(codeId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const { error } = await cbFrom('cb_codes').delete().eq('id', codeId);
   if (error) throw new Error(`deleteCode failed: ${error.message}`);
 }
 
 /** Retire a code: status='retired', stamp retired_at. */
 export async function retireCode(codeId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const { error } = await cbFrom('cb_codes')
     .update({ status: 'retired', retired_at: new Date().toISOString() })
     .eq('id', codeId);
@@ -298,6 +306,7 @@ export async function retireCode(codeId: string): Promise<void> {
  * (empty array) just clears the tags.
  */
 export async function setCodeFacetValues(codeId: string, facetValueIds: string[]): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const del = await cbFrom('cb_code_facet_values').delete().eq('code_id', codeId);
   if (del.error) {
     throw new Error(`setCodeFacetValues (delete) failed: ${del.error.message}`);
@@ -347,6 +356,7 @@ export async function renameCode(
   codeId: string,
   { mnemonic, name }: { mnemonic?: string; name?: string },
 ): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const patch: { mnemonic?: string; name?: string } = {};
   if (mnemonic !== undefined) {
     const trimmed = mnemonic.trim();
@@ -379,6 +389,7 @@ export async function renameCode(
  * require reading the facet on every add, and the canvas already knows the facet.
  */
 export async function addCodeFacetValue(codeId: string, facetValueId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const res = await cbFrom('cb_code_facet_values').upsert(
     { code_id: codeId, facet_value_id: facetValueId },
     { onConflict: 'code_id,facet_value_id', ignoreDuplicates: true },
@@ -393,6 +404,7 @@ export async function addCodeFacetValue(codeId: string, facetValueId: string): P
  * been classified.
  */
 export async function removeCodeFacetValue(codeId: string, facetValueId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const res = await cbFrom('cb_code_facet_values')
     .delete()
     .eq('code_id', codeId)
@@ -405,6 +417,7 @@ export async function setCodeFacetField(
   facetId: string,
   { bool_value, text_value }: { bool_value?: boolean | null; text_value?: string | null },
 ): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const trimmedText =
     text_value === undefined || text_value === null ? null : text_value.trim() || null;
   const boolGiven = bool_value !== undefined && bool_value !== null;
@@ -437,6 +450,7 @@ export async function setCodeFacetField(
 
 /** Set (or clear, with null) a code's parent in the code hierarchy. */
 export async function setCodeParent(codeId: string, parentCodeId: string | null): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const { error } = await cbFrom('cb_codes')
     .update({ parent_code_id: parentCodeId })
     .eq('id', codeId);
@@ -452,6 +466,7 @@ export async function setCodeParent(codeId: string, parentCodeId: string | null)
  * (cb_episodes) the code pertains to; they are codebook-scoped, not per-session.
  */
 export async function setCodeEpisodes(codeId: string, episodeIds: string[]): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const del = await cbFrom('cb_code_episodes').delete().eq('code_id', codeId);
   if (del.error) {
     throw new Error(`setCodeEpisodes (delete) failed: ${del.error.message}`);
@@ -505,6 +520,7 @@ export async function createCodesBulk(
   origin: CodeOrigin,
   citationId?: string,
 ): Promise<BulkCreateResult> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   if (!codebookId) throw new Error('createCodesBulk: missing codebook id.');
 
   const existing = await listCodebookMnemonics(codebookId);
@@ -591,6 +607,7 @@ export async function createCodesBulkWithFacets(
   citationId?: string,
   labelWritesByIndex: Record<number, string[]> = {},
 ): Promise<BulkCreateResult> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   if (!codebookId) throw new Error('createCodesBulkWithFacets: missing codebook id.');
 
   const existing = await listCodebookMnemonics(codebookId);

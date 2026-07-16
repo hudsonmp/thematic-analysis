@@ -6,6 +6,7 @@ import { autoColor } from '@/lib/codebook/color';
 import { wouldCreateCycle } from '@/lib/codebook/labelTree';
 import { describeInterposeError, planInterpose } from '@/lib/codebook/interpose';
 import type { Tables } from '@/lib/types/cb-db';
+import { requireEditor } from '@/lib/auth/roles';
 
 type Label = Tables<'cb_labels'>;
 
@@ -56,6 +57,7 @@ export async function createLabel(
   codebookId: string,
   { name, color, parentId }: { name: string; color?: string; parentId?: string | null },
 ): Promise<Label> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   await requireAuthUser();
   const trimmed = (name ?? '').trim();
   if (!trimmed) throw new Error('createLabel: name is required.');
@@ -87,6 +89,7 @@ export async function renameLabel(
   id: string,
   { name, color }: { name?: string; color?: string },
 ): Promise<Label> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   await requireAuthUser();
   const patch: { name?: string; color?: string | null } = {};
   if (name !== undefined) {
@@ -120,6 +123,7 @@ export async function setLabelParent(
   id: string,
   newParentId: string | null,
 ): Promise<Label> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   await requireAuthUser();
 
   // Resolve the codebook so we can load the sibling set and run the cycle check.
@@ -166,6 +170,7 @@ export async function setLabelParent(
  * promotion (no children) is harmless.
  */
 export async function deleteLabel(id: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   await requireAuthUser();
 
   // NON-ATOMIC: the fetch-parent → promote-children → delete sequence below is
@@ -206,6 +211,7 @@ export async function deleteLabel(id: string): Promise<void> {
  * awaited together; throws on the first error. Mirrors `reorderFlagTypes`.
  */
 export async function reorderLabels(orderedIds: string[]): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   await requireAuthUser();
   const results = await Promise.all(
     orderedIds.map((id, index) =>
@@ -225,6 +231,7 @@ export async function reorderLabels(orderedIds: string[]): Promise<void> {
  * they are codebook-scoped, not per-session.
  */
 export async function setCodeLabels(codeId: string, labelIds: string[]): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   await requireAuthUser();
   const del = await cbFrom('cb_code_labels').delete().eq('code_id', codeId);
   if (del.error) {
@@ -249,6 +256,7 @@ export async function setCodeLabels(codeId: string, labelIds: string[]): Promise
  * belong to codes. Passing an empty/blank string clears the note to NULL.
  */
 export async function setLabelNote(id: string, note: string | null): Promise<Label> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   await requireAuthUser();
   const trimmed = (note ?? '').trim();
   const { data, error } = await cbFrom('cb_labels')
@@ -276,6 +284,7 @@ export async function setLabelNote(id: string, note: string | null): Promise<Lab
  * error — dropping a code twice onto the same node is a slip, not a failure.
  */
 export async function attachCodeToLabel(codeId: string, labelId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   await requireAuthUser();
   const res = await cbFrom('cb_code_labels').upsert(
     { code_id: codeId, label_id: labelId },
@@ -293,6 +302,7 @@ export async function attachCodeToLabel(codeId: string, labelId: string): Promis
  * structured.
  */
 export async function detachCodeFromLabel(codeId: string, labelId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   await requireAuthUser();
   const res = await cbFrom('cb_code_labels')
     .delete()
@@ -325,6 +335,7 @@ export async function interposeLabel(
   codebookId: string,
   { parentId, name, childIds }: { parentId: string | null; name: string; childIds: string[] },
 ): Promise<Label> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   await requireAuthUser();
 
   const labels = await listLabels(codebookId);

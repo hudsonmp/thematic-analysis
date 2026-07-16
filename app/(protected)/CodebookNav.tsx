@@ -21,10 +21,12 @@ export default function CodebookNav({
   studyName,
   codebookName,
   displayName,
+  isAdmin = false,
 }: {
   studyName: string | null;
   codebookName: string | null;
   displayName: string;
+  isAdmin?: boolean;
 }) {
   const pathname = usePathname();
   const navRef = useRef<HTMLDivElement | null>(null);
@@ -104,7 +106,9 @@ export default function CodebookNav({
                       role="menu"
                       className="absolute left-0 top-full z-50 mt-2 w-60 border border-foreground/15 bg-background py-1 shadow-lg"
                     >
-                      {group.items.map((item) => {
+                      {group.items
+                        .filter((item) => !item.adminOnly || isAdmin)
+                        .map((item) => {
                         const active = currentHref === item.href;
                         return (
                           <Link

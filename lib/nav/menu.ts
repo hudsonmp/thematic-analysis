@@ -16,7 +16,7 @@
  * under Eval is a different κ (human × model) and belongs to the grader.
  */
 
-export type NavItem = { href: string; label: string; hint?: string };
+export type NavItem = { href: string; label: string; hint?: string; adminOnly?: boolean };
 export type NavGroup = { key: string; label: string; items: NavItem[] };
 
 export const NAV_GROUPS: NavGroup[] = [
@@ -38,6 +38,7 @@ export const NAV_GROUPS: NavGroup[] = [
     key: 'recording',
     label: 'Recording',
     items: [
+      { href: '/guide', label: 'Guide', hint: 'Onboarding walkthrough' },
       { href: '/sessions/live', label: 'Live', hint: 'Co-observation' },
       { href: '/sessions', label: 'Sessions', hint: 'Recorded playback' },
       { href: '/episodes', label: 'Events', hint: 'When it happened' },
@@ -50,6 +51,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: '/progression-analysis', label: 'Progression', hint: 'Spec evolution' },
       { href: '/progression-analysis/llm', label: 'LLM Eval', hint: 'Grader runs, agreement' },
+      { href: '/admin', label: 'Admin', hint: 'Invites · familiarization', adminOnly: true },
     ],
   },
 ];

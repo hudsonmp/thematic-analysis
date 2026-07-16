@@ -1,4 +1,6 @@
+import { redirect } from 'next/navigation';
 import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
+import { getMyRole } from '@/lib/auth/roles';
 import CodebookViews from './CodebookViews';
 
 /**
@@ -17,6 +19,13 @@ import CodebookViews from './CodebookViews';
  * handlers, never during client render; the page re-reads via router.refresh().
  */
 export default async function CodebookPage() {
+  // View mode / edit mode: the DOCUMENT (/codebook/view) is the view mode, this
+  // canvas is the edit mode. Viewers only get the former — and the restriction is
+  // not merely this redirect: their JWT is rejected by the restrictive RLS policies
+  // and every codebook-mutating action checks requireEditor().
+  const role = await getMyRole();
+  if (role === 'viewer') redirect('/codebook/view');
+
   const cb = await getOrCreateCodebook();
   const tree = await listCodebookTree(cb.id);
 

@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { listSessionsCloud } from '@/app/actions/sessions';
+import { getMyRole } from '@/lib/auth/roles';
 import SessionsIndex from '@/components/sessions/SessionsIndex';
 
 /**
@@ -11,7 +12,8 @@ import SessionsIndex from '@/components/sessions/SessionsIndex';
  * is shown by pid_label ONLY (no name) — these are coded recordings.
  */
 export default async function SessionsPage() {
-  const rows = await listSessionsCloud();
+  const [rows, role] = await Promise.all([listSessionsCloud(), getMyRole()]);
+  const readOnly = role === 'viewer';
 
   return (
     <main className="px-6 py-6">
@@ -23,15 +25,17 @@ export default async function SessionsPage() {
             synchronized transcript.
           </p>
         </div>
-        <Link
-          href="/sessions/upload"
-          className="shrink-0 rounded border border-foreground/25 px-3 py-1.5 text-sm transition hover:bg-foreground/5"
-        >
-          Upload sessions →
-        </Link>
+        {!readOnly && (
+          <Link
+            href="/sessions/upload"
+            className="shrink-0 rounded border border-foreground/25 px-3 py-1.5 text-sm transition hover:bg-foreground/5"
+          >
+            Upload sessions →
+          </Link>
+        )}
       </header>
 
-      <SessionsIndex rows={rows} />
+      <SessionsIndex rows={rows} readOnly={readOnly} />
     </main>
   );
 }

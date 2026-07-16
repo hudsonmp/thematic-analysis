@@ -6,6 +6,7 @@ import { autoColor } from '@/lib/codebook/color';
 import { describeInterposeError, planInterpose } from '@/lib/codebook/interpose';
 import { wouldCreateCycle } from '@/lib/codebook/tree';
 import type { Tables } from '@/lib/types/cb-db';
+import { requireEditor } from '@/lib/auth/roles';
 
 type Facet = Tables<'cb_facets'>;
 type FacetValue = Tables<'cb_facet_values'>;
@@ -33,6 +34,7 @@ export async function createFacet(
     type = DEFAULT_FACET_TYPE,
   }: { key: string; label: string; cardinality?: Cardinality; type?: FacetType },
 ): Promise<Facet> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const position = await nextPosition('cb_facets', codebookId);
   const { data, error } = await cbFrom('cb_facets')
     .insert({ codebook_id: codebookId, key, label, cardinality, type, position })
@@ -48,6 +50,7 @@ export async function renameFacet(
   facetId: string,
   { label, description }: { label: string; description?: string },
 ): Promise<Facet> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const patch: { label: string; description?: string } = { label };
   if (description !== undefined) patch.description = description;
   const { data, error } = await cbFrom('cb_facets')
@@ -67,6 +70,7 @@ export async function renameFacet(
  * together. Throws on the first error.
  */
 export async function reorderFacets(orderedFacetIds: string[]): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const results = await Promise.all(
     orderedFacetIds.map((id, index) =>
       cbFrom('cb_facets').update({ position: index }).eq('id', id),
@@ -78,6 +82,7 @@ export async function reorderFacets(orderedFacetIds: string[]): Promise<void> {
 
 /** Delete a facet. Values cascade (cb_facet_values FK on delete cascade). */
 export async function deleteFacet(facetId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const { error } = await cbFrom('cb_facets').delete().eq('id', facetId);
   if (error) throw new Error(`deleteFacet failed: ${error.message}`);
 }
@@ -111,6 +116,7 @@ export async function createFacetValue(
     parentId?: string | null;
   },
 ): Promise<FacetValue> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const position = await nextPosition('cb_facet_values', facetId);
   const { data, error } = await cbFrom('cb_facet_values')
     .insert({
@@ -157,6 +163,7 @@ export async function promoteCodeToValue(
   facetId: string,
   parentValueId: string | null = null,
 ): Promise<FacetValue> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const code = await cbFrom('cb_codes')
     .select('id, name, current_version_id')
     .eq('id', codeId)
@@ -225,6 +232,7 @@ export async function promoteCodeToValue(
  * symptom; a new facet is the cure.
  */
 export async function duplicateFacetValue(valueId: string): Promise<FacetValue> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const all = await cbFrom('cb_facet_values').select('*');
   if (all.error) throw new Error(`duplicateFacetValue failed: ${all.error.message}`);
 
@@ -307,6 +315,7 @@ export async function setFacetValueParent(
   valueId: string,
   newParentId: string | null,
 ): Promise<FacetValue> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const target = await cbFrom('cb_facet_values').select('facet_id').eq('id', valueId).single();
   if (target.error || !target.data) {
     throw new Error(`setFacetValueParent failed: ${target.error?.message ?? 'value not found'}`);
@@ -351,6 +360,7 @@ export async function interposeFacetValue(
   facetId: string,
   { parentId, label, childIds }: { parentId: string | null; label: string; childIds: string[] },
 ): Promise<FacetValue> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const values = await listFacetValues(facetId);
 
   const planned = planInterpose(values, { parentId, name: label, childIds });
@@ -398,6 +408,7 @@ export async function updateFacetValue(
   valueId: string,
   { label, description, color }: { label?: string; description?: string; color?: string },
 ): Promise<FacetValue> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const patch: { label?: string; description?: string; color?: string } = {};
   if (label !== undefined) patch.label = label;
   if (description !== undefined) patch.description = description;
@@ -414,6 +425,7 @@ export async function updateFacetValue(
 }
 
 export async function reorderFacetValues(orderedValueIds: string[]): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const results = await Promise.all(
     orderedValueIds.map((id, index) =>
       cbFrom('cb_facet_values').update({ position: index }).eq('id', id),
@@ -438,6 +450,7 @@ export async function reorderFacetValues(orderedValueIds: string[]): Promise<voi
  * use here; the DB net catches the pathological interleaving.
  */
 export async function deleteFacetValue(valueId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const target = await cbFrom('cb_facet_values')
     .select('parent_id')
     .eq('id', valueId)

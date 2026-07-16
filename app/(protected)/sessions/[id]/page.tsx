@@ -14,6 +14,7 @@ import { listObservationsForSession } from '@/app/actions/observations';
 import { listSessionAssistantChat } from '@/app/actions/chat';
 import { listSessionSpecTimeline } from '@/app/actions/spec';
 import { getAuthUser } from '@/lib/auth/supabase-auth';
+import { getMyRole } from '@/lib/auth/roles';
 import SessionPlayer from '@/components/sessions/SessionPlayer';
 
 /**
@@ -68,6 +69,7 @@ export default async function SessionPage({
     // Non-fatal: derivation failures must not break the page.
   }
 
+  const role = await getMyRole();
   const [session, versions, codebook, sessionEpisodes, observations, user] =
     await Promise.all([
       getSessionCloud(id),
@@ -163,7 +165,7 @@ export default async function SessionPage({
       pidLabel={session.pidLabel}
       segments={session.segments}
       durationMs={session.durationMs ?? 0}
-      codingEnabled
+      codingEnabled={role !== 'viewer'}
       versionId={session.versionId}
       versions={versions}
       codes={codes}
