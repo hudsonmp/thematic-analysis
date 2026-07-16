@@ -4,6 +4,7 @@ import { cbFrom } from '@/lib/supabase/guard';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { autoColor } from '@/lib/codebook/color';
 import type { Tables } from '@/lib/types/cb-db';
+import { requireEditor } from '@/lib/auth/roles';
 
 type FlagType = Tables<'cb_flag_types'>;
 
@@ -47,6 +48,7 @@ export async function createFlagType(
   codebookId: string,
   { label, color }: { label: string; color?: string },
 ): Promise<FlagType> {
+  await requireEditor(); // viewers are read-only
   await requireAuthUser();
   const trimmed = (label ?? '').trim();
   if (!trimmed) throw new Error('createFlagType: label is required.');
@@ -76,6 +78,7 @@ export async function renameFlagType(
   id: string,
   { label, color }: { label?: string; color?: string },
 ): Promise<FlagType> {
+  await requireEditor(); // viewers are read-only
   await requireAuthUser();
   const patch: { label?: string; color?: string | null } = {};
   if (label !== undefined) {
@@ -101,6 +104,7 @@ export async function renameFlagType(
  * task; their FK will be defined `on delete cascade` then, as with episodes.)
  */
 export async function deleteFlagType(id: string): Promise<void> {
+  await requireEditor(); // viewers are read-only
   await requireAuthUser();
   const { error } = await cbFrom('cb_flag_types').delete().eq('id', id);
   if (error) throw new Error(`deleteFlagType failed: ${error.message}`);
@@ -112,6 +116,7 @@ export async function deleteFlagType(id: string): Promise<void> {
  * awaited together; throws on the first error. Mirrors `reorderEpisodes`.
  */
 export async function reorderFlagTypes(orderedIds: string[]): Promise<void> {
+  await requireEditor(); // viewers are read-only
   await requireAuthUser();
   const results = await Promise.all(
     orderedIds.map((id, index) =>

@@ -1,0 +1,8 @@
+-- 42_role_guard_trigger.sql
+-- (Applied 2026-07-15.) The real fix for the role escalation: a BEFORE UPDATE trigger
+-- on cb_profiles (cb_profiles_guard_role, SECURITY DEFINER, pinned search_path) that
+-- rejects any change to `role` unless request.jwt.claims->>'role' = 'service_role'.
+-- Grants can't express this (authenticated holds table-level UPDATE); the trigger can.
+-- Verified against the live DB: an authenticated caller's admin→full self-change is
+-- blocked while display_name self-edits still succeed. Pairs with getMyRole()'s
+-- fail-closed 'viewer' default (missing row) to shut both escalation vectors.

@@ -12,6 +12,8 @@ import {
   type CanonicalStep,
 } from '@/lib/live/episodes-from-events';
 import type { Tables } from '@/lib/types/cb-db';
+import { requireEditor } from '@/lib/auth/roles';
+import { getMyRole } from '@/lib/auth/roles';
 
 type Episode = Tables<'cb_episodes'>;
 
@@ -51,6 +53,7 @@ export async function createEpisode(
   codebookId: string,
   { name, description }: { name: string; description?: string },
 ): Promise<Episode> {
+  await requireEditor(); // viewers are read-only
   await requireAuthUser();
   const trimmed = (name ?? '').trim();
   if (!trimmed) throw new Error('createEpisode: name is required.');
@@ -79,6 +82,7 @@ export async function renameEpisode(
   id: string,
   { name, description }: { name: string; description?: string },
 ): Promise<Episode> {
+  await requireEditor(); // viewers are read-only
   await requireAuthUser();
   const patch: { name?: string; description?: string | null } = {};
   if (name !== undefined) {
@@ -104,6 +108,7 @@ export async function renameEpisode(
  * (cb_session_episodes.episode_id FK on delete cascade).
  */
 export async function deleteEpisode(id: string): Promise<void> {
+  await requireEditor(); // viewers are read-only
   await requireAuthUser();
   const { error } = await cbFrom('cb_episodes').delete().eq('id', id);
   if (error) throw new Error(`deleteEpisode failed: ${error.message}`);
@@ -115,6 +120,7 @@ export async function deleteEpisode(id: string): Promise<void> {
  * awaited together; throws on the first error. Mirrors `reorderFacets`.
  */
 export async function reorderEpisodes(orderedIds: string[]): Promise<void> {
+  await requireEditor(); // viewers are read-only
   await requireAuthUser();
   const results = await Promise.all(
     orderedIds.map((id, index) =>
@@ -161,6 +167,7 @@ export async function markSessionEpisode({
   tStartMs: number;
   tEndMs?: number | null;
 }): Promise<Tables<'cb_session_episodes'>> {
+  await requireEditor(); // viewers are read-only
   const user = await requireAuthUser();
   const sb = await createUserServerClient();
 
@@ -225,6 +232,7 @@ export async function listSessionEpisodes(
  * matches zero rows (silent no-op), not an error.
  */
 export async function deleteSessionEpisode(id: string): Promise<void> {
+  await requireEditor(); // viewers are read-only
   await requireAuthUser();
   const sb = await createUserServerClient();
   const { error } = await sb.from('cb_session_episodes').delete().eq('id', id);
@@ -293,6 +301,11 @@ export async function materializeAutoEpisodes(
   const user = await requireAuthUser();
   const id = (sessionId ?? '').trim();
   if (!id) throw new Error('materializeAutoEpisodes: sessionId is required.');
+
+  // This runs on EVERY player load and creates preset episodes via the service role.
+  // A viewer must not trigger writes — and must not crash on load either — so for a
+  // viewer we skip materialization and just return the marks that already exist.
+  if ((await getMyRole()) === 'viewer') return listSessionEpisodes(id);
 
   const sb = await createUserServerClient();
 

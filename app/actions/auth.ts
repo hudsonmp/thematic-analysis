@@ -120,6 +120,14 @@ export async function registerAction(
   const sb = await createUserServerClient();
   const { error: signInErr } = await sb.auth.signInWithPassword({ email, password });
   if (signInErr) {
+    // If an account WAS created, the invite was legitimately consumed — keep it
+    // burned and stamp the consumer, so a later plain login cannot land on the
+    // 'viewer' default and lose the invite's role. Only release when NO account
+    // exists (the pre-existing-email fallthrough failing sign-in on a bad password).
+    if (created?.user?.id) {
+      await cbFrom('cb_invites').update({ used_by: created.user.id }).eq('id', invite.id);
+      return { error: `${signInErr.message} — your account exists; sign in to continue.` };
+    }
     await release();
     return { error: signInErr.message };
   }

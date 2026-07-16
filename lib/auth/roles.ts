@@ -6,11 +6,12 @@ import { requireAuthUser } from '@/lib/auth/supabase-auth';
 export type Role = 'admin' | 'full' | 'viewer';
 
 /**
- * The signed-in user's role, from cb_profiles. A user with no profile row yet (the
- * ensureProfile race on first login) reads as 'full' — the pre-roles default — so a
- * momentarily-missing row never locks a legitimate editor out; the DB-level viewer
- * restriction is carried by cb_is_editor(), which checks the same table and treats a
- * missing row the same way (no row ⇒ not a viewer ⇒ editor).
+ * The signed-in user's role, from cb_profiles. FAIL CLOSED: a missing row reads as
+ * 'viewer', the least privilege. (An earlier 'full' default was an escalation — a
+ * viewer could DELETE their own profile row via the permissive self-RW policy and
+ * inherit editor rights from the absent row. This now matches cb_is_editor(), which
+ * also treats a missing row as non-editor.) ensureProfile provisions the real row on
+ * login/register, so the closed default only bites a genuinely rowless session.
  */
 export async function getMyRole(): Promise<Role> {
   const user = await requireAuthUser();
@@ -21,7 +22,7 @@ export async function getMyRole(): Promise<Role> {
     .eq('user_id', user.id)
     .maybeSingle();
   const role = data?.role;
-  return role === 'admin' || role === 'viewer' ? role : 'full';
+  return role === 'admin' || role === 'full' ? role : 'viewer';
 }
 
 /**
@@ -31,8 +32,11 @@ export async function getMyRole(): Promise<Role> {
  * app-level equivalent, and it throws rather than redirects because actions are
  * invoked from event handlers, not navigations.
  *
- * User-client writes (annotations, comments, session status) do NOT need this: the
- * RESTRICTIVE RLS policies from migration 39 reject a viewer's JWT at the database.
+ * User-client writes covered by the RESTRICTIVE policies (annotations, session
+ * status, recording marks, observations) do NOT need this — the DB rejects a viewer's
+ * JWT. But SERVICE-ROLE writes (cb_coder_comments, cb_codebook_notes, and everything
+ * in codes/facets/labels/citations/episodes/flag-types/freeze/reliability) bypass RLS
+ * and MUST call requireEditor here.
  */
 export async function requireEditor(): Promise<void> {
   const role = await getMyRole();

@@ -4,6 +4,7 @@ import { cbFrom } from '@/lib/supabase/guard';
 import { listCodebookTree } from '@/app/actions/codebook';
 import { buildSnapshot } from '@/lib/export/snapshot';
 import type { Json, Tables } from '@/lib/types/cb-db';
+import { requireEditor } from '@/lib/auth/roles';
 
 type CodebookVersion = Tables<'cb_codebook_versions'>;
 
@@ -30,6 +31,7 @@ export async function freezeCodebook({
   note?: string;
   frozenBy?: string;
 }): Promise<CodebookVersion> {
+  await requireEditor(); // viewers are read-only
   const tree = await listCodebookTree(codebookId);
   const snapshot = buildSnapshot(tree);
   const frozenAt = new Date().toISOString();
