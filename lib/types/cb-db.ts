@@ -791,6 +791,57 @@ export type Database = {
           },
         ]
       }
+      cb_familiarization: {
+        Row: {
+          added_by: string | null
+          created_at: string
+          position: number
+          session_id: string
+        }
+        Insert: {
+          added_by?: string | null
+          created_at?: string
+          position?: number
+          session_id: string
+        }
+        Update: {
+          added_by?: string | null
+          created_at?: string
+          position?: number
+          session_id?: string
+        }
+        Relationships: []
+      }
+      cb_invites: {
+        Row: {
+          created_at: string
+          created_by: string
+          id: string
+          role: string
+          token: string
+          used_at: string | null
+          used_by: string | null
+        }
+        Insert: {
+          created_at?: string
+          created_by: string
+          id?: string
+          role: string
+          token?: string
+          used_at?: string | null
+          used_by?: string | null
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          id?: string
+          role?: string
+          token?: string
+          used_at?: string | null
+          used_by?: string | null
+        }
+        Relationships: []
+      }
       cb_labels: {
         Row: {
           codebook_id: string
@@ -944,18 +995,21 @@ export type Database = {
           display_name: string | null
           initials: string | null
           user_id: string
+          role: string
         }
         Insert: {
           created_at?: string
           display_name?: string | null
           initials?: string | null
           user_id: string
+          role?: string
         }
         Update: {
           created_at?: string
           display_name?: string | null
           initials?: string | null
           user_id?: string
+          role?: string
         }
         Relationships: []
       }

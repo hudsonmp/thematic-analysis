@@ -376,22 +376,15 @@ export async function addCodeToAnnotation(
 }
 
 /**
- * REMOVE one code from an annotation. The last-code case is a POLICY, not an accident,
- * and it forks on whether the annotation carries comments:
+ * REMOVE one code from an annotation. JUST the junction row: the anchor (the
+ * bracket in the gutter) is DURABLE — deleting its last code leaves an empty
+ * bracket the coder can re-code later, because the bracket records "this span is
+ * analytically interesting" independently of which codes currently name it.
+ * Deleting the bracket itself is a separate, explicit act (deleteAnnotation).
  *
- *   comments exist → the anchor DEMOTES to kind:'quote'. A hard delete would cascade
- *     the thread away, destroying discussion the team already had about that span.
- *   no comments    → the annotation is DELETED, upholding this file's standing
- *     invariant: never leave a code-less kind:'code' anchor behind.
- *
- * Every write is RLS-scoped to the caller's own rows.
- *
- * NON-ATOMIC: delete → check → demote/delete is three PostgREST statements (this repo
- * forbids .rpc(), so a transactional Postgres function is not an option — see
- * check-no-study-writes.sh). The racy interleaving (another of MY tabs assigning while
- * this one removes the last code) resolves safely: a concurrent add lands on a live
- * anchor or errors loudly on a dead one, and a wrongly-demoted anchor self-heals on the
- * next assign via addCodeToAnnotation's promote.
+ * (This deliberately retires the old last-code policy — demote-to-quote / delete —
+ * after live use: auto-destroying the anchor made re-coding a span cost a fresh
+ * selection, and the coder owns the bracket's lifetime, not the code count.)
  */
 export async function removeCodeFromAnnotation(
   annotationId: string,
@@ -399,47 +392,57 @@ export async function removeCodeFromAnnotation(
 ): Promise<void> {
   await requireAuthUser();
   const sb = await createUserServerClient();
-
   const del = await sb
     .from('cb_annotation_codes')
     .delete()
     .eq('annotation_id', annotationId)
     .eq('code_id', codeId);
   if (del.error) throw new Error(`removeCodeFromAnnotation failed: ${del.error.message}`);
+}
 
-  const left = await sb
-    .from('cb_annotation_codes')
-    .select('code_id')
-    .eq('annotation_id', annotationId)
-    .limit(1);
-  if (left.error) {
-    throw new Error(`removeCodeFromAnnotation (check) failed: ${left.error.message}`);
-  }
-  if ((left.data ?? []).length > 0) return;
-
-  const thread = await sb
-    .from('cb_annotation_comments')
-    .select('id')
-    .eq('annotation_id', annotationId)
-    .limit(1);
-  if (thread.error) {
-    throw new Error(`removeCodeFromAnnotation (thread) failed: ${thread.error.message}`);
-  }
-
-  if ((thread.data ?? []).length > 0) {
-    const demote = await sb
-      .from('cb_annotations')
-      .update({ kind: 'quote' })
-      .eq('id', annotationId);
-    if (demote.error) {
-      throw new Error(`removeCodeFromAnnotation (demote) failed: ${demote.error.message}`);
-    }
-  } else {
-    const drop = await sb.from('cb_annotations').delete().eq('id', annotationId);
-    if (drop.error) {
-      throw new Error(`removeCodeFromAnnotation (delete) failed: ${drop.error.message}`);
-    }
-  }
+/**
+ * RE-ANCHOR an annotation: replace WHAT TEXT the bracket covers, keeping its codes
+ * and comments. The "edit selection" affordance — a bracket whose span was slightly
+ * off should be fixable by re-highlighting, not by delete-and-recode (which would
+ * throw away the code set and any thread). RLS `using (coder_id = auth.uid())`
+ * scopes the update to the caller's own annotation; another coder's id is a silent
+ * zero-row no-op.
+ */
+export async function updateAnnotationAnchor(
+  annotationId: string,
+  anchor: {
+    segmentId: string;
+    endSegmentId?: string | null;
+    charStart: number;
+    charEnd: number;
+    quoteText?: string | null;
+    prefix?: string | null;
+    suffix?: string | null;
+    tStartMs: number;
+    tEndMs: number;
+  },
+): Promise<void> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+  const { error } = await sb
+    .from('cb_annotations')
+    .update({
+      segment_id: anchor.segmentId,
+      end_segment_id:
+        anchor.endSegmentId && anchor.endSegmentId !== anchor.segmentId
+          ? anchor.endSegmentId
+          : null,
+      char_start: anchor.charStart,
+      char_end: anchor.charEnd,
+      quote_text: anchor.quoteText ?? null,
+      prefix: anchor.prefix ?? null,
+      suffix: anchor.suffix ?? null,
+      t_start_ms: anchor.tStartMs,
+      t_end_ms: anchor.tEndMs,
+      anchor_status: 'exact',
+    })
+    .eq('id', annotationId);
+  if (error) throw new Error(`updateAnnotationAnchor failed: ${error.message}`);
 }
 
 /**

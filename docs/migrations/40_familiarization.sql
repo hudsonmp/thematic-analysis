@@ -1,0 +1,5 @@
+-- 40_familiarization.sql
+-- (Applied 2026-07-15.) Admin-curated data-familiarization list: which sessions a new
+-- coder should watch before coding (ordered); the onboarding guide ends by prompting
+-- these. Read-all to authenticated; writes via service-role in admin-gated actions
+-- only (no write policies). cb_ only.

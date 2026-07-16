@@ -14,6 +14,7 @@ import {
   addAnnotation,
   addCodeToAnnotation,
   removeCodeFromAnnotation,
+  updateAnnotationAnchor,
   deleteAnnotation,
   setAnnotationKind,
   listMyAnnotationsForVersion,
@@ -40,7 +41,7 @@ import {
   type Highlight,
 } from '@/lib/transcript/selection';
 import { groupIntoTurns } from '@/lib/transcript/turns';
-import { findActiveIndex, nearestCueIndex } from '@/lib/transcript/active';
+import { findActiveIndex } from '@/lib/transcript/active';
 import { findPhraseMatches } from '@/lib/transcript/search';
 import { cardsByTurn, type RailCard } from '@/lib/transcript/rail';
 import { packGutter, sameAnchor, type GutterInput } from '@/lib/transcript/gutter';
@@ -319,13 +320,19 @@ export default function SessionPlayer({
 }) {
   const router = useRouter();
 
-  // --- Coding popup (selection-spawned) -----------------------------------
-  // The old REVIEW/CODING mode split is gone: one surface, and coding happens in a
-  // popup that appears where a selection ends. `popupPos` non-null = popup open;
-  // `assignedAnnId` is the annotation this selection's codes group onto (created on
-  // the first assign, reused for the rest — multiple codes, ONE anchor).
+  // --- Modes: COMMENT (default) vs CODE -----------------------------------
+  // Two selection grammars share one transcript. COMMENT mode: select → start
+  // typing → a marginalia composer captures the keystrokes; ⏎/⌘⏎ saves (a bare
+  // highlight with no comment cannot be saved — a highlight that says nothing IS
+  // nothing). CODE mode: select → the coding popup spawns at the release point.
+  // Defaulting to Comment makes the cheap, frequent act (reacting to the data)
+  // zero-friction and the schema-bearing act (coding) deliberate.
+  const [mode, setMode] = useState<'comment' | 'code'>('comment');
   const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
   const [assignedAnnId, setAssignedAnnId] = useState<string | null>(null);
+  // "Edit selection" on a bracket: the NEXT selection re-anchors this annotation
+  // instead of opening the popup / composer.
+  const [reanchoringId, setReanchoringId] = useState<string | null>(null);
 
   // --- Transcript layers (feature #20): original (verbatim) vs cleaned --------
   const cleanedVersionFromList = versions.find((v) => v.kind === 'cleaned') ?? null;
@@ -701,34 +708,66 @@ export default function SessionPlayer({
       suffix: anchor.suffix,
     });
 
-    // Spawn the coding popup at the release point. If one of MY code annotations
-    // already sits on this IDENTICAL anchor, its codes prefill the popup's chips —
-    // re-selecting the same span means "edit that group", not "start a duplicate".
-    // (Identical only: a merely-overlapping span is a different claim about where
-    // the evidence starts and stops.)
     const startSeg = segments[r.startSegIdx];
     const endSeg = segments[r.endSegIdx];
-    const existing = myAnnotations.find(
-      (a) =>
-        a.kind === 'code' &&
-        sameAnchor(
-          {
-            segmentId: a.segmentId,
-            endSegmentId: a.endSegmentId,
-            charStart: a.charStart,
-            charEnd: a.charEnd,
-          },
-          {
+
+    // RE-ANCHOR gesture: this selection replaces an existing bracket's span —
+    // codes and comments ride along; no popup, no composer.
+    if (reanchoringId) {
+      const target = reanchoringId;
+      setReanchoringId(null);
+      void (async () => {
+        try {
+          await updateAnnotationAnchor(target, {
             segmentId: startSeg.id,
             endSegmentId: r.endSegIdx !== r.startSegIdx ? endSeg.id : null,
             charStart: anchor.startChar,
             charEnd: anchor.endChar,
-          },
-        ),
-    );
-    setAssignedAnnId(existing?.id ?? null);
-    setPopupPos({ x: e.clientX, y: e.clientY });
-  }, [segments, myAnnotations]);
+            quoteText: anchor.quoteText,
+            prefix: anchor.prefix,
+            suffix: anchor.suffix,
+            tStartMs: startSeg.startMs,
+            tEndMs: endSeg.endMs,
+          });
+          await refreshActiveAnnotations();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to re-anchor.');
+        } finally {
+          setTextSel(null);
+          window.getSelection()?.removeAllRanges();
+        }
+      })();
+      return;
+    }
+
+    if (mode === 'code') {
+      // Spawn the coding popup at the release point. If one of MY code annotations
+      // already sits on this IDENTICAL anchor, its codes prefill the popup's chips —
+      // re-selecting the same span means "edit that group", not "start a duplicate".
+      const existing = myAnnotations.find(
+        (a) =>
+          a.kind === 'code' &&
+          sameAnchor(
+            {
+              segmentId: a.segmentId,
+              endSegmentId: a.endSegmentId,
+              charStart: a.charStart,
+              charEnd: a.charEnd,
+            },
+            {
+              segmentId: startSeg.id,
+              endSegmentId: r.endSegIdx !== r.startSegIdx ? endSeg.id : null,
+              charStart: anchor.startChar,
+              charEnd: anchor.endChar,
+            },
+          ),
+      );
+      setAssignedAnnId(existing?.id ?? null);
+      setPopupPos({ x: e.clientX, y: e.clientY });
+    }
+    // COMMENT mode: the selection just sits (painted pending); typing opens the
+    // marginalia composer via the keyboard handler below.
+  }, [segments, myAnnotations, mode, reanchoringId, refreshActiveAnnotations]);
 
   const clearSelection = useCallback(() => {
     setTextSel(null);
@@ -755,6 +794,14 @@ export default function SessionPlayer({
       suffix: textSel.suffix,
     };
   }, [textSel, segments]);
+
+  // segment id → its index in `segments` (transcript order). Used to expand a
+  // multi-cue annotation's start/end segment ids back into a covered index range.
+  const segIndexById = useMemo(() => {
+    const m = new Map<string, number>();
+    segments.forEach((s, i) => m.set(s.id, i));
+    return m;
+  }, [segments]);
 
   // --- Mutations ----------------------------------------------------------
 
@@ -834,6 +881,46 @@ export default function SessionPlayer({
       }
     },
     [versionId, pending, id, assignedAnnId, myAnnotations, afterAnnotationMutation],
+  );
+
+  // Remove one code from a BRACKET (gutter ×). The bracket survives — even empty —
+  // because the anchor records "this span matters" independently of which codes
+  // currently name it; deleting the bracket is its own explicit act.
+  const handleRemoveCodeFromBracket = useCallback(
+    async (annId: string, codeId: string) => {
+      setError(null);
+      try {
+        await removeCodeFromAnnotation(annId, codeId);
+        await afterAnnotationMutation();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to remove the code.');
+      }
+    },
+    [afterAnnotationMutation],
+  );
+
+  // Reopen the coding popup ON an existing bracket (gutter block click): its span
+  // becomes the pending selection (painted), its id receives further assigns.
+  const openPopupForAnnotation = useCallback(
+    (ann: MyAnnotationView, e: React.MouseEvent) => {
+      const startIdx = segIndexById.get(ann.segmentId);
+      if (startIdx === undefined) return;
+      const endIdx = ann.endSegmentId
+        ? segIndexById.get(ann.endSegmentId) ?? startIdx
+        : startIdx;
+      setTextSel({
+        startSegIdx: startIdx,
+        endSegIdx: endIdx,
+        startChar: ann.charStart,
+        endChar: ann.charEnd,
+        quoteText: ann.quoteText ?? '',
+        prefix: '',
+        suffix: '',
+      });
+      setAssignedAnnId(ann.id);
+      setPopupPos({ x: e.clientX, y: e.clientY });
+    },
+    [segIndexById],
   );
 
   // Remove ONE code from the selection's annotation. The action's last-code policy
@@ -1060,38 +1147,39 @@ export default function SessionPlayer({
       if (e.code === 'Escape') {
         setComposerOpen(false);
         setOpenCommentAnnId(null);
+        setReanchoringId(null); // an armed re-anchor dies with Esc, like everything
         clearSelection(); // also closes the coding popup (popupPos lives in it)
         return;
       }
       if (!codingEnabled) return;
-      if (e.metaKey && e.altKey && e.code === 'KeyM') {
-        e.preventDefault();
-        if (pending) {
-          setOpenCommentAnnId(null);
-          setComposerOpen(true);
-          setTimeout(() => composerTextareaRef.current?.focus(), 0);
-        }
-      } else if (e.metaKey && e.shiftKey && e.code === 'KeyJ') {
-        // ⌘⇧J: mark important quote (open thread → flip kind; selection → new quote).
-        if (openCommentAnnId || pending) {
-          e.preventDefault();
-          void handleMarkQuote();
+
+      // COMMENT mode, marginalia-style: with a selection pending, just START TYPING
+      // and the margin composer opens seeded with that first keystroke (the
+      // annotator-HTML gesture). ⌘⏎ (or ⏎ later, in the composer) saves. No
+      // modifier chords to memorize — the selection is the mode.
+      if (mode === 'comment' && pending && !composerOpen && !popupPos) {
+        const target = e.target as HTMLElement | null;
+        const inField =
+          target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
+        if (!inField) {
+          const printable =
+            e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey;
+          const commitChord = (e.metaKey || e.ctrlKey) && e.key === 'Enter';
+          if (printable || commitChord) {
+            e.preventDefault();
+            setOpenCommentAnnId(null);
+            if (printable) setSelectionCommentDraft((d) => d + e.key);
+            setComposerOpen(true);
+            setTimeout(() => composerTextareaRef.current?.focus(), 0);
+          }
         }
       }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [codingEnabled, pending, openCommentAnnId, clearSelection, handleMarkQuote]);
+  }, [codingEnabled, pending, composerOpen, popupPos, mode, clearSelection]);
 
   // --- Derived view helpers ----------------------------------------------
-
-  // segment id → its index in `segments` (transcript order). Used to expand a
-  // multi-cue annotation's start/end segment ids back into a covered index range.
-  const segIndexById = useMemo(() => {
-    const m = new Map<string, number>();
-    segments.forEach((s, i) => m.set(s.id, i));
-    return m;
-  }, [segments]);
 
   // Own annotations grouped by segment id → the highlights to render. A
   // single-segment annotation (`endSegmentId` null) is one highlight on its
@@ -1108,10 +1196,11 @@ export default function SessionPlayer({
       m.set(segId, list);
     };
     for (const a of myAnnotations) {
-      // kind:'code' still flows in — but renderHighlightedText SUPPRESSES its chrome
-      // at lg+ where the brace gutter represents it. Below lg the gutter cell is
-      // hidden entirely, so without this inline fallback a coded span would be
-      // INVISIBLE on small screens: coded data you cannot see or reach.
+      // kind:'code' NEVER paints inline (owner's call, overriding an earlier review
+      // fix): the bracket + chip block in the gutter is the code's ONLY rendering.
+      // A background wash on coded text made every coded span read like a comment
+      // highlight — two different speech acts in one visual voice.
+      if (a.kind === 'code') continue;
       const startIdx = segIndexById.get(a.segmentId);
       const endIdx = a.endSegmentId ? segIndexById.get(a.endSegmentId) : startIdx;
       if (
@@ -1229,28 +1318,6 @@ export default function SessionPlayer({
   // dropped flags that fell in inter-cue gaps. EVERY flag must map onto some text, so
   // a gap-falling flag attaches to its nearest cue by time. Only an empty transcript
   // yields no mapping (idx < 0).
-  const flagHighlightsBySegment = useMemo(() => {
-    const m = new Map<string, Highlight[]>();
-    for (const { obs, offsetMs } of flagMarkers) {
-      const idx = nearestCueIndex(segments, offsetMs);
-      if (idx < 0) continue;
-      const seg = segments[idx];
-      const list = m.get(seg.id) ?? [];
-      list.push({
-        annotationId: `flag:${obs.id}`,
-        charStart: 0,
-        charEnd: seg.text.length,
-        kind: 'flag',
-        // A guaranteed hex so the renderer can alpha-composite a TRANSLUCENT tint
-        // (`hexWithAlpha`). A colorless flag (a bare note) falls back to neutral
-        // gray — never the opaque `var(--foreground)`, which would black out the cue.
-        color: obs.color ?? '#9ca3af',
-      });
-      m.set(seg.id, list);
-    }
-    return m;
-  }, [flagMarkers, segments]);
-
   // Merge committed annotation highlights + flag highlights + the PENDING selection.
   // The pending range IS painted synthetically now (kind:'pending'): the coding popup
   // steals focus the moment it opens, which kills the native browser selection — and a
@@ -1259,15 +1326,13 @@ export default function SessionPlayer({
   const PENDING_ANN_ID = '__pending__';
   const highlightsBySegmentAll = useMemo(() => {
     const m = new Map<string, Highlight[]>();
-    const segIds = new Set<string>([
-      ...highlightsBySegment.keys(),
-      ...flagHighlightsBySegment.keys(),
-    ]);
+    const segIds = new Set<string>([...highlightsBySegment.keys()]);
+    // FLAG tints deliberately NOT merged: whole-cue washes reveal the cue
+    // segmentation and chop the paragraph into colored blocks — the transcript
+    // should read continuously, like an essay. Flags stay on the timeline bar and
+    // the flag list, which is where a time-anchored event belongs.
     for (const segId of segIds) {
-      m.set(segId, [
-        ...(flagHighlightsBySegment.get(segId) ?? []),
-        ...(highlightsBySegment.get(segId) ?? []),
-      ]);
+      m.set(segId, [...(highlightsBySegment.get(segId) ?? [])]);
     }
     if (textSel) {
       for (let i = textSel.startSegIdx; i <= textSel.endSegIdx; i++) {
@@ -1299,7 +1364,7 @@ export default function SessionPlayer({
       m.set(seg.id, list);
     });
     return m;
-  }, [highlightsBySegment, flagHighlightsBySegment, searchMatches, safeMatchIdx, segments, textSel]);
+  }, [highlightsBySegment, searchMatches, safeMatchIdx, segments, textSel]);
 
   const annById = useMemo(() => {
     const m = new Map<string, MyAnnotationView>();
@@ -1555,7 +1620,6 @@ export default function SessionPlayer({
       // so the repo's no-setState-in-effect rule holds and there is no re-render
       // loop. data-* attributes carry the anchor indices the effect needs.
       codeBlocks.forEach((b) => {
-        const commented = commentedAnnIds.has(b.ann.id);
         nodes.push(
           <div
             key={`brace:${b.ann.id}`}
@@ -1564,7 +1628,11 @@ export default function SessionPlayer({
             data-start-idx={b.startIdx}
             data-end-idx={b.endIdx}
             aria-hidden
-            className={`pointer-events-none absolute w-2 rounded-l border-l-2 border-t-2 border-emerald-600/70 opacity-0 ${
+            // Spine on the RIGHT (away from the text), serifs curling LEFT toward
+            // the span it groups — a closing `⟩` hugging the text's edge. (The first
+            // cut had the spine text-side, which read as a rule between text and
+            // gutter rather than a grouping bracket.)
+            className={`pointer-events-none absolute w-2 rounded-r border-r-2 border-t-2 border-emerald-600/70 opacity-0 ${
               b.continues ? '' : 'border-b-2'
             }`}
             style={{ left: -14 }}
@@ -1576,29 +1644,76 @@ export default function SessionPlayer({
             data-code-block
             data-ann-id={b.ann.id}
             data-start-idx={b.startIdx}
-            className="absolute left-0 w-56 cursor-pointer opacity-0"
+            className="absolute left-0 w-56 opacity-0"
             style={{ zIndex: 5 }}
-            onClick={() => openThreadForAnnotation(b.ann)}
-            title={
-              commented
-                ? 'Coded span — click to open its comment thread'
-                : 'Coded span — click to comment'
-            }
           >
-            <div className="flex flex-wrap gap-1 border border-foreground/10 bg-background/95 p-1">
-              {b.ann.codes.map((c) => (
-                <span
-                  key={c.id}
-                  className="border border-emerald-600/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px]"
+            {/* The block manages CODES — it is not a comment affordance. Click →
+                reopen the coding popup on this bracket (add more codes); × on a chip
+                removes THAT code (the bracket survives, even empty); ✎ re-anchors
+                (next selection replaces the span); 🗑 deletes the bracket itself. */}
+            <div className="flex flex-wrap items-center gap-1 border border-foreground/10 bg-background/95 p-1">
+              <button
+                type="button"
+                onClick={(e) => openPopupForAnnotation(b.ann, e)}
+                title="Add codes to this bracket"
+                className="flex min-w-0 flex-wrap items-center gap-1 text-left"
+              >
+                {b.ann.codes.length === 0 ? (
+                  <span className="px-1 text-[11px] italic text-foreground/40">no codes</span>
+                ) : null}
+                {b.ann.codes.map((c) => (
+                  <span
+                    key={c.id}
+                    className="inline-flex items-center gap-0.5 border border-emerald-600/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px]"
+                  >
+                    {c.mnemonic}
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleRemoveCodeFromBracket(b.ann.id, c.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.stopPropagation();
+                          void handleRemoveCodeFromBracket(b.ann.id, c.id);
+                        }
+                      }}
+                      title={`Remove ${c.mnemonic} (the bracket stays)`}
+                      className="cursor-pointer px-0.5 text-foreground/40 hover:text-red-600"
+                    >
+                      ×
+                    </span>
+                  </span>
+                ))}
+              </button>
+              <span className="ml-auto flex shrink-0 items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setReanchoringId(b.ann.id);
+                  }}
+                  title="Edit selection — the next text you highlight becomes this bracket's span"
+                  className="px-0.5 text-[11px] text-foreground/40 hover:text-foreground"
                 >
-                  {c.mnemonic}
-                </span>
-              ))}
-              {commented && (
-                <span className="px-0.5 text-[11px] text-sky-600" aria-label="Has comments">
-                  💬
-                </span>
-              )}
+                  ✎
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirm('Delete this bracket (its codes and comments go with it)?')) {
+                      void handleDeleteAnnotation(b.ann.id);
+                    }
+                  }}
+                  title="Delete the bracket"
+                  className="px-0.5 text-[11px] text-foreground/40 hover:text-red-600"
+                >
+                  🗑
+                </button>
+              </span>
             </div>
           </div>,
         );
@@ -1610,7 +1725,8 @@ export default function SessionPlayer({
       railEnabled,
       railCardsByTurn,
       codeBlocksByTurn,
-      commentedAnnIds,
+      openPopupForAnnotation,
+      handleRemoveCodeFromBracket,
       composerOpenForRail,
       composerAnchorTurnIdx,
       annById,
@@ -1858,6 +1974,30 @@ export default function SessionPlayer({
             <span className="font-mono text-foreground/50">({pidLabel})</span>
           </h1>
           <div className="flex items-center gap-2">
+            {codingEnabled && (
+              <div
+                role="tablist"
+                aria-label="Selection mode"
+                className="flex rounded border border-foreground/20 text-xs"
+              >
+                {(['comment', 'code'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    role="tab"
+                    aria-selected={mode === m}
+                    onClick={() => setMode(m)}
+                    className={`px-3 py-1 capitalize first:rounded-l last:rounded-r ${
+                      mode === m
+                        ? 'bg-foreground text-background'
+                        : 'text-foreground/70 hover:text-foreground'
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            )}
             {compareHref && (
               <Link
                 href={compareHref}
@@ -2217,13 +2357,17 @@ export default function SessionPlayer({
             <>
               {codingEnabled && (
                 <p className="mb-1 text-xs text-foreground/40">
-                  Select text → assign codes in the popup (
-                  <kbd className="rounded border border-foreground/20 bg-foreground/5 px-1 font-mono">⌘⏎</kbd>
-                  ) ·{' '}
-                  <kbd className="rounded border border-foreground/20 bg-foreground/5 px-1 font-mono">⌘⌥M</kbd>{' '}
-                  comment ·{' '}
-                  <kbd className="rounded border border-foreground/20 bg-foreground/5 px-1 font-mono">⌘⇧J</kbd>{' '}
-                  quote.
+                  {reanchoringId
+                    ? null
+                    : mode === 'comment'
+                      ? 'Select text → just start typing to leave a margin comment (⏎ saves).'
+                      : 'Select text → assign codes in the popup (⌘⏎ assigns · Esc closes).'}
+                </p>
+              )}
+              {reanchoringId && (
+                <p className="mb-1 rounded border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-xs text-sky-800 dark:text-sky-200">
+                  Re-anchoring: highlight the NEW span for this bracket — its codes and
+                  comments ride along. Esc cancels.
                 </p>
               )}
               <div
@@ -2821,12 +2965,11 @@ function renderHighlightedText(
     // code?", and a selection that visually vanishes wherever it crosses an already-
     // annotated span reads as a broken selection.
     if (piece.kinds.includes('pending')) {
+      // Background ONLY — no ring, no rounding: adjacent pieces must fuse into one
+      // continuous wash (a ring outlines every internal piece boundary, chopping
+      // the selection into visible segments).
       return (
-        <mark
-          key={idx}
-          className="rounded-sm bg-sky-300/50 text-foreground ring-1 ring-sky-400/60 dark:bg-sky-400/30"
-          title="Current selection"
-        >
+        <mark key={idx} className="bg-sky-300/50 text-foreground dark:bg-sky-400/30" title="Current selection">
           {piece.text}
         </mark>
       );
