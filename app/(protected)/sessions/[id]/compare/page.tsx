@@ -1,27 +1,26 @@
+import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getSessionCloud } from '@/app/actions/sessions';
 import { listAllAnnotations, listCanonical } from '@/app/actions/annotations';
-import { requireAuthUser } from '@/lib/auth/supabase-auth';
+import { listSessionSpecTimeline } from '@/app/actions/spec';
 import CompareView from '@/components/sessions/CompareView';
 
 /**
- * The post-hoc, READ-ONLY multi-coder Compare tab (#21, Task 11). Next 16:
- * `params` is a Promise, so we await it.
+ * /sessions/[id]/compare — the post-hoc PAIRWISE overlay: MY coding beside ONE
+ * chosen other coder's, per transcript segment, plus a Specification tab showing
+ * the participant's final spec as shared context.
  *
- * Methodological premise: coders code INDEPENDENTLY — the own-coding view at
- * `/sessions/[id]` shows ONLY your own annotations. THIS page is the separate
- * surface where you see how every coder coded the same session (the diff), which
- * supports negotiated agreement. It reads EVERY coder's annotations via
- * `listAllAnnotations` (the read-all RLS policy admits the cross-coder select)
- * and renders the per-segment coder×code matrix. It NEVER writes — independence
- * is preserved because coding lives entirely on the own-coding page.
+ * Deliberately pairwise rather than the old every-coder matrix: reconciliation is
+ * a conversation between two codings at a time, and N columns of chips turn a diff
+ * into a spreadsheet. The full coder list still loads (the picker chooses from it,
+ * and canonical candidates stay the ALL-coder union so canonizing never
+ * under-offers a code from an unselected coder).
  *
- * `getSessionCloud(id)` supplies the transcript segments (and 404s a missing id);
- * `listAllAnnotations(id)` supplies all coders' annotations + the distinct coder
- * list (the matrix columns); `listCanonical(id)` supplies the reconciled
- * (canonical) coding per segment — the authoritative set Task 12 lets a
- * reconciler accept codes into. Unlike Task 11 this page is NO LONGER strictly
- * read-only: the Canonical column carries the accept/clear reconciliation
- * controls. Independent per-coder coding still lives only on the own-coding page.
+ * The viewer's uid is threaded down so the client can split "mine" from "theirs" —
+ * requireAuthUser() alone never reached the client before, which is why the old
+ * matrix could not tell the viewer apart from their colleagues.
+ *
+ * Independent coding stays quarantined to the own-coding page; this surface is
+ * read-only per coder, writable only in the Canonical lane.
  */
 export default async function ComparePage({
   params,
@@ -29,13 +28,26 @@ export default async function ComparePage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  await requireAuthUser();
+  const user = await requireAuthUser();
 
   const [session, { annotations, coders }, canonical] = await Promise.all([
     getSessionCloud(id),
     listAllAnnotations(id),
     listCanonical(id),
   ]);
+
+  // The participant's spec-edit stream — replayed to its FINAL state client-side
+  // (compare has no playhead, so "the spec they ended with" is the useful instant).
+  // Tolerant of sessions with no spec data: the tab then explains itself.
+  let specTimeline: Awaited<ReturnType<typeof listSessionSpecTimeline>> = {
+    specEdits: [],
+    entityEdits: [],
+  };
+  try {
+    specTimeline = await listSessionSpecTimeline(id);
+  } catch {
+    /* no spec stream for this session — the Specification tab shows an empty state */
+  }
 
   return (
     <CompareView
@@ -46,6 +58,8 @@ export default async function ComparePage({
       annotations={annotations}
       coders={coders}
       canonical={canonical}
+      myUid={user.id}
+      specTimeline={specTimeline}
     />
   );
 }
