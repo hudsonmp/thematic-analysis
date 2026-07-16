@@ -317,6 +317,135 @@ export async function setAnnotationKind(
 }
 
 /**
+ * ADD a code to an EXISTING annotation — the multi-code gesture: the coder keeps the
+ * same selection and assigns a second (third, …) code to it, so the codes group on ONE
+ * anchor instead of stacking duplicate anchors on the same span.
+ *
+ * ADDITIVE junction insert, never delete-all-then-insert (that would drop the codes the
+ * annotation already carries). `ignoreDuplicates` on the (annotation_id, code_id) PK
+ * makes a repeat assign a silent no-op — assigning the same code twice is a slip, not
+ * an error.
+ *
+ * Ownership is transitive: the junction's RLS admits a write only when the PARENT
+ * annotation belongs to auth.uid(), so a coder cannot attach codes to another coder's
+ * annotation.
+ */
+export async function addCodeToAnnotation(
+  annotationId: string,
+  codeId: string,
+): Promise<'added' | 'annotation_gone'> {
+  await requireAuthUser();
+  const id = (annotationId ?? '').trim();
+  const code = (codeId ?? '').trim();
+  if (!id || !code) {
+    throw new Error('addCodeToAnnotation: annotationId and codeId are required.');
+  }
+  const sb = await createUserServerClient();
+  const { error } = await sb
+    .from('cb_annotation_codes')
+    .upsert(
+      { annotation_id: id, code_id: code },
+      { onConflict: 'annotation_id,code_id', ignoreDuplicates: true },
+    );
+  if (error) {
+    // The caller's annotation id may be STALE — its anchor was deleted server-side
+    // (last-code removal) after the client captured the id. Probe: if the anchor is
+    // genuinely gone, tell the caller so it can fall through to creating a fresh
+    // annotation instead of surfacing a spurious failure. Any other error (network,
+    // auth expiry) stays LOUD.
+    const probe = await sb.from('cb_annotations').select('id').eq('id', id).maybeSingle();
+    if (!probe.error && probe.data == null) return 'annotation_gone';
+    throw new Error(`addCodeToAnnotation failed: ${error.message}`);
+  }
+
+  // Re-assert the invariant "carries codes ⇒ kind:'code'" — the exact inverse of
+  // removeCodeFromAnnotation's demote. Without this, assigning onto an anchor that
+  // was demoted to 'quote' (last code removed, comments kept) leaves a
+  // quote-with-codes row that renders NOWHERE: the gutter draws kind:'code' only,
+  // and the inline painter skips codes — the UI would claim success while the code
+  // silently vanished from every surface.
+  const promote = await sb
+    .from('cb_annotations')
+    .update({ kind: 'code' })
+    .eq('id', id)
+    .neq('kind', 'code');
+  if (promote.error) {
+    throw new Error(`addCodeToAnnotation (promote) failed: ${promote.error.message}`);
+  }
+  return 'added';
+}
+
+/**
+ * REMOVE one code from an annotation. JUST the junction row: the anchor (the
+ * bracket in the gutter) is DURABLE — deleting its last code leaves an empty
+ * bracket the coder can re-code later, because the bracket records "this span is
+ * analytically interesting" independently of which codes currently name it.
+ * Deleting the bracket itself is a separate, explicit act (deleteAnnotation).
+ *
+ * (This deliberately retires the old last-code policy — demote-to-quote / delete —
+ * after live use: auto-destroying the anchor made re-coding a span cost a fresh
+ * selection, and the coder owns the bracket's lifetime, not the code count.)
+ */
+export async function removeCodeFromAnnotation(
+  annotationId: string,
+  codeId: string,
+): Promise<void> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+  const del = await sb
+    .from('cb_annotation_codes')
+    .delete()
+    .eq('annotation_id', annotationId)
+    .eq('code_id', codeId);
+  if (del.error) throw new Error(`removeCodeFromAnnotation failed: ${del.error.message}`);
+}
+
+/**
+ * RE-ANCHOR an annotation: replace WHAT TEXT the bracket covers, keeping its codes
+ * and comments. The "edit selection" affordance — a bracket whose span was slightly
+ * off should be fixable by re-highlighting, not by delete-and-recode (which would
+ * throw away the code set and any thread). RLS `using (coder_id = auth.uid())`
+ * scopes the update to the caller's own annotation; another coder's id is a silent
+ * zero-row no-op.
+ */
+export async function updateAnnotationAnchor(
+  annotationId: string,
+  anchor: {
+    segmentId: string;
+    endSegmentId?: string | null;
+    charStart: number;
+    charEnd: number;
+    quoteText?: string | null;
+    prefix?: string | null;
+    suffix?: string | null;
+    tStartMs: number;
+    tEndMs: number;
+  },
+): Promise<void> {
+  await requireAuthUser();
+  const sb = await createUserServerClient();
+  const { error } = await sb
+    .from('cb_annotations')
+    .update({
+      segment_id: anchor.segmentId,
+      end_segment_id:
+        anchor.endSegmentId && anchor.endSegmentId !== anchor.segmentId
+          ? anchor.endSegmentId
+          : null,
+      char_start: anchor.charStart,
+      char_end: anchor.charEnd,
+      quote_text: anchor.quoteText ?? null,
+      prefix: anchor.prefix ?? null,
+      suffix: anchor.suffix ?? null,
+      t_start_ms: anchor.tStartMs,
+      t_end_ms: anchor.tEndMs,
+      anchor_status: 'exact',
+    })
+    .eq('id', annotationId);
+  if (error) throw new Error(`updateAnnotationAnchor failed: ${error.message}`);
+}
+
+/**
  * Delete an annotation by id. RLS (`using (coder_id = auth.uid())`) admits only
  * the signed-in coder's OWN rows — a delete of another coder's annotation
  * matches zero rows and is a silent no-op, not an error. `cb_annotation_codes`

@@ -3,7 +3,10 @@
 import { cbFrom } from '@/lib/supabase/guard';
 import { type FacetType, DEFAULT_FACET_TYPE } from '@/lib/codebook/facet-types';
 import { autoColor } from '@/lib/codebook/color';
+import { describeInterposeError, planInterpose } from '@/lib/codebook/interpose';
+import { wouldCreateCycle } from '@/lib/codebook/tree';
 import type { Tables } from '@/lib/types/cb-db';
+import { requireEditor } from '@/lib/auth/roles';
 
 type Facet = Tables<'cb_facets'>;
 type FacetValue = Tables<'cb_facet_values'>;
@@ -31,6 +34,7 @@ export async function createFacet(
     type = DEFAULT_FACET_TYPE,
   }: { key: string; label: string; cardinality?: Cardinality; type?: FacetType },
 ): Promise<Facet> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const position = await nextPosition('cb_facets', codebookId);
   const { data, error } = await cbFrom('cb_facets')
     .insert({ codebook_id: codebookId, key, label, cardinality, type, position })
@@ -46,6 +50,7 @@ export async function renameFacet(
   facetId: string,
   { label, description }: { label: string; description?: string },
 ): Promise<Facet> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const patch: { label: string; description?: string } = { label };
   if (description !== undefined) patch.description = description;
   const { data, error } = await cbFrom('cb_facets')
@@ -65,6 +70,7 @@ export async function renameFacet(
  * together. Throws on the first error.
  */
 export async function reorderFacets(orderedFacetIds: string[]): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const results = await Promise.all(
     orderedFacetIds.map((id, index) =>
       cbFrom('cb_facets').update({ position: index }).eq('id', id),
@@ -76,6 +82,7 @@ export async function reorderFacets(orderedFacetIds: string[]): Promise<void> {
 
 /** Delete a facet. Values cascade (cb_facet_values FK on delete cascade). */
 export async function deleteFacet(facetId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const { error } = await cbFrom('cb_facets').delete().eq('id', facetId);
   if (error) throw new Error(`deleteFacet failed: ${error.message}`);
 }
@@ -93,8 +100,23 @@ export async function deleteFacet(facetId: string): Promise<void> {
  */
 export async function createFacetValue(
   facetId: string,
-  { key, label, description, color }: { key: string; label: string; description?: string; color?: string },
+  {
+    key,
+    label,
+    description,
+    color,
+    parentId,
+  }: {
+    key: string;
+    label: string;
+    description?: string;
+    color?: string;
+    /** Nest under another VALUE of the same facet (migration 35) — a sub-facet: a
+     *  finer answer inside one dimension, NOT a facet conditional on another. */
+    parentId?: string | null;
+  },
 ): Promise<FacetValue> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const position = await nextPosition('cb_facet_values', facetId);
   const { data, error } = await cbFrom('cb_facet_values')
     .insert({
@@ -102,6 +124,7 @@ export async function createFacetValue(
       key,
       label,
       description: description ?? null,
+      parent_id: parentId ?? null,
       // Explicit caller color wins; otherwise auto-assign by group position.
       color: color?.trim() || autoColor(position),
       position,
@@ -114,10 +137,278 @@ export async function createFacetValue(
   return data;
 }
 
+/**
+ * PROMOTE a code into a facet VALUE.
+ *
+ * The move this exists for: you wrote "Analysis of Behavior" as a CODE, gave it a
+ * definition, and then found it wanted children — "they said the spec would match and
+ * it didn't", "they saw a discrepancy but didn't update the spec". That is the symptom
+ * of a category miscast as an observation.
+ *
+ *   A CODE is an OBSERVATION — you can point at a transcript line and say "there".
+ *   A VALUE is an ANSWER — the place you file what you pointed at.
+ *
+ * If you cannot point until you have decided WHICH sub-thing happened, the thing is a
+ * value, not a code. This converts it: the code's name becomes the value's label, its
+ * definition becomes the value's description, and every code that was going to sit
+ * under it can now simply ANSWER it.
+ *
+ * The code is RETIRED, not deleted. Its id may already be referenced by codings, and a
+ * hard delete would erase the record that this thing was once coded — status 'retired'
+ * keeps the audit trail and takes it out of active use. If it turns out to have been a
+ * mistake, the value is deletable and the code un-retirable; nothing is lost.
+ */
+export async function promoteCodeToValue(
+  codeId: string,
+  facetId: string,
+  parentValueId: string | null = null,
+): Promise<FacetValue> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const code = await cbFrom('cb_codes')
+    .select('id, name, current_version_id')
+    .eq('id', codeId)
+    .single();
+  if (code.error || !code.data) {
+    throw new Error(`promoteCodeToValue failed: ${code.error?.message ?? 'code not found'}`);
+  }
+
+  // The definition, if the code has one, becomes the value's description — the whole
+  // point is that the thinking already done about this category is not thrown away.
+  let description: string | null = null;
+  if (code.data.current_version_id) {
+    const version = await cbFrom('cb_code_versions')
+      .select('definition')
+      .eq('id', code.data.current_version_id)
+      .maybeSingle();
+    description = version.data?.definition ?? null;
+  }
+
+  const position = await nextPosition('cb_facet_values', facetId);
+  const created = await cbFrom('cb_facet_values')
+    .insert({
+      facet_id: facetId,
+      key: code.data.id, // breadcrumb: this value used to be that code
+      label: code.data.name,
+      description,
+      parent_id: parentValueId,
+      color: autoColor(position),
+      position,
+    })
+    .select('*')
+    .single();
+  if (created.error || !created.data) {
+    throw new Error(
+      `promoteCodeToValue (insert value) failed: ${created.error?.message ?? 'no row returned'}`,
+    );
+  }
+
+  const retired = await cbFrom('cb_codes')
+    .update({ status: 'retired', retired_at: new Date().toISOString() })
+    .eq('id', codeId);
+  if (retired.error) {
+    throw new Error(`promoteCodeToValue (retire code) failed: ${retired.error.message}`);
+  }
+
+  return created.data;
+}
+
+/**
+ * DUPLICATE a value as a FLOATING root of the same facet: same label and description,
+ * NO parent, and — critically — NO codes.
+ *
+ * The copy carries none of the original's code memberships, because a code's answer is a
+ * claim about a specific value. Copying the memberships would silently assert that every
+ * code answering the original also answers the copy, which is a claim nobody made.
+ *
+ * WHAT THIS IS FOR: relocating one value ("I want this over there instead") — duplicate,
+ * drag it under the new parent, delete the original.
+ *
+ * WHAT IT IS NOT FOR, and the trap: reusing a recurring SUB-TAXONOMY. If you copy
+ * `Design / Execution` under both `Experiment` and `Analysis`, you now have two `Design`
+ * values in ONE dimension, and a coder who picks "Design" cannot say which they meant —
+ * the answer set is no longer distinguishable, which is the one property a dimension must
+ * have. A sub-chain that recurs under several parents is answerable INDEPENDENTLY of
+ * them, which means it is a second DIMENSION, not a sub-answer. Duplication is the
+ * symptom; a new facet is the cure.
+ */
+export async function duplicateFacetValue(valueId: string): Promise<FacetValue> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const all = await cbFrom('cb_facet_values').select('*');
+  if (all.error) throw new Error(`duplicateFacetValue failed: ${all.error.message}`);
+
+  const src = (all.data ?? []).find((v) => v.id === valueId);
+  if (!src) throw new Error('duplicateFacetValue failed: value not found.');
+
+  const siblings = (all.data ?? []).filter((v) => v.facet_id === src.facet_id);
+
+  // WHERE the copy lands. It is a floating ROOT, and roots lay out left-to-right by
+  // `position` — so appending it (nextPosition) parks it at the far right of the canvas,
+  // underneath the inspector window that just opened on it. A copy you cannot see is a
+  // copy you assume failed.
+  //
+  // Instead it is inserted immediately AFTER the source's own root, so it appears beside
+  // the tree it came from. Walk up to that root (visited-guard against a data cycle).
+  const parentOf = new Map(siblings.map((v) => [v.id, v.parent_id]));
+  let rootId = src.id;
+  const seen = new Set<string>();
+  while (!seen.has(rootId)) {
+    seen.add(rootId);
+    const parent = parentOf.get(rootId) ?? null;
+    if (parent === null) break;
+    rootId = parent;
+  }
+  const rootPosition = siblings.find((v) => v.id === rootId)?.position ?? 0;
+  const slot = rootPosition + 1;
+
+  // Shove the later roots right by one so the new slot is genuinely free — otherwise the
+  // copy shares a position and the sibling sort falls back to created_at, which puts the
+  // newest LAST: back in the corner, which is the thing this is avoiding.
+  const later = siblings.filter((v) => v.parent_id === null && v.position >= slot);
+  for (const v of later) {
+    const bump = await cbFrom('cb_facet_values')
+      .update({ position: v.position + 1 })
+      .eq('id', v.id);
+    if (bump.error) {
+      throw new Error(`duplicateFacetValue (reorder roots) failed: ${bump.error.message}`);
+    }
+  }
+
+  const { data, error } = await cbFrom('cb_facet_values')
+    .insert({
+      facet_id: src.facet_id,
+      key: crypto.randomUUID(),
+      label: src.label,
+      description: src.description,
+      color: src.color ?? autoColor(slot),
+      // Floating: a root of its own until you drag it somewhere. Sub-values are NOT
+      // copied either — a duplicate is a seed, not a clone of a whole subtree, and
+      // copying the chain would multiply the ambiguity above by its depth.
+      parent_id: null,
+      position: slot,
+    })
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(`duplicateFacetValue failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
+/** Every value of one facet — the read the tree ops fold over. */
+export async function listFacetValues(facetId: string): Promise<FacetValue[]> {
+  const { data, error } = await cbFrom('cb_facet_values')
+    .select('*')
+    .eq('facet_id', facetId)
+    .order('position', { ascending: true })
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`listFacetValues failed: ${error.message}`);
+  return data ?? [];
+}
+
+/**
+ * Re-parent a value within its facet. REJECTS a move that would make a value its own
+ * ancestor. A value can never move to a DIFFERENT facet: that would silently change
+ * which question a code was answering, and every code carrying it would keep a value
+ * on a dimension it was never classified along.
+ */
+export async function setFacetValueParent(
+  valueId: string,
+  newParentId: string | null,
+): Promise<FacetValue> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const target = await cbFrom('cb_facet_values').select('facet_id').eq('id', valueId).single();
+  if (target.error || !target.data) {
+    throw new Error(`setFacetValueParent failed: ${target.error?.message ?? 'value not found'}`);
+  }
+  const siblings = await listFacetValues(target.data.facet_id);
+
+  if (newParentId !== null && !siblings.some((v) => v.id === newParentId)) {
+    throw new Error('setFacetValueParent: a value cannot be nested under another facet.');
+  }
+  if (wouldCreateCycle(siblings, valueId, newParentId)) {
+    throw new Error(
+      'setFacetValueParent: cannot move a value under itself or one of its descendants.',
+    );
+  }
+
+  const position = await nextPosition('cb_facet_values', target.data.facet_id);
+  const { data, error } = await cbFrom('cb_facet_values')
+    .update({ parent_id: newParentId, position })
+    .eq('id', valueId)
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(`setFacetValueParent failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
+/**
+ * INTERPOSE a value: create `label` under `parentId` (null = top level of the facet),
+ * then re-parent exactly `childIds` beneath it. "This answer turned out too granular
+ * — it needs an intermediate one."
+ *
+ * Validation is PURE (`planInterpose`) and refuses to capture a value that is not
+ * currently a child of `parentId` — accepting one would MOVE it from elsewhere in the
+ * chain while presenting itself as "add a layer here".
+ *
+ * Touches no CODE: a code's membership is (code, value), and re-parenting a value
+ * changes none of those rows. So the answer space can be restructured freely without
+ * altering what any code was classified as.
+ */
+export async function interposeFacetValue(
+  facetId: string,
+  { parentId, label, childIds }: { parentId: string | null; label: string; childIds: string[] },
+): Promise<FacetValue> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const values = await listFacetValues(facetId);
+
+  const planned = planInterpose(values, { parentId, name: label, childIds });
+  if (!planned.ok) {
+    throw new Error(
+      `interposeFacetValue refused: ${planned.errors.map(describeInterposeError).join(' ')}`,
+    );
+  }
+  const plan = planned.plan;
+
+  // Take the position of the first child captured, so the new value appears where
+  // the researcher was looking rather than appended to the end of the group.
+  const position = values.find((v) => v.id === plan.childIds[0])?.position ?? 0;
+
+  const created = await cbFrom('cb_facet_values')
+    .insert({
+      facet_id: facetId,
+      // The key must be unique within the facet and is never shown; a slug of the
+      // label would collide the moment two branches use the same word.
+      key: crypto.randomUUID(),
+      label: plan.name,
+      parent_id: plan.parentId,
+      color: autoColor(position),
+      position,
+    })
+    .select('*')
+    .single();
+  if (created.error || !created.data) {
+    throw new Error(
+      `interposeFacetValue (insert) failed: ${created.error?.message ?? 'no row returned'}`,
+    );
+  }
+
+  const moved = await cbFrom('cb_facet_values')
+    .update({ parent_id: created.data.id })
+    .in('id', plan.childIds);
+  if (moved.error) {
+    throw new Error(`interposeFacetValue (re-parent) failed: ${moved.error.message}`);
+  }
+
+  return created.data;
+}
+
 export async function updateFacetValue(
   valueId: string,
   { label, description, color }: { label?: string; description?: string; color?: string },
 ): Promise<FacetValue> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const patch: { label?: string; description?: string; color?: string } = {};
   if (label !== undefined) patch.label = label;
   if (description !== undefined) patch.description = description;
@@ -134,6 +425,7 @@ export async function updateFacetValue(
 }
 
 export async function reorderFacetValues(orderedValueIds: string[]): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const results = await Promise.all(
     orderedValueIds.map((id, index) =>
       cbFrom('cb_facet_values').update({ position: index }).eq('id', id),
@@ -143,7 +435,37 @@ export async function reorderFacetValues(orderedValueIds: string[]): Promise<voi
   if (firstError) throw new Error(`reorderFacetValues failed: ${firstError.message}`);
 }
 
+/**
+ * Delete a value, PROMOTING its children up one level first (to its own parent) so a
+ * removed intermediate answer collapses rather than orphaning the finer answers
+ * beneath it. The exact inverse of `interposeFacetValue`, which makes abstraction
+ * reversible in both directions.
+ *
+ * Without the promote, the migration-35 `on delete set null` safety net would fire
+ * and every child would jump to the TOP of the facet — silently flattening a chain
+ * the researcher spent real thought building.
+ *
+ * NON-ATOMIC (as with deleteLabel): read-parent → promote → delete is three
+ * statements, not a transaction. Acceptable for the single-researcher-per-codebook
+ * use here; the DB net catches the pathological interleaving.
+ */
 export async function deleteFacetValue(valueId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const target = await cbFrom('cb_facet_values')
+    .select('parent_id')
+    .eq('id', valueId)
+    .single();
+  if (target.error || !target.data) {
+    throw new Error(`deleteFacetValue failed: ${target.error?.message ?? 'value not found'}`);
+  }
+
+  const promote = await cbFrom('cb_facet_values')
+    .update({ parent_id: target.data.parent_id })
+    .eq('parent_id', valueId);
+  if (promote.error) {
+    throw new Error(`deleteFacetValue (promote children) failed: ${promote.error.message}`);
+  }
+
   const { error } = await cbFrom('cb_facet_values').delete().eq('id', valueId);
   if (error) throw new Error(`deleteFacetValue failed: ${error.message}`);
 }

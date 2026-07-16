@@ -13,21 +13,21 @@ function row(name: string, mnemonic = '', definition = ''): CodebookRow {
 }
 
 describe('deriveMnemonic', () => {
-  it('slugifies to upper-kebab', () => {
-    expect(deriveMnemonic('Spec gap')).toBe('SPEC-GAP');
-    expect(deriveMnemonic('  trailing  spaces  ')).toBe('TRAILING-SPACES');
-    expect(deriveMnemonic('weird!!chars##here')).toBe('WEIRD-CHARS-HERE');
+  it('slugifies to lower-kebab', () => {
+    expect(deriveMnemonic('Spec gap')).toBe('spec-gap');
+    expect(deriveMnemonic('  trailing  spaces  ')).toBe('trailing-spaces');
+    expect(deriveMnemonic('weird!!chars##here')).toBe('weird-chars-here');
   });
 
   it('caps length and never leaves a trailing dash', () => {
     const out = deriveMnemonic('a'.repeat(40), 5);
-    expect(out).toBe('AAAAA');
-    expect(deriveMnemonic('abcde fghij', 6)).toBe('ABCDE'); // slice would give "ABCDE-", trimmed
+    expect(out).toBe('aaaaa');
+    expect(deriveMnemonic('abcde fghij', 6)).toBe('abcde'); // slice would give "abcde-", trimmed
   });
 
-  it('falls back to CODE when nothing is slug-able', () => {
-    expect(deriveMnemonic('!!!')).toBe('CODE');
-    expect(deriveMnemonic('   ')).toBe('CODE');
+  it('falls back to a placeholder when nothing is slug-able', () => {
+    expect(deriveMnemonic('!!!')).toBe('code');
+    expect(deriveMnemonic('   ')).toBe('code');
   });
 });
 
@@ -71,12 +71,12 @@ describe('resolveRows', () => {
       new Set(),
     );
     expect(errors).toEqual([]);
-    expect(resolved.map((r) => r.mnemonic)).toEqual(['SPEC-GAP', 'SPEC-GAP-2', 'SPEC-GAP-3']);
+    expect(resolved.map((r) => r.mnemonic)).toEqual(['spec-gap', 'spec-gap-2', 'spec-gap-3']);
   });
 
   it('derives around an EXISTING codebook mnemonic too', () => {
-    const { resolved } = resolveRows([row('Spec gap')], new Set(['SPEC-GAP']));
-    expect(resolved[0].mnemonic).toBe('SPEC-GAP-2');
+    const { resolved } = resolveRows([row('Spec gap')], new Set(['spec-gap']));
+    expect(resolved[0].mnemonic).toBe('spec-gap-2');
   });
 
   it('errors an explicit mnemonic that duplicates an existing or earlier one', () => {

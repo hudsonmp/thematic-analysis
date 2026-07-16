@@ -18,7 +18,7 @@ import {
 import { taskStartForPid } from '@/app/actions/live';
 import { getRecordingStart } from '@/app/actions/recording';
 import { resolveRecordingAnchorMs } from '@/lib/live/anchor';
-import { mergeDoneSet } from '@/lib/sessions/coding-status';
+import { coderStatusFromRow, type CoderStatus } from '@/lib/codebook/sessionProgress';
 
 /**
  * Begin a browser-direct video upload to Google Drive.
@@ -212,10 +212,13 @@ export type SessionListRow = {
   collection: string;
   durationMs: number | null;
   trackMode: string;
-  /** Whether the SIGNED-IN coder has marked this session done (a present
-   *  cb_session_coding_status row for (this session, this coder)). Per-coder:
-   *  reflects only the current user's mark, not anyone else's. */
-  done: boolean;
+  /** The SIGNED-IN coder's own progress on this session (per-coder, RLS-scoped). */
+  coderStatus: CoderStatus;
+  /** Session-level reconciliation flag — when set, it OVERRIDES every coder's status in
+   *  the display. Null when the session is not in reconciliation. */
+  reconciliationAt: string | null;
+  /** The shared, per-session coordination note (any coder may edit it). */
+  note: string | null;
 };
 
 /**
@@ -234,34 +237,41 @@ export async function listSessionsCloud(): Promise<SessionListRow[]> {
 
   const { data, error } = await sb
     .from('cb_sessions')
-    .select('id, pid_label, collection, duration_ms, track_mode')
+    .select('id, pid_label, collection, duration_ms, track_mode, reconciliation_at, note')
     .order('collection', { ascending: true })
     .order('created_at', { ascending: true });
   if (error) {
     throw new Error(`listSessionsCloud: cb_sessions select failed: ${error.message}`);
   }
 
-  // The CURRENT coder's done marks (RLS read-all returns all coders' rows, so we
-  // filter to this user). Build a Set of done session_ids to merge onto the rows.
+  // The CURRENT coder's status rows (RLS read-all returns every coder's rows, so we
+  // filter to this user): the session's per-coder status is this coder's own, and
+  // absence of a row is not_started.
   const { data: statusRows, error: statusErr } = await sb
     .from('cb_session_coding_status')
-    .select('session_id')
+    .select('session_id, status')
     .eq('coder_id', user.id);
   if (statusErr) {
     throw new Error(
       `listSessionsCloud: cb_session_coding_status select failed: ${statusErr.message}`,
     );
   }
-  const doneIds = new Set<string>((statusRows ?? []).map((r) => r.session_id));
+  const statusBySession = new Map<string, string>(
+    (statusRows ?? []).map((r) => [r.session_id, r.status]),
+  );
 
-  const rows = (data ?? []).map((r) => ({
+  return (data ?? []).map((r) => ({
     id: r.id,
     pidLabel: r.pid_label,
     collection: r.collection,
     durationMs: r.duration_ms,
     trackMode: r.track_mode,
+    coderStatus: coderStatusFromRow(
+      statusBySession.has(r.id) ? { status: statusBySession.get(r.id)! } : null,
+    ),
+    reconciliationAt: r.reconciliation_at,
+    note: r.note,
   }));
-  return mergeDoneSet(rows, doneIds);
 }
 
 /**
@@ -277,38 +287,77 @@ export async function listSessionsCloud(): Promise<SessionListRow[]> {
  * (an unmark of another coder's mark matches zero rows — silent no-op). cb_ table
  * only; no study table is touched.
  */
-export async function setSessionCodingDone(
+export async function setCoderStatus(
   sessionId: string,
-  done: boolean,
+  status: CoderStatus,
 ): Promise<void> {
   const user = await requireAuthUser();
   const id = (sessionId ?? '').trim();
-  if (!id) throw new Error('setSessionCodingDone: sessionId is required.');
+  if (!id) throw new Error('setCoderStatus: sessionId is required.');
 
   const sb = await createUserServerClient();
 
-  if (done) {
-    // Set explicitly to the caller's uid: RLS `with check (coder_id =
-    // auth.uid())` admits only the signed-in user's own mark. `done_at` defaults.
-    const { error } = await sb
-      .from('cb_session_coding_status')
-      .upsert(
-        { session_id: id, coder_id: user.id },
-        { onConflict: 'session_id,coder_id' },
-      );
-    if (error) {
-      throw new Error(`setSessionCodingDone: mark failed: ${error.message}`);
-    }
-  } else {
+  // not_started is the ABSENCE of a row, so it deletes rather than storing a sentinel.
+  // The delete RLS `using (coder_id = auth.uid())` confines it to the caller's own row.
+  if (status === 'not_started') {
     const { error } = await sb
       .from('cb_session_coding_status')
       .delete()
       .eq('session_id', id)
       .eq('coder_id', user.id);
-    if (error) {
-      throw new Error(`setSessionCodingDone: unmark failed: ${error.message}`);
-    }
+    if (error) throw new Error(`setCoderStatus: reset failed: ${error.message}`);
+    return;
   }
+
+  // coder_id is set explicitly to the caller: the insert RLS `with check (coder_id =
+  // auth.uid())` admits only the signed-in user's own status, so no coder can write
+  // another's progress. This is where per-user isolation is ENFORCED at the DB, not
+  // asserted by the app — the write goes through the JWT-bound client, not cbFrom.
+  const { error } = await sb
+    .from('cb_session_coding_status')
+    .upsert(
+      { session_id: id, coder_id: user.id, status },
+      { onConflict: 'session_id,coder_id' },
+    );
+  if (error) throw new Error(`setCoderStatus: set failed: ${error.message}`);
+}
+
+/**
+ * Toggle a session's SESSION-LEVEL reconciliation flag. This overrides every coder's
+ * per-coder status in the display and is shared, not per-coder — so unlike
+ * `setCoderStatus` it writes cb_sessions (the update RLS admits any authenticated
+ * coder, matching the existing collection/note edits). It does nothing functional yet.
+ */
+export async function setReconciliation(sessionId: string, on: boolean): Promise<void> {
+  await requireAuthUser();
+  const id = (sessionId ?? '').trim();
+  if (!id) throw new Error('setReconciliation: sessionId is required.');
+
+  const sb = await createUserServerClient();
+  const { error } = await sb
+    .from('cb_sessions')
+    .update({ reconciliation_at: on ? new Date().toISOString() : null })
+    .eq('id', id);
+  if (error) throw new Error(`setReconciliation failed: ${error.message}`);
+}
+
+/**
+ * Set (or clear) a session's shared coordination NOTE. Shared, not per-coder — any
+ * authenticated coder may edit it, which is the point: it is a coordination channel on
+ * the session row, not a private memo. An empty note clears to NULL.
+ */
+export async function setSessionNote(sessionId: string, note: string): Promise<void> {
+  await requireAuthUser();
+  const id = (sessionId ?? '').trim();
+  if (!id) throw new Error('setSessionNote: sessionId is required.');
+
+  const sb = await createUserServerClient();
+  const trimmed = note.trim();
+  const { error } = await sb
+    .from('cb_sessions')
+    .update({ note: trimmed === '' ? null : trimmed })
+    .eq('id', id);
+  if (error) throw new Error(`setSessionNote failed: ${error.message}`);
 }
 
 /**

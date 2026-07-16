@@ -31,12 +31,12 @@ export type CodebookRow = {
 export function deriveMnemonic(name: string, maxLen = 24): string {
   const slug = name
     .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '-')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, maxLen)
     .replace(/-+$/g, ''); // a trailing dash left by the slice
-  return slug || 'CODE';
+  return slug || 'code';
 }
 
 /**

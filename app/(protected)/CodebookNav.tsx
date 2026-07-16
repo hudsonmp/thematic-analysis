@@ -21,10 +21,12 @@ export default function CodebookNav({
   studyName,
   codebookName,
   displayName,
+  isAdmin = false,
 }: {
   studyName: string | null;
   codebookName: string | null;
   displayName: string;
+  isAdmin?: boolean;
 }) {
   const pathname = usePathname();
   const navRef = useRef<HTMLDivElement | null>(null);
@@ -45,11 +47,14 @@ export default function CodebookNav({
   // while a menu is open so the listeners aren't live for the whole session.
   useEffect(() => {
     if (openKey === null) return;
+    // `setOpened(null)` directly, not the `setOpenKey` wrapper: the wrapper closes
+    // over `pathname` and is recreated every render, so depending on it would
+    // rebind these listeners on each one. Closing needs no pathname anyway.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpenKey(null);
+      if (e.key === 'Escape') setOpened(null);
     };
     const onDown = (e: PointerEvent) => {
-      if (!navRef.current?.contains(e.target as Node)) setOpenKey(null);
+      if (!navRef.current?.contains(e.target as Node)) setOpened(null);
     };
     document.addEventListener('keydown', onKey);
     document.addEventListener('pointerdown', onDown);
@@ -60,7 +65,7 @@ export default function CodebookNav({
   }, [openKey]);
 
   return (
-    <header className="border-b border-foreground/15">
+    <header className="border-b border-foreground/15 print:hidden">
       <nav className="flex items-center justify-between gap-6 px-6 py-3">
         <div className="flex items-baseline gap-6" ref={navRef}>
           <span className="text-sm font-medium tracking-tight">Codebook</span>
@@ -101,7 +106,9 @@ export default function CodebookNav({
                       role="menu"
                       className="absolute left-0 top-full z-50 mt-2 w-60 border border-foreground/15 bg-background py-1 shadow-lg"
                     >
-                      {group.items.map((item) => {
+                      {group.items
+                        .filter((item) => !item.adminOnly || isAdmin)
+                        .map((item) => {
                         const active = currentHref === item.href;
                         return (
                           <Link

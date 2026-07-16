@@ -2,6 +2,7 @@
 
 import { cbFrom } from '@/lib/supabase/guard';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
+import { requireEditor } from '@/lib/auth/roles';
 
 // ---------------------------------------------------------------------------
 // Codebook notes — the researcher's OWN free-form "Instructions" document.
@@ -50,6 +51,7 @@ export async function saveCodebookNotes(
     .select('updated_at')
     .single();
   if (error || !data) {
+  await requireEditor(); // viewers are read-only
     throw new Error(`saveCodebookNotes failed: ${error?.message ?? 'no row returned'}`);
   }
   return { updated_at: data.updated_at };

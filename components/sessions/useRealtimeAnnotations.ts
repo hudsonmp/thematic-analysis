@@ -134,6 +134,21 @@ export function useRealtimeAnnotations({
         { event: 'UPDATE', schema: 'public', table: 'cb_codes' },
         () => fireChange(),
       )
+      // JUNCTION-only changes: addCodeToAnnotation / removeCodeFromAnnotation write
+      // cb_annotation_codes WITHOUT touching cb_annotations, so without these a
+      // second tab's chips/braces go stale until an unrelated event fires. The
+      // junction payload carries no coder_id / session_id to filter on — fire
+      // unconditionally; the refetch is own-scoped, debounced, and cheap.
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'cb_annotation_codes' },
+        () => fireChange(),
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'cb_annotation_codes' },
+        () => fireChange(),
+      )
       .subscribe();
 
     return () => {

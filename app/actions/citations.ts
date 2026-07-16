@@ -3,6 +3,7 @@
 import { cbFrom } from '@/lib/supabase/guard';
 import { parseBibtex } from '@/lib/bibtex/parse';
 import type { Json, Tables, TablesInsert, TablesUpdate } from '@/lib/types/cb-db';
+import { requireEditor } from '@/lib/auth/roles';
 
 type Citation = Tables<'cb_citations'>;
 
@@ -38,6 +39,7 @@ export async function addCitations(
   // an upsert whose payload collides with itself on the conflict columns.
   const byKey = new Map<string, TablesInsert<'cb_citations'>>();
   for (const c of parsed) {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
     if (!c.bibtex_key) continue; // no conflict target -> would duplicate; skip
     byKey.set(c.bibtex_key, {
       codebook_id: codebookId,
@@ -102,6 +104,7 @@ export async function updateCitation(
   citationId: string,
   patch: { title?: string; authors?: string; year?: number; doi?: string; url?: string },
 ): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const update: TablesUpdate<'cb_citations'> = {};
   if (patch.title !== undefined) update.title = patch.title;
   if (patch.authors !== undefined) update.authors = patch.authors;
@@ -116,6 +119,7 @@ export async function updateCitation(
 
 /** Delete a citation. Cascades remove its `cb_code_citations` link rows. */
 export async function deleteCitation(citationId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const { error } = await cbFrom('cb_citations').delete().eq('id', citationId);
   if (error) throw new Error(`deleteCitation failed: ${error.message}`);
 }
@@ -131,6 +135,7 @@ export async function linkCitation(
   citationId: string,
   role: CitationRole = 'derived_from',
 ): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const { error } = await cbFrom('cb_code_citations').upsert(
     { code_id: codeId, citation_id: citationId, role },
     { onConflict: 'code_id,citation_id' },
@@ -140,6 +145,7 @@ export async function linkCitation(
 
 /** Remove a citation<->code link. Idempotent (deleting a missing row is fine). */
 export async function unlinkCitation(codeId: string, citationId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const { error } = await cbFrom('cb_code_citations')
     .delete()
     .eq('code_id', codeId)

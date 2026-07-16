@@ -1,0 +1,9 @@
+-- 39_invites_and_roles.sql
+-- (Applied 2026-07-15.) Roles on cb_profiles ('admin'|'full'|'viewer'; sole existing
+-- account seeded admin), single-use role-carrying cb_invites (RLS enabled with NO
+-- policies — service-role only: a token in a URL is the whole credential, so the
+-- table must be unreadable), cb_is_editor() SECURITY DEFINER helper, and RESTRICTIVE
+-- write policies (insert/update/delete AND-gates) on cb_annotations,
+-- cb_annotation_codes, cb_annotation_comments, cb_session_coding_status, cb_sessions,
+-- cb_segments, cb_transcript_versions so a viewer's JWT cannot write them no matter
+-- what the app renders. Additive; existing permissive policies untouched. cb_ only.

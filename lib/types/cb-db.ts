@@ -677,6 +677,7 @@ export type Database = {
           id: string
           key: string
           label: string
+          parent_id: string | null
           position: number
         }
         Insert: {
@@ -687,6 +688,7 @@ export type Database = {
           id?: string
           key: string
           label: string
+          parent_id?: string | null
           position?: number
         }
         Update: {
@@ -697,6 +699,7 @@ export type Database = {
           id?: string
           key?: string
           label?: string
+          parent_id?: string | null
           position?: number
         }
         Relationships: [
@@ -787,6 +790,57 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      cb_familiarization: {
+        Row: {
+          added_by: string | null
+          created_at: string
+          position: number
+          session_id: string
+        }
+        Insert: {
+          added_by?: string | null
+          created_at?: string
+          position?: number
+          session_id: string
+        }
+        Update: {
+          added_by?: string | null
+          created_at?: string
+          position?: number
+          session_id?: string
+        }
+        Relationships: []
+      }
+      cb_invites: {
+        Row: {
+          created_at: string
+          created_by: string
+          id: string
+          role: string
+          token: string
+          used_at: string | null
+          used_by: string | null
+        }
+        Insert: {
+          created_at?: string
+          created_by: string
+          id?: string
+          role: string
+          token?: string
+          used_at?: string | null
+          used_by?: string | null
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          id?: string
+          role?: string
+          token?: string
+          used_at?: string | null
+          used_by?: string | null
+        }
+        Relationships: []
       }
       cb_labels: {
         Row: {
@@ -941,18 +995,21 @@ export type Database = {
           display_name: string | null
           initials: string | null
           user_id: string
+          role: string
         }
         Insert: {
           created_at?: string
           display_name?: string | null
           initials?: string | null
           user_id: string
+          role?: string
         }
         Update: {
           created_at?: string
           display_name?: string | null
           initials?: string | null
           user_id?: string
+          role?: string
         }
         Relationships: []
       }
@@ -1137,16 +1194,19 @@ export type Database = {
           coder_id: string
           done_at: string
           session_id: string
+          status: string
         }
         Insert: {
           coder_id: string
           done_at?: string
           session_id: string
+          status?: string
         }
         Update: {
           coder_id?: string
           done_at?: string
           session_id?: string
+          status?: string
         }
         Relationships: [
           {
@@ -1212,7 +1272,9 @@ export type Database = {
           drive_file_id: string | null
           duration_ms: number | null
           id: string
+          note: string | null
           pid_label: string
+          reconciliation_at: string | null
           recording_started_at: string | null
           srt_path: string | null
           track_mode: string
@@ -1227,7 +1289,9 @@ export type Database = {
           drive_file_id?: string | null
           duration_ms?: number | null
           id?: string
+          note?: string | null
           pid_label: string
+          reconciliation_at?: string | null
           recording_started_at?: string | null
           srt_path?: string | null
           track_mode?: string
@@ -1242,7 +1306,9 @@ export type Database = {
           drive_file_id?: string | null
           duration_ms?: number | null
           id?: string
+          note?: string | null
           pid_label?: string
+          reconciliation_at?: string | null
           recording_started_at?: string | null
           srt_path?: string | null
           track_mode?: string

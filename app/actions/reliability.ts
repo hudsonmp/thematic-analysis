@@ -15,6 +15,7 @@ import {
   type LabelPair,
 } from '@/lib/reliability/stats';
 import type { Json, Tables, TablesInsert } from '@/lib/types/cb-db';
+import { requireEditor } from '@/lib/auth/roles';
 
 export type ReliabilityScope = 'overall' | 'facet_value' | 'code';
 
@@ -76,6 +77,7 @@ export async function computeReliability({
   nCoders?: number;
   note?: string;
 }): Promise<ReliabilityResult> {
+  await requireEditor(); // viewers are read-only
   // Validate scope params FIRST — before parsing labels or building the insert.
   // The migration-04 CHECK constraint enforces these at the DB layer, but a raw
   // CHECK violation surfaces as an opaque Postgres error; converting it here gives
@@ -156,6 +158,7 @@ export async function computeReliability({
 
 /** Dismiss a mis-carved flag with a written rationale (stored in dismissed_note). */
 export async function dismissMisCarved(runId: string, rationale: string): Promise<void> {
+  await requireEditor(); // viewers are read-only
   const { error } = await cbFrom('cb_reliability_runs')
     .update({ dismissed_note: rationale })
     .eq('id', runId);

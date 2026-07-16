@@ -12,6 +12,9 @@ import {
 } from '@/app/actions/sessions';
 import {
   addAnnotation,
+  addCodeToAnnotation,
+  removeCodeFromAnnotation,
+  updateAnnotationAnchor,
   deleteAnnotation,
   setAnnotationKind,
   listMyAnnotationsForVersion,
@@ -29,10 +32,7 @@ import { alignChat, activeChatIndex } from '@/lib/chat/align';
 import type { SpecTimelineResult } from '@/app/actions/spec';
 import { specStateAt } from '@/lib/spec/reconstruct';
 import { retroQuestionsAt } from '@/lib/live/retro';
-import type { FacetWithValues } from '@/app/actions/codebook';
-import type { Tables } from '@/lib/types/cb-db';
-import SessionCodeCreator from './SessionCodeCreator';
-import CodingPanel from './CodingPanel';
+import CodingPopup, { type PopupCode } from './CodingPopup';
 import ChatReplayPane from './ChatReplayPane';
 import SpecReplay from './SpecReplay';
 import {
@@ -41,13 +41,11 @@ import {
   type Highlight,
 } from '@/lib/transcript/selection';
 import { groupIntoTurns } from '@/lib/transcript/turns';
-import { findActiveIndex, nearestCueIndex } from '@/lib/transcript/active';
+import { findActiveIndex } from '@/lib/transcript/active';
 import { findPhraseMatches } from '@/lib/transcript/search';
 import { cardsByTurn, type RailCard } from '@/lib/transcript/rail';
+import { packGutter, sameAnchor, type GutterInput } from '@/lib/transcript/gutter';
 import { useRealtimeAnnotations } from './useRealtimeAnnotations';
-
-/** Minimal code shape the picker needs (flattened from the codebook tree). */
-type CodeOption = { id: string; mnemonic: string; name: string };
 
 /** A resolved transcript selection that may span MULTIPLE cues. `startSegIdx`/
  *  `startChar` is where it begins, `endSegIdx`/`endChar` where it ends (start ≤
@@ -61,11 +59,6 @@ type TextSelection = {
   prefix: string;
   suffix: string;
 };
-
-/** The two player surfaces: REVIEW (read + comment, video 1/3 + transcript 2/3 with
- *  a Google-Docs comment margin) and CODING (apply codes, video 1/3 + coding panel
- *  1/3 + transcript 1/3). Toggled in the header. */
-type Mode = 'review' | 'coding';
 
 /** Format a millisecond offset as `mm:ss` (minutes uncapped past 60). */
 function formatTime(ms: number): string {
@@ -242,7 +235,8 @@ function expandRangeHighlights(
  *    right. Select transcript text → it stays YELLOW; ⌘⌥M opens a comment card in
  *    the margin aligned to the selection (cursor focused); ⌘⇧J (in a card) marks
  *    the excerpt as an important quote. Clicking a yellow span re-opens its card.
- *  • CODING: video 1/3 · a CodingPanel (fuzzy code search) 1/3 · transcript 1/3.
+ *  Coding happens in the selection-spawned popup (CodingPopup); codes render as
+ *  brace-grouped chip blocks in the right gutter, comments as margin cards.
  *    Pick a code by typing an approximate description; Enter applies it at the
  *    current video time (anchored to a brushed selection if any, else the cue
  *    playing now).
@@ -281,8 +275,6 @@ export default function SessionPlayer({
   specTimeline = { specEdits: [], entityEdits: [] },
   recordingStartedAt = null,
   codebookId,
-  facets,
-  labels = [],
   collection,
   compareHref = null,
 }: {
@@ -297,7 +289,7 @@ export default function SessionPlayer({
   versionId?: string | null;
   /** All of the session's transcript versions (the Original/Cleaned tab set). */
   versions?: SessionVersion[];
-  codes?: CodeOption[];
+  codes?: PopupCode[];
   /** The signed-in coder's OWN annotations for the ORIGINAL version (initial). */
   myAnnotations?: MyAnnotationView[];
   /** Per-excerpt comment threads, grouped by annotation id (#17/#18). */
@@ -319,12 +311,8 @@ export default function SessionPlayer({
    *  absolute `createdAt` into a video offset. Null only when even the task start
    *  can't be derived (the flag surfaces then render nothing, silently). */
   recordingStartedAt?: string | null;
-  /** The resolved codebook id new codes are authored into (SessionCodeCreator). */
+  /** The resolved codebook id new codes are authored into (the popup's New code). */
   codebookId: string;
-  /** The codebook's facets (each with its enum values) for the new-code panel. */
-  facets: FacetWithValues[];
-  /** The codebook's labels (themes) for OPTIONAL tagging in the new-code panel. */
-  labels?: Tables<'cb_labels'>[];
   /** This session's `cb_sessions.collection` — the per-code authoring study. */
   collection: string | null;
   /** Link to the post-hoc, read-only Compare tab. */
@@ -332,8 +320,19 @@ export default function SessionPlayer({
 }) {
   const router = useRouter();
 
-  // --- Mode (REVIEW / CODING) ---------------------------------------------
-  const [mode, setMode] = useState<Mode>('review');
+  // --- Modes: COMMENT (default) vs CODE -----------------------------------
+  // Two selection grammars share one transcript. COMMENT mode: select → start
+  // typing → a marginalia composer captures the keystrokes; ⏎/⌘⏎ saves (a bare
+  // highlight with no comment cannot be saved — a highlight that says nothing IS
+  // nothing). CODE mode: select → the coding popup spawns at the release point.
+  // Defaulting to Comment makes the cheap, frequent act (reacting to the data)
+  // zero-friction and the schema-bearing act (coding) deliberate.
+  const [mode, setMode] = useState<'comment' | 'code'>('comment');
+  const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
+  const [assignedAnnId, setAssignedAnnId] = useState<string | null>(null);
+  // "Edit selection" on a bracket: the NEXT selection re-anchors this annotation
+  // instead of opening the popup / composer.
+  const [reanchoringId, setReanchoringId] = useState<string | null>(null);
 
   // --- Transcript layers (feature #20): original (verbatim) vs cleaned --------
   const cleanedVersionFromList = versions.find((v) => v.kind === 'cleaned') ?? null;
@@ -431,11 +430,6 @@ export default function SessionPlayer({
   // below, not in an effect — the repo bans set-state-in-effect).
   const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
   const [prevSearchQuery, setPrevSearchQuery] = useState('');
-  // In CODING mode there is no comment gutter, so a clicked commented highlight
-  // shows its thread in a floating popover at the click point (null = closed).
-  const [commentPopoverPos, setCommentPopoverPos] = useState<{ x: number; y: number } | null>(
-    null,
-  );
   // Phrase-search matches over the current (ordered) segments, in reading order.
   const searchMatches = useMemo(
     () => findPhraseMatches(segments, searchQuery),
@@ -690,6 +684,8 @@ export default function SessionPlayer({
     const r = resolveSelection(transcriptRef.current);
     if (!r || r.startSegIdx < 0 || r.endSegIdx >= segments.length || r.startSegIdx > r.endSegIdx) {
       setTextSel(null);
+      setPopupPos(null);
+      setAssignedAnnId(null);
       return;
     }
     // Build the (possibly multi-cue) anchor from the covered cues' texts.
@@ -698,6 +694,8 @@ export default function SessionPlayer({
     const anchor = buildMultiAnchor(segTexts, r.startChar, r.endChar);
     if (!anchor) {
       setTextSel(null);
+      setPopupPos(null);
+      setAssignedAnnId(null);
       return;
     }
     setTextSel({
@@ -709,11 +707,73 @@ export default function SessionPlayer({
       prefix: anchor.prefix,
       suffix: anchor.suffix,
     });
-  }, [segments]);
+
+    const startSeg = segments[r.startSegIdx];
+    const endSeg = segments[r.endSegIdx];
+
+    // RE-ANCHOR gesture: this selection replaces an existing bracket's span —
+    // codes and comments ride along; no popup, no composer.
+    if (reanchoringId) {
+      const target = reanchoringId;
+      setReanchoringId(null);
+      void (async () => {
+        try {
+          await updateAnnotationAnchor(target, {
+            segmentId: startSeg.id,
+            endSegmentId: r.endSegIdx !== r.startSegIdx ? endSeg.id : null,
+            charStart: anchor.startChar,
+            charEnd: anchor.endChar,
+            quoteText: anchor.quoteText,
+            prefix: anchor.prefix,
+            suffix: anchor.suffix,
+            tStartMs: startSeg.startMs,
+            tEndMs: endSeg.endMs,
+          });
+          await refreshActiveAnnotations();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to re-anchor.');
+        } finally {
+          setTextSel(null);
+          window.getSelection()?.removeAllRanges();
+        }
+      })();
+      return;
+    }
+
+    if (mode === 'code') {
+      // Spawn the coding popup at the release point. If one of MY code annotations
+      // already sits on this IDENTICAL anchor, its codes prefill the popup's chips —
+      // re-selecting the same span means "edit that group", not "start a duplicate".
+      const existing = myAnnotations.find(
+        (a) =>
+          a.kind === 'code' &&
+          sameAnchor(
+            {
+              segmentId: a.segmentId,
+              endSegmentId: a.endSegmentId,
+              charStart: a.charStart,
+              charEnd: a.charEnd,
+            },
+            {
+              segmentId: startSeg.id,
+              endSegmentId: r.endSegIdx !== r.startSegIdx ? endSeg.id : null,
+              charStart: anchor.startChar,
+              charEnd: anchor.endChar,
+            },
+          ),
+      );
+      setAssignedAnnId(existing?.id ?? null);
+      setPopupPos({ x: e.clientX, y: e.clientY });
+    }
+    // COMMENT mode: the selection just sits (painted pending); typing opens the
+    // marginalia composer via the keyboard handler below.
+  }, [segments, myAnnotations, mode, reanchoringId, refreshActiveAnnotations]);
 
   const clearSelection = useCallback(() => {
     setTextSel(null);
     setComposerOpen(false);
+    setPopupPos(null);
+    setAssignedAnnId(null);
     window.getSelection()?.removeAllRanges();
   }, []);
 
@@ -734,6 +794,14 @@ export default function SessionPlayer({
       suffix: textSel.suffix,
     };
   }, [textSel, segments]);
+
+  // segment id → its index in `segments` (transcript order). Used to expand a
+  // multi-cue annotation's start/end segment ids back into a covered index range.
+  const segIndexById = useMemo(() => {
+    const m = new Map<string, number>();
+    segments.forEach((s, i) => m.set(s.id, i));
+    return m;
+  }, [segments]);
 
   // --- Mutations ----------------------------------------------------------
 
@@ -760,21 +828,39 @@ export default function SessionPlayer({
     }
   }, [afterAnnotationMutation]);
 
-  // Apply a code at the CURRENT video time. Anchors to the brushed selection when
-  // one exists (`useSelection`), else to the cue playing now (whole-cue anchor) —
-  // the coding-mode "search a code → it links to that time" gesture.
-  const handleApplyCodeAt = useCallback(
-    async (codeId: string, useSelection: boolean) => {
-      if (!versionId || !codeId) return;
+  // Assign a code to the CURRENT SELECTION (the popup's one job). First assign
+  // creates the annotation (kind:'code', multi-cue anchor) and remembers its id;
+  // every further assign ADDS to that same annotation — multiple codes, one anchor,
+  // which is what lets the gutter render them as one brace-grouped block. The
+  // selection is deliberately NOT cleared on assign: the popup stays open so more
+  // codes can join, and closes only on Done/Esc/outside click.
+  const handleAssignCode = useCallback(
+    async (codeId: string) => {
+      if (!versionId || !codeId || !pending) return;
       setApplying(true);
       setError(null);
       try {
-        if (useSelection && pending) {
-          await addAnnotation({
+        // A stale assignedAnnId (its last code was removed and the anchor deleted
+        // server-side) must not receive junction rows — verify it still exists.
+        const live =
+          assignedAnnId !== null &&
+          myAnnotations.some((a) => a.id === assignedAnnId && a.kind === 'code')
+            ? assignedAnnId
+            : null;
+        let added = false;
+        if (live !== null) {
+          // The id can still be stale (deleted server-side after our snapshot): the
+          // action probes and reports 'annotation_gone' instead of erroring, and we
+          // fall through to creating a fresh anchor rather than failing the assign.
+          added = (await addCodeToAnnotation(live, codeId)) === 'added';
+        }
+        if (!added) {
+          const ann = await addAnnotation({
             sessionId: id,
             versionId,
             segmentId: pending.startSeg.id,
-            endSegmentId: pending.endSeg.id,
+            endSegmentId:
+              pending.endSeg.id !== pending.startSeg.id ? pending.endSeg.id : undefined,
             charStart: pending.startChar,
             charEnd: pending.endChar,
             quoteText: pending.quoteText,
@@ -785,43 +871,77 @@ export default function SessionPlayer({
             kind: 'code',
             codeIds: [codeId],
           });
-          clearSelection();
-        } else {
-          // No selection: anchor to the cue playing NOW. Use `activeIdx` (the
-          // highlighted cue, from the UNROUNDED playhead) rather than re-deriving
-          // from `currentMs` (floored to whole seconds) — the floored second can
-          // fall into a different cue (or none) for sub-second/boundary cues, so
-          // re-deriving would anchor the code to a cue other than the one shown
-          // (or spuriously error). `activeIdx` makes the anchor match the highlight.
-          const idx = activeIdx >= 0 ? activeIdx : findActiveIndex(segments, currentMs);
-          const seg = idx >= 0 ? segments[idx] : null;
-          if (!seg) {
-            setError('No transcript is playing at the current time — scrub to a line first.');
-            return;
-          }
-          await addAnnotation({
-            sessionId: id,
-            versionId,
-            segmentId: seg.id,
-            charStart: 0,
-            charEnd: seg.text.length,
-            quoteText: seg.text,
-            prefix: '',
-            suffix: '',
-            tStartMs: seg.startMs,
-            tEndMs: seg.endMs,
-            kind: 'code',
-            codeIds: [codeId],
-          });
+          setAssignedAnnId(ann.id);
         }
         await afterAnnotationMutation();
       } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to apply code.');
+        setError(e instanceof Error ? e.message : 'Failed to assign the code.');
       } finally {
         setApplying(false);
       }
     },
-    [versionId, pending, id, segments, currentMs, activeIdx, clearSelection, afterAnnotationMutation],
+    [versionId, pending, id, assignedAnnId, myAnnotations, afterAnnotationMutation],
+  );
+
+  // Remove one code from a BRACKET (gutter ×). The bracket survives — even empty —
+  // because the anchor records "this span matters" independently of which codes
+  // currently name it; deleting the bracket is its own explicit act.
+  const handleRemoveCodeFromBracket = useCallback(
+    async (annId: string, codeId: string) => {
+      setError(null);
+      try {
+        await removeCodeFromAnnotation(annId, codeId);
+        await afterAnnotationMutation();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to remove the code.');
+      }
+    },
+    [afterAnnotationMutation],
+  );
+
+  // Reopen the coding popup ON an existing bracket (gutter block click): its span
+  // becomes the pending selection (painted), its id receives further assigns.
+  const openPopupForAnnotation = useCallback(
+    (ann: MyAnnotationView, e: React.MouseEvent) => {
+      const startIdx = segIndexById.get(ann.segmentId);
+      if (startIdx === undefined) return;
+      const endIdx = ann.endSegmentId
+        ? segIndexById.get(ann.endSegmentId) ?? startIdx
+        : startIdx;
+      setTextSel({
+        startSegIdx: startIdx,
+        endSegIdx: endIdx,
+        startChar: ann.charStart,
+        endChar: ann.charEnd,
+        quoteText: ann.quoteText ?? '',
+        prefix: '',
+        suffix: '',
+      });
+      setAssignedAnnId(ann.id);
+      setPopupPos({ x: e.clientX, y: e.clientY });
+    },
+    [segIndexById],
+  );
+
+  // Remove ONE code from the selection's annotation. The action's last-code policy
+  // applies server-side (comments → demote to quote; none → delete the anchor); the
+  // refetch reflects whichever happened, and a vanished anchor simply leaves the
+  // chips empty — the next assign starts a fresh annotation.
+  const handleUnassignCode = useCallback(
+    async (codeId: string) => {
+      if (!assignedAnnId) return;
+      setApplying(true);
+      setError(null);
+      try {
+        await removeCodeFromAnnotation(assignedAnnId, codeId);
+        await afterAnnotationMutation();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to remove the code.');
+      } finally {
+        setApplying(false);
+      }
+    },
+    [assignedAnnId, afterAnnotationMutation],
   );
 
   // --- Per-excerpt comments (margin) --------------------------------------
@@ -989,17 +1109,14 @@ export default function SessionPlayer({
     [openCommentAnnId, afterAnnotationMutation],
   );
 
-  // Clicking a highlighted span opens its comment thread. In REVIEW mode the card
-  // shows in the margin rail; in CODING mode (no gutter) it pops up in a floating
+  // Clicking a highlighted span (or a code-chip block) opens its comment thread in
+  // the margin rail
   // popover anchored at the click point.
   const openThreadForAnnotation = useCallback(
-    (ann: MyAnnotationView, e?: React.MouseEvent) => {
+    (ann: MyAnnotationView) => {
       void openCommentThread(ann.id);
-      if (mode === 'coding' && e) {
-        setCommentPopoverPos({ x: e.clientX, y: e.clientY });
-      }
     },
-    [openCommentThread, mode],
+    [openCommentThread],
   );
 
   // --- Phrase-search navigation -------------------------------------------
@@ -1030,40 +1147,39 @@ export default function SessionPlayer({
       if (e.code === 'Escape') {
         setComposerOpen(false);
         setOpenCommentAnnId(null);
-        setCommentPopoverPos(null);
-        clearSelection();
+        setReanchoringId(null); // an armed re-anchor dies with Esc, like everything
+        clearSelection(); // also closes the coding popup (popupPos lives in it)
         return;
       }
-      // Comment + quote gestures are review-mode only.
-      if (mode !== 'review' || !codingEnabled) return;
-      if (e.metaKey && e.altKey && e.code === 'KeyM') {
-        e.preventDefault();
-        if (pending) {
-          setOpenCommentAnnId(null);
-          setComposerOpen(true);
-          setTimeout(() => composerTextareaRef.current?.focus(), 0);
-        }
-      } else if (e.metaKey && e.shiftKey && e.code === 'KeyJ') {
-        // ⌘⇧J: mark important quote (open thread → flip kind; selection → new quote).
-        if (openCommentAnnId || pending) {
-          e.preventDefault();
-          void handleMarkQuote();
+      if (!codingEnabled) return;
+
+      // COMMENT mode, marginalia-style: with a selection pending, just START TYPING
+      // and the margin composer opens seeded with that first keystroke (the
+      // annotator-HTML gesture). ⌘⏎ (or ⏎ later, in the composer) saves. No
+      // modifier chords to memorize — the selection is the mode.
+      if (mode === 'comment' && pending && !composerOpen && !popupPos) {
+        const target = e.target as HTMLElement | null;
+        const inField =
+          target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
+        if (!inField) {
+          const printable =
+            e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey;
+          const commitChord = (e.metaKey || e.ctrlKey) && e.key === 'Enter';
+          if (printable || commitChord) {
+            e.preventDefault();
+            setOpenCommentAnnId(null);
+            if (printable) setSelectionCommentDraft((d) => d + e.key);
+            setComposerOpen(true);
+            setTimeout(() => composerTextareaRef.current?.focus(), 0);
+          }
         }
       }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [mode, codingEnabled, pending, openCommentAnnId, clearSelection, handleMarkQuote]);
+  }, [codingEnabled, pending, composerOpen, popupPos, mode, clearSelection]);
 
   // --- Derived view helpers ----------------------------------------------
-
-  // segment id → its index in `segments` (transcript order). Used to expand a
-  // multi-cue annotation's start/end segment ids back into a covered index range.
-  const segIndexById = useMemo(() => {
-    const m = new Map<string, number>();
-    segments.forEach((s, i) => m.set(s.id, i));
-    return m;
-  }, [segments]);
 
   // Own annotations grouped by segment id → the highlights to render. A
   // single-segment annotation (`endSegmentId` null) is one highlight on its
@@ -1080,6 +1196,11 @@ export default function SessionPlayer({
       m.set(segId, list);
     };
     for (const a of myAnnotations) {
+      // kind:'code' NEVER paints inline (owner's call, overriding an earlier review
+      // fix): the bracket + chip block in the gutter is the code's ONLY rendering.
+      // A background wash on coded text made every coded span read like a comment
+      // highlight — two different speech acts in one visual voice.
+      if (a.kind === 'code') continue;
       const startIdx = segIndexById.get(a.segmentId);
       const endIdx = a.endSegmentId ? segIndexById.get(a.endSegmentId) : startIdx;
       if (
@@ -1197,46 +1318,35 @@ export default function SessionPlayer({
   // dropped flags that fell in inter-cue gaps. EVERY flag must map onto some text, so
   // a gap-falling flag attaches to its nearest cue by time. Only an empty transcript
   // yields no mapping (idx < 0).
-  const flagHighlightsBySegment = useMemo(() => {
-    const m = new Map<string, Highlight[]>();
-    for (const { obs, offsetMs } of flagMarkers) {
-      const idx = nearestCueIndex(segments, offsetMs);
-      if (idx < 0) continue;
-      const seg = segments[idx];
-      const list = m.get(seg.id) ?? [];
-      list.push({
-        annotationId: `flag:${obs.id}`,
-        charStart: 0,
-        charEnd: seg.text.length,
-        kind: 'flag',
-        // A guaranteed hex so the renderer can alpha-composite a TRANSLUCENT tint
-        // (`hexWithAlpha`). A colorless flag (a bare note) falls back to neutral
-        // gray — never the opaque `var(--foreground)`, which would black out the cue.
-        color: obs.color ?? '#9ca3af',
-      });
-      m.set(seg.id, list);
-    }
-    return m;
-  }, [flagMarkers, segments]);
-
-  // Merge committed annotation highlights + flag highlights. The in-progress
-  // selection is deliberately NOT woven in here: the persistent yellow highlight
-  // appears only once the annotation is committed (comment saved / quote marked /
-  // code applied). While composing, the cue is shown by the browser's native
-  // selection plus the quote preview in the comment card — no synthetic brush, so
-  // nothing paints until there's a real annotation to paint.
+  // Merge committed annotation highlights + flag highlights + the PENDING selection.
+  // The pending range IS painted synthetically now (kind:'pending'): the coding popup
+  // steals focus the moment it opens, which kills the native browser selection — and a
+  // selection the coder can no longer SEE while choosing a code breaks the whole
+  // "stays highlighted while I pick" contract.
   const PENDING_ANN_ID = '__pending__';
   const highlightsBySegmentAll = useMemo(() => {
     const m = new Map<string, Highlight[]>();
-    const segIds = new Set<string>([
-      ...highlightsBySegment.keys(),
-      ...flagHighlightsBySegment.keys(),
-    ]);
+    const segIds = new Set<string>([...highlightsBySegment.keys()]);
+    // FLAG tints deliberately NOT merged: whole-cue washes reveal the cue
+    // segmentation and chop the paragraph into colored blocks — the transcript
+    // should read continuously, like an essay. Flags stay on the timeline bar and
+    // the flag list, which is where a time-anchored event belongs.
     for (const segId of segIds) {
-      m.set(segId, [
-        ...(flagHighlightsBySegment.get(segId) ?? []),
-        ...(highlightsBySegment.get(segId) ?? []),
-      ]);
+      m.set(segId, [...(highlightsBySegment.get(segId) ?? [])]);
+    }
+    if (textSel) {
+      for (let i = textSel.startSegIdx; i <= textSel.endSegIdx; i++) {
+        const seg = segments[i];
+        if (!seg) continue;
+        const list = m.get(seg.id) ?? [];
+        list.push({
+          annotationId: PENDING_ANN_ID,
+          charStart: i === textSel.startSegIdx ? textSel.startChar : 0,
+          charEnd: i === textSel.endSegIdx ? textSel.endChar : seg.text.length,
+          kind: 'pending',
+        });
+        m.set(seg.id, list);
+      }
     }
     // Phrase-search matches paint orange (the current match brighter), like flags:
     // non-clickable, background-only. Layered ON TOP so a match is visible even over
@@ -1254,7 +1364,7 @@ export default function SessionPlayer({
       m.set(seg.id, list);
     });
     return m;
-  }, [highlightsBySegment, flagHighlightsBySegment, searchMatches, safeMatchIdx, segments]);
+  }, [highlightsBySegment, searchMatches, safeMatchIdx, segments, textSel]);
 
   const annById = useMemo(() => {
     const m = new Map<string, MyAnnotationView>();
@@ -1296,6 +1406,45 @@ export default function SessionPlayer({
     currentEventRef.current?.scrollIntoView({ block: 'nearest' });
   }, [currentEpisodeIdx]);
 
+  // --- Code-brace gutter (measured imperatively, no setState-in-effect) ----
+  // kind:'code' annotations render as BRACE-GROUPED blocks in the gutter: a bracket
+  // spanning the coded text's vertical extent + a chip block listing the codes.
+  // Bucketed by the ANCHOR turn (the turn holding the start cue); an annotation
+  // that runs past its turn is clamped to the turn's last cue and flagged
+  // `continues` (the brace draws an open end rather than lying about the span).
+  const turnIndexBySegIdxForCodes = useMemo(() => {
+    const m = new Map<number, number>();
+    turns.forEach((t, ti) => t.segIndices.forEach((si) => m.set(si, ti)));
+    return m;
+  }, [turns]);
+
+  const codeBlocksByTurn = useMemo(() => {
+    const m = new Map<
+      number,
+      { ann: MyAnnotationView; startIdx: number; endIdx: number; continues: boolean }[]
+    >();
+    for (const a of myAnnotations) {
+      if (a.kind !== 'code') continue;
+      const startIdx = segIndexById.get(a.segmentId);
+      if (startIdx === undefined) continue;
+      const rawEnd = a.endSegmentId ? segIndexById.get(a.endSegmentId) ?? startIdx : startIdx;
+      const turnIdx = turnIndexBySegIdxForCodes.get(startIdx);
+      if (turnIdx === undefined) continue;
+      const turnLast = turns[turnIdx]?.segIndices[turns[turnIdx].segIndices.length - 1] ?? startIdx;
+      const endIdx = Math.min(Math.max(rawEnd, startIdx), turnLast);
+      const list = m.get(turnIdx) ?? [];
+      list.push({ ann: a, startIdx, endIdx, continues: rawEnd > turnLast });
+      m.set(turnIdx, list);
+    }
+    // Deterministic block order inside a turn: text order, id tiebreak.
+    for (const list of m.values()) {
+      list.sort((x, y) =>
+        x.startIdx !== y.startIdx ? x.startIdx - y.startIdx : x.ann.id.localeCompare(y.ann.id),
+      );
+    }
+    return m;
+  }, [myAnnotations, segIndexById, turns, turnIndexBySegIdxForCodes]);
+
   // --- Comment-margin anchoring (flow gutter, no measurement) -------------
   // The review-mode comment card renders in the GUTTER of the turn that holds the
   // active anchor cue — so it aligns automatically and scrolls with the content,
@@ -1312,7 +1461,7 @@ export default function SessionPlayer({
   const canCommentOnSelection =
     !!pending && !!versionId && selectionCommentDraft.trim() !== '' && !commentBusy;
 
-  const railEnabled = mode === 'review' && !editing && codingEnabled;
+  const railEnabled = !editing && codingEnabled;
   // The TRANSIENT composer card (a fresh, uncommitted selection) — not yet a
   // persisted annotation, so it isn't in `railCardsByTurn`. Its anchor turn is the
   // selection's start cue's turn; default to the first turn if it can't be resolved.
@@ -1328,9 +1477,22 @@ export default function SessionPlayer({
   const railCardsByTurn = useMemo(
     () =>
       railEnabled
-        ? cardsByTurn(myAnnotations, commentedAnnIds, segIndexById, turnIndexBySegIdx)
+        ? cardsByTurn(
+            myAnnotations,
+            // The OPEN annotation always earns a card: a bare kind:'code' anchor has
+            // no persistent card (no comments, not a quote), so clicking its gutter
+            // chip block would otherwise be a visible no-op — the tooltip promises a
+            // thread and nothing mounts. Unioning the open id makes the CommentCard
+            // appear for exactly as long as the thread is open; it persists only if
+            // a comment is actually posted (commentedAnnIds then retains it).
+            openCommentAnnId
+              ? new Set([...commentedAnnIds, openCommentAnnId])
+              : commentedAnnIds,
+            segIndexById,
+            turnIndexBySegIdx,
+          )
         : new Map<number, RailCard[]>(),
-    [railEnabled, myAnnotations, commentedAnnIds, segIndexById, turnIndexBySegIdx],
+    [railEnabled, myAnnotations, commentedAnnIds, segIndexById, turnIndexBySegIdx, openCommentAnnId],
   );
 
   // Close any open card / composer and clear the selection. Shared by every card's
@@ -1341,7 +1503,6 @@ export default function SessionPlayer({
     setCommentError(null);
     setCommentDraft('');
     setSelectionCommentDraft('');
-    setCommentPopoverPos(null);
     clearSelection();
   }, [clearSelection]);
 
@@ -1356,8 +1517,9 @@ export default function SessionPlayer({
     (turnIdx: number): React.ReactNode => {
       if (!railEnabled) return null;
       const cards = railCardsByTurn.get(turnIdx) ?? [];
+      const codeBlocks = codeBlocksByTurn.get(turnIdx) ?? [];
       const showComposerHere = composerOpenForRail && composerAnchorTurnIdx === turnIdx;
-      if (cards.length === 0 && !showComposerHere) return null;
+      if (cards.length === 0 && !showComposerHere && codeBlocks.length === 0) return null;
 
       // Collapsed previews stack with a small vertical step; the open/composer card
       // jumps to the top z-index. z-index base leaves headroom under the open card.
@@ -1376,6 +1538,7 @@ export default function SessionPlayer({
         nodes.push(
           <div
             key={card.annId}
+            data-rail-card
             className="absolute left-0 w-60"
             style={{ top: `${top}rem`, zIndex: z }}
           >
@@ -1420,7 +1583,7 @@ export default function SessionPlayer({
 
       if (showComposerHere) {
         nodes.push(
-          <div key="__composer__" className="absolute left-0 top-0 w-60" style={{ zIndex: 50 }}>
+          <div key="__composer__" data-rail-card className="absolute left-0 top-0 w-60" style={{ zIndex: 50 }}>
             <CommentCard
               composerMode
               pendingQuote={pending?.quoteText ?? null}
@@ -1451,11 +1614,119 @@ export default function SessionPlayer({
         );
       }
 
+      // CODE blocks: a brace spanning the coded text + a chip block beside it. Both
+      // render position-less (opacity-0) and are laid out IMPERATIVELY by the
+      // measurement effect below — writing styles through the DOM, never setState,
+      // so the repo's no-setState-in-effect rule holds and there is no re-render
+      // loop. data-* attributes carry the anchor indices the effect needs.
+      codeBlocks.forEach((b) => {
+        nodes.push(
+          <div
+            key={`brace:${b.ann.id}`}
+            data-code-brace
+            data-ann-id={b.ann.id}
+            data-start-idx={b.startIdx}
+            data-end-idx={b.endIdx}
+            aria-hidden
+            // Spine on the RIGHT (away from the text), serifs curling LEFT toward
+            // the span it groups — a closing `⟩` hugging the text's edge. (The first
+            // cut had the spine text-side, which read as a rule between text and
+            // gutter rather than a grouping bracket.)
+            className={`pointer-events-none absolute w-2 rounded-r border-r-2 border-t-2 border-emerald-600/70 opacity-0 ${
+              b.continues ? '' : 'border-b-2'
+            }`}
+            style={{ left: -14 }}
+          />,
+        );
+        nodes.push(
+          <div
+            key={`chips:${b.ann.id}`}
+            data-code-block
+            data-ann-id={b.ann.id}
+            data-start-idx={b.startIdx}
+            className="absolute left-0 w-56 opacity-0"
+            style={{ zIndex: 5 }}
+          >
+            {/* The block manages CODES — it is not a comment affordance. Click →
+                reopen the coding popup on this bracket (add more codes); × on a chip
+                removes THAT code (the bracket survives, even empty); ✎ re-anchors
+                (next selection replaces the span); 🗑 deletes the bracket itself. */}
+            <div className="flex flex-wrap items-center gap-1 border border-foreground/10 bg-background/95 p-1">
+              <button
+                type="button"
+                onClick={(e) => openPopupForAnnotation(b.ann, e)}
+                title="Add codes to this bracket"
+                className="flex min-w-0 flex-wrap items-center gap-1 text-left"
+              >
+                {b.ann.codes.length === 0 ? (
+                  <span className="px-1 text-[11px] italic text-foreground/40">no codes</span>
+                ) : null}
+                {b.ann.codes.map((c) => (
+                  <span
+                    key={c.id}
+                    className="inline-flex items-center gap-0.5 border border-emerald-600/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px]"
+                  >
+                    {c.mnemonic}
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleRemoveCodeFromBracket(b.ann.id, c.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.stopPropagation();
+                          void handleRemoveCodeFromBracket(b.ann.id, c.id);
+                        }
+                      }}
+                      title={`Remove ${c.mnemonic} (the bracket stays)`}
+                      className="cursor-pointer px-0.5 text-foreground/40 hover:text-red-600"
+                    >
+                      ×
+                    </span>
+                  </span>
+                ))}
+              </button>
+              <span className="ml-auto flex shrink-0 items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setReanchoringId(b.ann.id);
+                  }}
+                  title="Edit selection — the next text you highlight becomes this bracket's span"
+                  className="px-0.5 text-[11px] text-foreground/40 hover:text-foreground"
+                >
+                  ✎
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirm('Delete this bracket (its codes and comments go with it)?')) {
+                      void handleDeleteAnnotation(b.ann.id);
+                    }
+                  }}
+                  title="Delete the bracket"
+                  className="px-0.5 text-[11px] text-foreground/40 hover:text-red-600"
+                >
+                  🗑
+                </button>
+              </span>
+            </div>
+          </div>,
+        );
+      });
+
       return <>{nodes}</>;
     },
     [
       railEnabled,
       railCardsByTurn,
+      codeBlocksByTurn,
+      openPopupForAnnotation,
+      handleRemoveCodeFromBracket,
       composerOpenForRail,
       composerAnchorTurnIdx,
       annById,
@@ -1480,6 +1751,125 @@ export default function SessionPlayer({
       openThreadForAnnotation,
     ],
   );
+
+  // The post-create auto-assign resolves through a REF so it always sees the LATEST
+  // handler closure: createCode's round-trip is slow, and if the coder hits Esc in
+  // that window the captured closure would still hold the old `pending` and code a
+  // selection that was already canceled. The ref re-checks live state at fire time.
+  const handleAssignCodeRef = useRef(handleAssignCode);
+  useEffect(() => {
+    handleAssignCodeRef.current = handleAssignCode;
+  }, [handleAssignCode]);
+
+  // The popup's chips: the codes already on the selection's annotation, resolved to
+  // full PopupCode shapes (metadata expansion needs origin/definition). A stale id
+  // (annotation deleted server-side by last-code removal) resolves to null → empty.
+  const popupCodeById = useMemo(() => new Map(codes.map((c) => [c.id, c])), [codes]);
+  const assignedAnn = assignedAnnId
+    ? myAnnotations.find((a) => a.id === assignedAnnId) ?? null
+    : null;
+  const assignedPopupCodes = useMemo(
+    () =>
+      (assignedAnn?.codes ?? []).map(
+        (c) =>
+          popupCodeById.get(c.id) ?? {
+            id: c.id,
+            mnemonic: c.mnemonic,
+            name: c.mnemonic,
+            origin: 'emergent',
+            definition: null,
+          },
+      ),
+    [assignedAnn, popupCodeById],
+  );
+
+  // Lay the brace gutter out IMPERATIVELY: measure cue spans, pack chip blocks,
+  // write styles straight to the DOM. No setState — measurement-driven state would
+  // either loop (render → measure → setState → render) or trip the repo's
+  // no-setState-in-effect rule; writing through refs does neither. Re-runs on data
+  // changes and window resize; elements start opacity-0 and are revealed once
+  // positioned so there is no flash of unpositioned chrome.
+  useEffect(() => {
+    const root = transcriptRef.current;
+    if (!root) return;
+
+    const layout = () => {
+      const cells = root.querySelectorAll<HTMLElement>('[data-comment-card]');
+      cells.forEach((cell) => {
+        const braces = cell.querySelectorAll<HTMLElement>('[data-code-brace]');
+        const blocks = cell.querySelectorAll<HTMLElement>('[data-code-block]');
+        if (braces.length === 0 && blocks.length === 0) return;
+        if (cell.offsetParent === null) return; // hidden (mobile) — nothing to place
+        const cellRect = cell.getBoundingClientRect();
+
+        // Comment cards already occupy the top of this cell; blocks pack BELOW the
+        // deepest one. Represent that occupancy as a synthetic first gutter block.
+        let cardsBottom = 0;
+        cell.querySelectorAll<HTMLElement>('[data-rail-card]').forEach((card) => {
+          const r = card.getBoundingClientRect();
+          cardsBottom = Math.max(cardsBottom, r.bottom - cellRect.top);
+        });
+
+        // Braces: pinned to the coded text's true extent — they NEVER pack.
+        const extents = new Map<string, { top: number; bottom: number }>();
+        braces.forEach((el) => {
+          const startIdx = Number(el.dataset.startIdx);
+          const endIdx = Number(el.dataset.endIdx);
+          const startEl = rowRefs.current[startIdx];
+          const endEl = rowRefs.current[endIdx] ?? startEl;
+          if (!startEl || !endEl) return;
+          const top = startEl.getBoundingClientRect().top - cellRect.top;
+          const bottom = endEl.getBoundingClientRect().bottom - cellRect.top;
+          extents.set(el.dataset.annId ?? '', { top, bottom });
+          el.style.top = `${top}px`;
+          el.style.height = `${Math.max(bottom - top, 8)}px`;
+          el.style.opacity = '1';
+        });
+
+        // Chip blocks: desired at their brace top, packed downward (never up) so
+        // stacked/overlapping ranges stay readable. Pure policy in packGutter.
+        const inputs: GutterInput[] = [];
+        if (cardsBottom > 0) {
+          inputs.push({ id: '__cards__', top: 0, bottom: 0, blockHeight: cardsBottom });
+        }
+        blocks.forEach((el) => {
+          const ext = extents.get(el.dataset.annId ?? '');
+          inputs.push({
+            id: el.dataset.annId ?? '',
+            top: ext?.top ?? 0,
+            bottom: ext?.bottom ?? 0,
+            blockHeight: el.offsetHeight || 24,
+          });
+        });
+        const packed = new Map(packGutter(inputs, 6).map((b) => [b.id, b]));
+        blocks.forEach((el) => {
+          const b = packed.get(el.dataset.annId ?? '');
+          if (!b) return;
+          el.style.top = `${b.blockTop}px`;
+          el.style.opacity = '1';
+        });
+      });
+    };
+
+    // After paint (fonts/wraps settled), then again on any resize.
+    const raf = requestAnimationFrame(layout);
+    window.addEventListener('resize', layout);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', layout);
+    };
+  }, [
+    codeBlocksByTurn,
+    segments,
+    turns,
+    comments,
+    openCommentAnnId,
+    composerOpen,
+    activeTab,
+    editing,
+    railEnabled,
+    searchMatches,
+  ]);
 
   // Props shared by both modes' transcript render. Review mode adds a gutter that
   // hosts the comment card; coding mode renders full-width with no gutter.
@@ -1587,35 +1977,25 @@ export default function SessionPlayer({
             {codingEnabled && (
               <div
                 role="tablist"
-                aria-label="Player mode"
+                aria-label="Selection mode"
                 className="flex rounded border border-foreground/20 text-xs"
               >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={mode === 'review'}
-                  onClick={() => setMode('review')}
-                  className={`rounded-l px-3 py-1 ${
-                    mode === 'review'
-                      ? 'bg-foreground text-background'
-                      : 'text-foreground/70 hover:text-foreground'
-                  }`}
-                >
-                  Review
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={mode === 'coding'}
-                  onClick={() => setMode('coding')}
-                  className={`rounded-r px-3 py-1 ${
-                    mode === 'coding'
-                      ? 'bg-foreground text-background'
-                      : 'text-foreground/70 hover:text-foreground'
-                  }`}
-                >
-                  Coding
-                </button>
+                {(['comment', 'code'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    role="tab"
+                    aria-selected={mode === m}
+                    onClick={() => setMode(m)}
+                    className={`px-3 py-1 capitalize first:rounded-l last:rounded-r ${
+                      mode === m
+                        ? 'bg-foreground text-background'
+                        : 'text-foreground/70 hover:text-foreground'
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
               </div>
             )}
             {compareHref && (
@@ -1775,34 +2155,9 @@ export default function SessionPlayer({
           )}
         </div>
 
-        {/* MIDDLE (coding mode only, 1/3): fuzzy code search + new-code panel. */}
-        {codingEnabled && mode === 'coding' && (
-          <div className="space-y-4 lg:col-span-1">
-            <CodingPanel
-              codes={codes}
-              currentMs={currentMs}
-              pending={
-                pending
-                  ? { quoteText: pending.quoteText, tStartMs: pending.startSeg.startMs }
-                  : null
-              }
-              applying={applying}
-              onApply={handleApplyCodeAt}
-              onClearSelection={clearSelection}
-              formatTime={formatTime}
-            />
-            <SessionCodeCreator
-              codebookId={codebookId}
-              facets={facets}
-              labels={labels}
-              studyLabel={collection}
-              onCreated={() => router.refresh()}
-            />
-          </div>
-        )}
 
-        {/* RIGHT: transcript (2/3 in review with a comment margin; 1/3 in coding). */}
-        <div className={mode === 'review' ? 'lg:col-span-2' : 'lg:col-span-1'}>
+        {/* RIGHT: transcript (2/3) with the comment margin + code-brace gutter. */}
+        <div className="lg:col-span-2">
           {/* Version tabs + edit/sync toggles. */}
           <div
             role="tablist"
@@ -1994,7 +2349,7 @@ export default function SessionPlayer({
                 {versionBusy ? 'Creating…' : 'Create cleaned copy'}
               </button>
             </div>
-          ) : mode === 'review' ? (
+          ) : (
             /* REVIEW: flowing transcript with a Google-Docs comment GUTTER. Each
                turn reserves a right gutter; the active card renders in the anchor
                turn's gutter (absolutely placed so it never grows the row), so it
@@ -2002,11 +2357,17 @@ export default function SessionPlayer({
             <>
               {codingEnabled && (
                 <p className="mb-1 text-xs text-foreground/40">
-                  Select text →{' '}
-                  <kbd className="rounded border border-foreground/20 bg-foreground/5 px-1 font-mono">⌘⌥M</kbd>{' '}
-                  to comment ·{' '}
-                  <kbd className="rounded border border-foreground/20 bg-foreground/5 px-1 font-mono">⌘⇧J</kbd>{' '}
-                  to mark an important quote.
+                  {reanchoringId
+                    ? null
+                    : mode === 'comment'
+                      ? 'Select text → just start typing to leave a margin comment (⏎ saves).'
+                      : 'Select text → assign codes in the popup (⌘⏎ assigns · Esc closes).'}
+                </p>
+              )}
+              {reanchoringId && (
+                <p className="mb-1 rounded border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-xs text-sky-800 dark:text-sky-200">
+                  Re-anchoring: highlight the NEW span for this bracket — its codes and
+                  comments ride along. Esc cancels.
                 </p>
               )}
               <div
@@ -2030,78 +2391,32 @@ export default function SessionPlayer({
               </div>
               {chatPane}
             </>
-          ) : (
-            /* CODING: full-width transcript column, no comment gutter. */
-            <>
-              <div
-                ref={transcriptRef}
-                onMouseUp={
-                  codingEnabled && !editing && activeTab !== 'specification'
-                    ? handleTranscriptMouseUp
-                    : undefined
-                }
-                style={{ scrollbarGutter: 'stable' }}
-                className={`relative overflow-y-auto pr-3 ${transcriptHeightClass}`}
-              >
-                {activeTab === 'specification' ? (
-                  specPane
-                ) : (
-                  <TranscriptBody {...commonTranscriptProps} />
-                )}
-              </div>
-              {chatPane}
-            </>
           )}
         </div>
       </div>
 
-      {/* CODING-mode comment popover: clicking a highlighted span opens its thread in
-          a floating card at the click point (coding mode has no comment gutter). A
-          transparent backdrop closes it on an outside click. */}
-      {mode === 'coding' && openCommentAnn && commentPopoverPos && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={closeCard} aria-hidden />
-          <div
-            className="fixed z-50 w-60"
-            style={{
-              left: Math.min(
-                commentPopoverPos.x,
-                (typeof window !== 'undefined' ? window.innerWidth : 9999) - 248,
-              ),
-              top: Math.min(
-                commentPopoverPos.y,
-                (typeof window !== 'undefined' ? window.innerHeight : 9999) - 120,
-              ),
-            }}
-          >
-            <CommentCard
-              composerMode={false}
-              pendingQuote={null}
-              openCommentAnn={openCommentAnn}
-              openThread={comments[openCommentAnn.id] ?? []}
-              commentError={commentError}
-              commentDraft={commentDraft}
-              selectionCommentDraft={selectionCommentDraft}
-              commentBusy={commentBusy}
-              commentRowBusyId={commentRowBusyId}
-              canCommentOnSelection={canCommentOnSelection}
-              composerTextareaRef={composerTextareaRef}
-              busyId={busyId}
-              formatTime={formatTime}
-              formatCommentTime={formatCommentTime}
-              onClose={closeCard}
-              onSeek={seekTo}
-              onChangeCommentDraft={setCommentDraft}
-              onChangeSelectionDraft={setSelectionCommentDraft}
-              onAddComment={handleAddComment}
-              onCommentOnSelection={handleCommentOnSelection}
-              onMarkQuote={handleMarkQuote}
-              onResolveComment={handleResolveComment}
-              onDeleteComment={handleDeleteComment}
-              onDeleteAnnotation={handleDeleteAnnotation}
-            />
-          </div>
-        </>
+      {/* The coding popup: spawned by a selection, anchored at the release point.
+          Assign codes (⌘⏎ / +), read metadata (row click), create a new code (lands
+          in the triage queue). It stays open across assigns — multiple codes group
+          onto ONE annotation — and closes on Done/Esc/outside click. */}
+      {popupPos && pending && (
+        <CodingPopup
+          pos={popupPos}
+          quote={pending.quoteText}
+          codes={codes}
+          assigned={assignedPopupCodes}
+          busy={applying}
+          error={error}
+          codebookId={codebookId}
+          studyLabel={collection ?? 'uncategorized'}
+          onAssign={(cid) => void handleAssignCode(cid)}
+          onUnassign={(cid) => void handleUnassignCode(cid)}
+          onClose={clearSelection}
+          onCodeCreated={(cid) => {
+            router.refresh();
+            void handleAssignCodeRef.current(cid);
+          }}
+        />
       )}
     </main>
   );
@@ -2645,6 +2960,21 @@ function renderHighlightedText(
         !hid.startsWith('search:'),
     );
 
+    // The PENDING selection wins over EVERYTHING it overlaps — search hits, flags,
+    // committed annotations. It is the only brush that answers "what am I about to
+    // code?", and a selection that visually vanishes wherever it crosses an already-
+    // annotated span reads as a broken selection.
+    if (piece.kinds.includes('pending')) {
+      // Background ONLY — no ring, no rounding: adjacent pieces must fuse into one
+      // continuous wash (a ring outlines every internal piece boundary, chopping
+      // the selection into visible segments).
+      return (
+        <mark key={idx} className="bg-sky-300/50 text-foreground dark:bg-sky-400/30" title="Current selection">
+          {piece.text}
+        </mark>
+      );
+    }
+
     if (realIds.length === 0) {
       // Search match → orange (the current match brighter). Checked before flags so
       // the active search hit is always visible. Background only (no padding/glyph) so
@@ -2678,8 +3008,7 @@ function renderHighlightedText(
           </mark>
         );
       }
-      // No real annotation and no flag color → nothing to paint (the in-progress
-      // selection is shown by the native browser selection, not a synthetic brush).
+      // No real annotation, no flag color, not pending → nothing to paint.
       return <span key={idx}>{piece.text}</span>;
     }
 
@@ -2689,11 +3018,24 @@ function renderHighlightedText(
     const hasComment = realIds.some((hid) => commentedAnnIds.has(hid));
     const isOpen = openCommentAnnId !== null && realIds.includes(openCommentAnnId);
     const isYellow = hasQuote || hasComment;
+    // Pieces covered ONLY by kind:'code' annotations are the gutter's territory at
+    // lg+ (brace + chips), so their inline chrome is suppressed there — painting
+    // both would say "highlight" (the comment grammar) about a coded span. Below lg
+    // the gutter cell is hidden and this inline mark is the ONLY representation, so
+    // it paints fully. The click works at every size (it opens the thread).
+    const codeOnly = realIds.every((hid) => (annById.get(hid)?.kind ?? 'code') === 'code');
     const title = hasComment
       ? 'Has comments — click to open the thread'
       : hasQuote
         ? 'Flagged quote — click to comment'
         : 'Coded — click to comment';
+    const bg = isYellow
+      ? `bg-yellow-300/55 text-foreground dark:bg-yellow-400/30${codeOnly ? ' lg:bg-transparent' : ''}`
+      : `bg-emerald-300/50 text-foreground dark:bg-emerald-400/30${codeOnly ? ' lg:bg-transparent' : ''}`;
+    const underline = hasComment
+      ? `underline decoration-sky-500 decoration-dotted decoration-2 underline-offset-2${codeOnly ? ' lg:no-underline' : ''}`
+      : '';
+    const ring = isOpen ? `ring-2 ring-sky-500${codeOnly ? ' lg:ring-0' : ''}` : '';
     return (
       <mark
         key={idx}
@@ -2702,13 +3044,7 @@ function renderHighlightedText(
           if (ann) onFocus(ann, e);
         }}
         title={title}
-        className={`cursor-pointer rounded-sm ${
-          isYellow
-            ? 'bg-yellow-300/55 text-foreground dark:bg-yellow-400/30'
-            : 'bg-emerald-300/50 text-foreground dark:bg-emerald-400/30'
-        } ${hasComment ? 'underline decoration-sky-500 decoration-dotted decoration-2 underline-offset-2' : ''} ${
-          isOpen ? 'ring-2 ring-sky-500' : ''
-        }`}
+        className={`cursor-pointer rounded-sm ${bg} ${underline} ${ring}`}
       >
         {piece.text}
       </mark>

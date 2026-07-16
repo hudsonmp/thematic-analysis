@@ -3,6 +3,7 @@
 import { redirect } from 'next/navigation';
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { createServiceRoleClient } from '@/lib/supabase/service';
+import { cbFrom } from '@/lib/supabase/guard';
 
 export type AuthFormState = {
   error?: string;
@@ -23,7 +24,7 @@ export type AuthFormState = {
  * No-ops (returns) if there is no authenticated user — callers only invoke this
  * after establishing a session.
  */
-export async function ensureProfile(): Promise<void> {
+export async function ensureProfile(role?: 'full' | 'viewer'): Promise<void> {
   const sb = await createUserServerClient();
   const {
     data: { user },
@@ -45,6 +46,10 @@ export async function ensureProfile(): Promise<void> {
     user_id: user.id,
     display_name: email || null,
     initials,
+    // The role travels from the CLAIMED INVITE. Login-path calls omit it (an
+    // existing row is never touched — idempotent), and a missing value falls to
+    // the column default.
+    ...(role ? { role } : {}),
   });
   // Ignore unique-violation races (a concurrent insert beat us): the row exists,
   // which is the desired post-condition. Surface anything else.
@@ -54,16 +59,22 @@ export async function ensureProfile(): Promise<void> {
 }
 
 /**
- * Gated registration. The access code is checked BEFORE any signup attempt — a
- * wrong code must never create an `auth.users` row.
+ * INVITE-gated registration. The shared access code is retired: an account now
+ * requires a single-use invite token (minted at /admin), which carries the new
+ * account's ROLE ('full' or 'viewer').
  *
- * On a successful signUp:
- *  - If the project has email confirmation OFF, signUp returns a session; we
- *    provision the profile and redirect into the app.
- *  - If email confirmation is ON, signUp returns no session (`data.session` is
- *    null); we cannot redirect into the gated app, so we surface a
- *    "check your email" state instead. The profile is provisioned later, on
- *    first login (loginAction also calls ensureProfile).
+ * The token is CLAIMED ATOMICALLY BEFORE the account is created — a conditional
+ * UPDATE (`used_at is null`) that returns the row. Two racing registrations with the
+ * same link cannot both pass: one claim wins, the other matches zero rows. If account
+ * creation then fails, the claim is best-effort released so the link isn't burned by
+ * a typo'd password.
+ *
+ * Invite reads/writes go through cbFrom (service role): cb_invites has RLS enabled
+ * with NO policies, because a token in a URL is the whole credential — the table
+ * must be unreadable to anon AND authenticated alike.
+ *
+ * Accounts are created PRE-CONFIRMED via the admin API (no confirmation email):
+ * verification is redundant when every registration is already invite-gated.
  */
 export async function registerAction(
   _prev: AuthFormState,
@@ -71,37 +82,62 @@ export async function registerAction(
 ): Promise<AuthFormState> {
   const email = (formData.get('email') ?? '').toString().trim();
   const password = (formData.get('password') ?? '').toString();
-  const accessCode = (formData.get('accessCode') ?? '').toString();
+  const token = (formData.get('invite') ?? '').toString().trim();
 
-  if (accessCode !== process.env.RESEARCHER_ACCESS_CODE) {
-    return { error: 'Invalid access code.' };
+  if (!token) {
+    return { error: 'Registration requires an invite link — ask the study admin.' };
   }
 
-  // Create the account PRE-CONFIRMED via the service-role admin API. This sends
-  // NO confirmation email (so the provider's email rate limit is never hit) and
-  // the user is immediately active. Email verification is redundant here: every
-  // registration is already gated by the access code above.
+  // Atomic claim: mark used now; `used_by` is stamped after the account exists.
+  const claim = await cbFrom('cb_invites')
+    .update({ used_at: new Date().toISOString() })
+    .eq('token', token)
+    .is('used_at', null)
+    .select('id, role')
+    .maybeSingle();
+  if (claim.error) return { error: `Invite check failed: ${claim.error.message}` };
+  if (!claim.data) {
+    return { error: 'This invite link is invalid or has already been used.' };
+  }
+  const invite = claim.data;
+  const role = invite.role === 'viewer' ? ('viewer' as const) : ('full' as const);
+
+  const release = async () => {
+    await cbFrom('cb_invites').update({ used_at: null }).eq('id', invite.id);
+  };
+
   const admin = createServiceRoleClient();
-  const { error: createErr } = await admin.auth.admin.createUser({
+  const { data: created, error: createErr } = await admin.auth.admin.createUser({
     email,
     password,
     email_confirm: true,
   });
-  // A duplicate email means the account already exists — fall through to sign-in
-  // (idempotent re-register, or a previously-stuck unconfirmed account) rather
-  // than failing.
   if (createErr && !/already|exists|registered|been registered/i.test(createErr.message)) {
+    await release();
     return { error: createErr.message };
   }
 
-  // Establish the cookie-bound session so we can enter the gated app.
   const sb = await createUserServerClient();
   const { error: signInErr } = await sb.auth.signInWithPassword({ email, password });
   if (signInErr) {
+    // If an account WAS created, the invite was legitimately consumed — keep it
+    // burned and stamp the consumer, so a later plain login cannot land on the
+    // 'viewer' default and lose the invite's role. Only release when NO account
+    // exists (the pre-existing-email fallthrough failing sign-in on a bad password).
+    if (created?.user?.id) {
+      await cbFrom('cb_invites').update({ used_by: created.user.id }).eq('id', invite.id);
+      return { error: `${signInErr.message} — your account exists; sign in to continue.` };
+    }
+    await release();
     return { error: signInErr.message };
   }
 
-  await ensureProfile();
+  // Stamp who consumed it (the claim already burned it).
+  if (created?.user?.id) {
+    await cbFrom('cb_invites').update({ used_by: created.user.id }).eq('id', invite.id);
+  }
+
+  await ensureProfile(role);
   redirect('/');
 }
 

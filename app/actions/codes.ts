@@ -3,10 +3,16 @@
 import { cbFrom } from '@/lib/supabase/guard';
 import { linkCitation } from '@/app/actions/citations';
 import { attachCodeToLabel, setCodeLabels } from '@/app/actions/labels';
-import { resolveRows, writeOnlyRowErrors, type CodebookRow } from '@/lib/codebook/mnemonic';
+import {
+  resolveRows,
+  uniqueMnemonic,
+  writeOnlyRowErrors,
+  type CodebookRow,
+} from '@/lib/codebook/mnemonic';
 import type { RowFacetWrites } from '@/lib/codebook/grid';
 import { CodeVersionInput, type CodeVersionInputT } from '@/lib/types/contracts';
 import type { Json, Tables, TablesInsert } from '@/lib/types/cb-db';
+import { requireEditor } from '@/lib/auth/roles';
 
 type Code = Tables<'cb_codes'>;
 type CodeVersion = Tables<'cb_code_versions'>;
@@ -66,6 +72,7 @@ export async function createCode({
   origin,
   version,
   studyLabel,
+  autoUniqueMnemonic = false,
 }: {
   codebookId: string;
   mnemonic: string;
@@ -73,8 +80,26 @@ export async function createCode({
   origin: CodeOrigin;
   version: CodeVersionInputT;
   studyLabel?: string | null;
+  /** Re-uniquify `mnemonic` against the LIVE codebook before inserting. For callers
+   *  whose mnemonic was derived from a client-side SNAPSHOT of the codes list (the
+   *  coding popup): another coder can mint the same mnemonic between render and
+   *  submit, and UNIQUE(codebook_id, mnemonic) would reject the insert. Off by
+   *  default — bulk entry treats an explicit duplicate as an ERROR to surface, and
+   *  silently mangling a hand-typed mnemonic would hide that. */
+  autoUniqueMnemonic?: boolean;
 }): Promise<string> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const parsed = CodeVersionInput.parse(version);
+
+  if (autoUniqueMnemonic) {
+    const used = await cbFrom('cb_codes')
+      .select('mnemonic')
+      .eq('codebook_id', codebookId);
+    if (used.error) {
+      throw new Error(`createCode (mnemonics) failed: ${used.error.message}`);
+    }
+    mnemonic = uniqueMnemonic(mnemonic, new Set((used.data ?? []).map((r) => r.mnemonic)));
+  }
 
   const codeRes = await cbFrom('cb_codes')
     .insert({
@@ -160,6 +185,7 @@ export async function createCodeInTree({
   citationId: string | null;
   studyLabel?: string | null;
 }): Promise<string> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const codeId = await createCode({ codebookId, mnemonic, name, origin, version, studyLabel });
 
   if (labelId !== null) await attachCodeToLabel(codeId, labelId);
@@ -177,6 +203,7 @@ export async function saveNewVersion(
   codeId: string,
   version: CodeVersionInputT,
 ): Promise<CodeVersion> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const parsed = CodeVersionInput.parse(version);
 
   const maxRes = await cbFrom('cb_code_versions')
@@ -228,13 +255,45 @@ export async function listCodeVersions(codeId: string): Promise<CodeVersion[]> {
 }
 
 /** Set a code's lifecycle status. */
+/**
+ * Set a code's ORIGIN. Attaching a paper post hoc flips it to `a_priori` for the same
+ * reason the up-front pin does: a code you are deriving from a source IS
+ * theory-derived. It stays a separate call rather than a side-effect buried inside
+ * `linkCitation`, because linking a paper for PROVENANCE ("this is where I first saw
+ * it") is a different act from deriving a code FROM it, and the caller is the only one
+ * that knows which it meant.
+ */
+export async function setCodeOrigin(codeId: string, origin: CodeOrigin): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const res = await cbFrom('cb_codes').update({ origin }).eq('id', codeId);
+  if (res.error) throw new Error(`setCodeOrigin failed: ${res.error.message}`);
+}
+
 export async function setCodeStatus(codeId: string, status: CodeStatus): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const { error } = await cbFrom('cb_codes').update({ status }).eq('id', codeId);
   if (error) throw new Error(`setCodeStatus failed: ${error.message}`);
 }
 
+/**
+ * Hard-DELETE a code. Its versions and facet-value memberships cascade
+ * (cb_code_versions / cb_code_facet_values FKs are on delete cascade).
+ *
+ * This is the destructive counterpart to `retireCode`, and the UI reaches it only through
+ * an armed ⌘⌫ — never a bare keystroke — because it is irreversible. Retire is the right
+ * move for a code that WAS coded against and should leave the working set while keeping
+ * its audit trail; delete is for a capture that was a mistake and has no history worth
+ * keeping. The caller chooses; this action just does the delete.
+ */
+export async function deleteCode(codeId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const { error } = await cbFrom('cb_codes').delete().eq('id', codeId);
+  if (error) throw new Error(`deleteCode failed: ${error.message}`);
+}
+
 /** Retire a code: status='retired', stamp retired_at. */
 export async function retireCode(codeId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const { error } = await cbFrom('cb_codes')
     .update({ status: 'retired', retired_at: new Date().toISOString() })
     .eq('id', codeId);
@@ -247,6 +306,7 @@ export async function retireCode(codeId: string): Promise<void> {
  * (empty array) just clears the tags.
  */
 export async function setCodeFacetValues(codeId: string, facetValueIds: string[]): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const del = await cbFrom('cb_code_facet_values').delete().eq('code_id', codeId);
   if (del.error) {
     throw new Error(`setCodeFacetValues (delete) failed: ${del.error.message}`);
@@ -280,11 +340,84 @@ export async function setCodeFacetValues(codeId: string, facetValueIds: string[]
  * decides which); the caller passes the field for the facet's type. A call that
  * passes neither is treated as a clear.
  */
+/**
+ * Rename a code's MNEMONIC (and/or name). The mnemonic is a display handle, not an
+ * identity: every reference is by `cb_codes.id`, so changing it breaks nothing — which
+ * is exactly why it is safe to auto-derive one at capture time and let the researcher
+ * fix it later, when they can see it next to its siblings and notice that the derived
+ * `ANALYSIS-BEHAVIOR` should have been `ANLZ`.
+ *
+ * UNIQUE(codebook_id, mnemonic) is enforced by Postgres; a collision surfaces as a
+ * clear error rather than being silently de-duplicated, because two codes the
+ * researcher WANTED to call the same thing is a naming decision to make, not a
+ * conflict to paper over.
+ */
+export async function renameCode(
+  codeId: string,
+  { mnemonic, name }: { mnemonic?: string; name?: string },
+): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const patch: { mnemonic?: string; name?: string } = {};
+  if (mnemonic !== undefined) {
+    const trimmed = mnemonic.trim();
+    if (!trimmed) throw new Error('renameCode: a mnemonic cannot be blank.');
+    patch.mnemonic = trimmed;
+  }
+  if (name !== undefined) {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('renameCode: a name cannot be blank.');
+    patch.name = trimmed;
+  }
+  if (Object.keys(patch).length === 0) return;
+
+  const res = await cbFrom('cb_codes').update(patch).eq('id', codeId);
+  if (res.error) throw new Error(`renameCode failed: ${res.error.message}`);
+}
+
+/**
+ * ADD one facet value to a code — an ADDITIVE membership.
+ *
+ * Deliberately NOT `setCodeFacetValues`, which is a delete-all-then-insert of a
+ * code's ENTIRE facet-value set across ALL facets. Calling that to tag one value
+ * from the canvas would silently strip the code's values on every OTHER dimension —
+ * catastrophic once facets are the primary mechanism and a code carries a value on
+ * several of them at once.
+ *
+ * Idempotent: the junction PK is (code_id, facet_value_id), so re-adding is a no-op
+ * rather than a duplicate-key error. On a `cardinality: 'single'` facet the CALLER
+ * is responsible for clearing the previous value first — enforcing it here would
+ * require reading the facet on every add, and the canvas already knows the facet.
+ */
+export async function addCodeFacetValue(codeId: string, facetValueId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const res = await cbFrom('cb_code_facet_values').upsert(
+    { code_id: codeId, facet_value_id: facetValueId },
+    { onConflict: 'code_id,facet_value_id', ignoreDuplicates: true },
+  );
+  if (res.error) throw new Error(`addCodeFacetValue failed: ${res.error.message}`);
+}
+
+/**
+ * REMOVE one facet value from a code, leaving its values on every other dimension
+ * intact. Removing a code's LAST value does not delete the code — it returns to the
+ * uncategorized queue, which is the whole point of letting a code exist before it has
+ * been classified.
+ */
+export async function removeCodeFacetValue(codeId: string, facetValueId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const res = await cbFrom('cb_code_facet_values')
+    .delete()
+    .eq('code_id', codeId)
+    .eq('facet_value_id', facetValueId);
+  if (res.error) throw new Error(`removeCodeFacetValue failed: ${res.error.message}`);
+}
+
 export async function setCodeFacetField(
   codeId: string,
   facetId: string,
   { bool_value, text_value }: { bool_value?: boolean | null; text_value?: string | null },
 ): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const trimmedText =
     text_value === undefined || text_value === null ? null : text_value.trim() || null;
   const boolGiven = bool_value !== undefined && bool_value !== null;
@@ -317,6 +450,7 @@ export async function setCodeFacetField(
 
 /** Set (or clear, with null) a code's parent in the code hierarchy. */
 export async function setCodeParent(codeId: string, parentCodeId: string | null): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const { error } = await cbFrom('cb_codes')
     .update({ parent_code_id: parentCodeId })
     .eq('id', codeId);
@@ -332,6 +466,7 @@ export async function setCodeParent(codeId: string, parentCodeId: string | null)
  * (cb_episodes) the code pertains to; they are codebook-scoped, not per-session.
  */
 export async function setCodeEpisodes(codeId: string, episodeIds: string[]): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const del = await cbFrom('cb_code_episodes').delete().eq('code_id', codeId);
   if (del.error) {
     throw new Error(`setCodeEpisodes (delete) failed: ${del.error.message}`);
@@ -385,6 +520,7 @@ export async function createCodesBulk(
   origin: CodeOrigin,
   citationId?: string,
 ): Promise<BulkCreateResult> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   if (!codebookId) throw new Error('createCodesBulk: missing codebook id.');
 
   const existing = await listCodebookMnemonics(codebookId);
@@ -471,6 +607,7 @@ export async function createCodesBulkWithFacets(
   citationId?: string,
   labelWritesByIndex: Record<number, string[]> = {},
 ): Promise<BulkCreateResult> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   if (!codebookId) throw new Error('createCodesBulkWithFacets: missing codebook id.');
 
   const existing = await listCodebookMnemonics(codebookId);

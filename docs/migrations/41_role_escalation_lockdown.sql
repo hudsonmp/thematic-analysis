@@ -1,0 +1,7 @@
+-- 41_role_escalation_lockdown.sql
+-- (Applied 2026-07-15.) First round of the privilege-escalation fix found by the auth
+-- review. Sets cb_profiles.role default to 'viewer' (was 'full' — a fail-open that let
+-- a self-deleted profile inherit editor rights) and adds migration-39-style RESTRICTIVE
+-- editor-gate policies to cb_recording_marks and cb_observations (user-client writes
+-- missed by 39). The `revoke update(role)` here proved INEFFECTIVE (table-level UPDATE
+-- grant overrides a column-level revoke) — superseded by the trigger in migration 42.

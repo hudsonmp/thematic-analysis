@@ -14,6 +14,7 @@ import { listObservationsForSession } from '@/app/actions/observations';
 import { listSessionAssistantChat } from '@/app/actions/chat';
 import { listSessionSpecTimeline } from '@/app/actions/spec';
 import { getAuthUser } from '@/lib/auth/supabase-auth';
+import { getMyRole } from '@/lib/auth/roles';
 import SessionPlayer from '@/components/sessions/SessionPlayer';
 
 /**
@@ -68,6 +69,7 @@ export default async function SessionPage({
     // Non-fatal: derivation failures must not break the page.
   }
 
+  const role = await getMyRole();
   const [session, versions, codebook, sessionEpisodes, observations, user] =
     await Promise.all([
       getSessionCloud(id),
@@ -135,12 +137,15 @@ export default async function SessionPage({
   // marked by hand, so the player needs no preset list.
   const tree = await listCodebookTree(codebook.id);
 
-  // Flatten the codebook tree to the minimal `{id, mnemonic, name}` the code
-  // picker consumes.
+  // Flatten the codebook tree to what the coding popup consumes: the picker's
+  // identity fields PLUS origin/definition — a row click EXPANDS metadata (reading
+  // is not assigning), so the popup must know what the code means, not just its name.
   const codes = tree.codes.map((c) => ({
     id: c.id,
     mnemonic: c.mnemonic,
     name: c.name,
+    origin: c.origin,
+    definition: c.current?.definition ?? null,
   }));
 
   // Effective recording anchor (Task 5) — MUST match materializeAutoEpisodes so
@@ -160,7 +165,7 @@ export default async function SessionPage({
       pidLabel={session.pidLabel}
       segments={session.segments}
       durationMs={session.durationMs ?? 0}
-      codingEnabled
+      codingEnabled={role !== 'viewer'}
       versionId={session.versionId}
       versions={versions}
       codes={codes}
@@ -173,8 +178,6 @@ export default async function SessionPage({
       specTimeline={specTimeline}
       recordingStartedAt={effectiveAnchor}
       codebookId={codebook.id}
-      facets={tree.facets}
-      labels={tree.labels}
       collection={session.collection ?? null}
       compareHref={`/sessions/${session.id}/compare`}
     />

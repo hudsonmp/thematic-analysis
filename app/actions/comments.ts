@@ -2,6 +2,7 @@
 
 import { cbFrom } from '@/lib/supabase/guard';
 import type { Tables } from '@/lib/types/cb-db';
+import { requireEditor } from '@/lib/auth/roles';
 
 type CoderComment = Tables<'cb_coder_comments'>;
 
@@ -30,6 +31,7 @@ export async function addComment({
   author: string;
   body: string;
 }): Promise<CoderComment> {
+  await requireEditor(); // viewers are read-only
   if (typeof author !== 'string' || author.trim() === '') {
     throw new Error('addComment: author is required (coder name/initials supplied by UI).');
   }
@@ -67,12 +69,14 @@ export async function listComments(codeId: string): Promise<CoderComment[]> {
 
 /** Flip a comment's resolved flag (resolve / re-open). */
 export async function setCommentResolved(commentId: string, resolved: boolean): Promise<void> {
+  await requireEditor(); // viewers are read-only
   const { error } = await cbFrom('cb_coder_comments').update({ resolved }).eq('id', commentId);
   if (error) throw new Error(`setCommentResolved failed: ${error.message}`);
 }
 
 /** Delete a comment outright. */
 export async function deleteComment(commentId: string): Promise<void> {
+  await requireEditor(); // viewers are read-only
   const { error } = await cbFrom('cb_coder_comments').delete().eq('id', commentId);
   if (error) throw new Error(`deleteComment failed: ${error.message}`);
 }

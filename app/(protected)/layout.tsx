@@ -2,6 +2,7 @@ import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getOrCreateCodebook, getShownStudy } from '@/app/actions/codebook';
 import CodebookNav from './CodebookNav';
+import GuidePrompt from './GuidePrompt';
 
 export default async function ProtectedLayout({ children }: { children: React.ReactNode }) {
   // Supabase Auth is the real gate. `requireAuthUser()` reads the cookie-bound
@@ -14,10 +15,11 @@ export default async function ProtectedLayout({ children }: { children: React.Re
   const sb = await createUserServerClient();
   const { data: profile } = await sb
     .from('cb_profiles')
-    .select('display_name')
+    .select('display_name, role')
     .eq('user_id', user.id)
     .maybeSingle();
   const displayName = profile?.display_name ?? user.email ?? 'Researcher';
+  const isAdmin = profile?.role === 'admin';
 
   // Names for the nav chrome. Fetched here (a Server Component) and passed as
   // props into the Client nav. Tolerant of a missing/unbound study so the shell
@@ -42,7 +44,9 @@ export default async function ProtectedLayout({ children }: { children: React.Re
         studyName={studyName}
         codebookName={codebookName}
         displayName={displayName}
+        isAdmin={isAdmin}
       />
+      <GuidePrompt />
       {children}
     </div>
   );
