@@ -940,6 +940,27 @@ export async function resolveAnnotationComment(
 }
 
 /**
+ * Edit a comment's body in place. RLS (`using (author_id = auth.uid())` +
+ * `with check (author_id = auth.uid())`) admits only the author's OWN comment —
+ * an edit of another coder's comment matches zero rows (silent no-op). `body`
+ * must be a non-empty string; an empty edit is the caller's signal to DELETE the
+ * note instead (Docs-like), which the client handles by calling
+ * `deleteAnnotationComment` rather than committing an empty body here.
+ */
+export async function editAnnotationComment(id: string, body: string): Promise<void> {
+  await requireAuthUser();
+  if (typeof body !== 'string' || body.trim() === '') {
+    throw new Error('editAnnotationComment: body must be a non-empty string.');
+  }
+  const sb = await createUserServerClient();
+  const { error } = await sb
+    .from('cb_annotation_comments')
+    .update({ body: body.trim() })
+    .eq('id', id);
+  if (error) throw new Error(`editAnnotationComment failed: ${error.message}`);
+}
+
+/**
  * Delete a comment by id. RLS (`using (author_id = auth.uid())`) admits only the
  * author's OWN comment — a delete of another coder's comment matches zero rows
  * (silent no-op, not an error). Does NOT delete the anchor annotation: a

@@ -16,11 +16,10 @@ import {
   removeCodeFromAnnotation,
   updateAnnotationAnchor,
   deleteAnnotation,
-  setAnnotationKind,
   listMyAnnotationsForVersion,
   addAnnotationComment,
   listAnnotationComments,
-  resolveAnnotationComment,
+  editAnnotationComment,
   deleteAnnotationComment,
   type MyAnnotationView,
   type AnnotationCommentView,
@@ -108,22 +107,6 @@ function isMeaningfulObservation(o: {
   // exclude it here even though it carries a non-empty body.
   if (typeof o.retroQuestionScenarioIdx === 'number') return false;
   return !!o.flagLabel || !!(o.body && o.body.trim()) || o.isQuote;
-}
-
-/**
- * Format a comment's ISO `created_at` as a short, locale-aware `MMM d, HH:mm`.
- * Falls back to the raw string if it can't be parsed (defensive — the value
- * comes from the DB, but a bad value should never throw in render).
- */
-function formatCommentTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 }
 
 // Cue resolution lives in lib/transcript/active.ts as pure, unit-tested helpers:
@@ -451,7 +434,6 @@ export default function SessionPlayer({
   // Whether the new-comment COMPOSER card is open (⌘⌥M on a fresh selection).
   const [composerOpen, setComposerOpen] = useState(false);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const [commentDraft, setCommentDraft] = useState('');
   const [selectionCommentDraft, setSelectionCommentDraft] = useState('');
   const [commentBusy, setCommentBusy] = useState(false);
   const [commentRowBusyId, setCommentRowBusyId] = useState<string | null>(null);
@@ -950,7 +932,6 @@ export default function SessionPlayer({
     async (annotationId: string) => {
       setComposerOpen(false);
       setOpenCommentAnnId(annotationId);
-      setCommentDraft('');
       setCommentError(null);
       try {
         const grouped = await listAnnotationComments([annotationId]);
@@ -962,25 +943,31 @@ export default function SessionPlayer({
     [],
   );
 
-  const handleAddComment = useCallback(async () => {
-    if (!openCommentAnnId || commentDraft.trim() === '') return;
-    setCommentBusy(true);
-    setCommentError(null);
-    try {
-      await addAnnotationComment(openCommentAnnId, commentDraft.trim());
-      setCommentDraft('');
-      const grouped = await listAnnotationComments([openCommentAnnId]);
-      setComments((prev) => ({
-        ...prev,
-        [openCommentAnnId]: grouped[openCommentAnnId] ?? [],
-      }));
-      await afterAnnotationMutation();
-    } catch (e) {
-      setCommentError(e instanceof Error ? e.message : 'Failed to add comment.');
-    } finally {
-      setCommentBusy(false);
-    }
-  }, [openCommentAnnId, commentDraft, afterAnnotationMutation]);
+  // Add a note from the inline "Add a note…" editor (uncontrolled — the text is
+  // read from the DOM at commit, never round-tripped through React state, so the
+  // caret is never clobbered mid-edit). Mirrors handleAddComment but takes the
+  // committed text directly instead of reading the (now removed) commentDraft.
+  const handleAddNote = useCallback(
+    async (text: string) => {
+      if (!openCommentAnnId || text.trim() === '') return;
+      setCommentBusy(true);
+      setCommentError(null);
+      try {
+        await addAnnotationComment(openCommentAnnId, text.trim());
+        const grouped = await listAnnotationComments([openCommentAnnId]);
+        setComments((prev) => ({
+          ...prev,
+          [openCommentAnnId]: grouped[openCommentAnnId] ?? [],
+        }));
+        await afterAnnotationMutation();
+      } catch (e) {
+        setCommentError(e instanceof Error ? e.message : 'Failed to add note.');
+      } finally {
+        setCommentBusy(false);
+      }
+    },
+    [openCommentAnnId, afterAnnotationMutation],
+  );
 
   // Comment on a FRESH selection: create a kind:'quote' anchor, post the first
   // comment, then open its thread card. (Google-Docs comment-on-selection.)
@@ -1006,6 +993,9 @@ export default function SessionPlayer({
       });
       await addAnnotationComment(ann.id, selectionCommentDraft.trim());
       setSelectionCommentDraft('');
+      // The composer textarea is UNCONTROLLED (no value prop) to keep the caret
+      // stable while typing; clear its DOM value imperatively on submit.
+      if (composerTextareaRef.current) composerTextareaRef.current.value = '';
       clearSelection();
       setComposerOpen(false);
       await afterAnnotationMutation();
@@ -1016,76 +1006,6 @@ export default function SessionPlayer({
       setCommentBusy(false);
     }
   }, [pending, versionId, selectionCommentDraft, id, clearSelection, afterAnnotationMutation, openCommentThread]);
-
-  // ⌘⇧J — mark as IMPORTANT QUOTE. On an open thread, flip its anchor to
-  // kind:'quote'. On a fresh selection (composer), create a quote anchor straight
-  // away (posting the draft as the first comment if one is typed).
-  const handleMarkQuote = useCallback(async () => {
-    setCommentError(null);
-    if (openCommentAnnId) {
-      setCommentBusy(true);
-      try {
-        await setAnnotationKind(openCommentAnnId, 'quote');
-        await afterAnnotationMutation();
-      } catch (e) {
-        setCommentError(e instanceof Error ? e.message : 'Failed to mark quote.');
-      } finally {
-        setCommentBusy(false);
-      }
-      return;
-    }
-    if (pending && versionId) {
-      if (selectionCommentDraft.trim() !== '') {
-        await handleCommentOnSelection();
-        return;
-      }
-      setCommentBusy(true);
-      try {
-        await addAnnotation({
-          sessionId: id,
-          versionId,
-          segmentId: pending.startSeg.id,
-          endSegmentId: pending.endSeg.id,
-          charStart: pending.startChar,
-          charEnd: pending.endChar,
-          quoteText: pending.quoteText,
-          prefix: pending.prefix,
-          suffix: pending.suffix,
-          tStartMs: pending.startSeg.startMs,
-          tEndMs: pending.endSeg.endMs,
-          kind: 'quote',
-          codeIds: [],
-        });
-        clearSelection();
-        await afterAnnotationMutation();
-      } catch (e) {
-        setCommentError(e instanceof Error ? e.message : 'Failed to mark quote.');
-      } finally {
-        setCommentBusy(false);
-      }
-    }
-  }, [openCommentAnnId, pending, versionId, selectionCommentDraft, id, clearSelection, afterAnnotationMutation, handleCommentOnSelection]);
-
-  const handleResolveComment = useCallback(
-    async (commentId: string, resolved: boolean) => {
-      if (!openCommentAnnId) return;
-      setCommentRowBusyId(commentId);
-      setCommentError(null);
-      try {
-        await resolveAnnotationComment(commentId, resolved);
-        const grouped = await listAnnotationComments([openCommentAnnId]);
-        setComments((prev) => ({
-          ...prev,
-          [openCommentAnnId]: grouped[openCommentAnnId] ?? [],
-        }));
-      } catch (e) {
-        setCommentError(e instanceof Error ? e.message : 'Failed to update comment.');
-      } finally {
-        setCommentRowBusyId(null);
-      }
-    },
-    [openCommentAnnId],
-  );
 
   const handleDeleteComment = useCallback(
     async (commentId: string) => {
@@ -1102,6 +1022,37 @@ export default function SessionPlayer({
         await afterAnnotationMutation();
       } catch (e) {
         setCommentError(e instanceof Error ? e.message : 'Failed to delete comment.');
+      } finally {
+        setCommentRowBusyId(null);
+      }
+    },
+    [openCommentAnnId, afterAnnotationMutation],
+  );
+
+  // Edit a note's body in place (inline-edit commit). An empty commit DELETES the
+  // note (Docs-like) rather than persisting a blank. A no-op edit (unchanged body)
+  // short-circuits so we don't spend a round-trip on every blur.
+  const handleEditComment = useCallback(
+    async (commentId: string, nextBody: string, prevBody: string) => {
+      if (!openCommentAnnId) return;
+      const trimmed = nextBody.trim();
+      if (trimmed === prevBody.trim()) return; // unchanged → nothing to do
+      setCommentRowBusyId(commentId);
+      setCommentError(null);
+      try {
+        if (trimmed === '') {
+          await deleteAnnotationComment(commentId);
+        } else {
+          await editAnnotationComment(commentId, trimmed);
+        }
+        const grouped = await listAnnotationComments([openCommentAnnId]);
+        setComments((prev) => ({
+          ...prev,
+          [openCommentAnnId]: grouped[openCommentAnnId] ?? [],
+        }));
+        await afterAnnotationMutation();
+      } catch (e) {
+        setCommentError(e instanceof Error ? e.message : 'Failed to edit comment.');
       } finally {
         setCommentRowBusyId(null);
       }
@@ -1501,7 +1452,6 @@ export default function SessionPlayer({
     setComposerOpen(false);
     setOpenCommentAnnId(null);
     setCommentError(null);
-    setCommentDraft('');
     setSelectionCommentDraft('');
     clearSelection();
   }, [clearSelection]);
@@ -1549,7 +1499,6 @@ export default function SessionPlayer({
                 openCommentAnn={ann}
                 openThread={thread}
                 commentError={commentError}
-                commentDraft={commentDraft}
                 selectionCommentDraft={selectionCommentDraft}
                 commentBusy={commentBusy}
                 commentRowBusyId={commentRowBusyId}
@@ -1557,15 +1506,12 @@ export default function SessionPlayer({
                 composerTextareaRef={composerTextareaRef}
                 busyId={busyId}
                 formatTime={formatTime}
-                formatCommentTime={formatCommentTime}
                 onClose={closeCard}
                 onSeek={seekTo}
-                onChangeCommentDraft={setCommentDraft}
                 onChangeSelectionDraft={setSelectionCommentDraft}
-                onAddComment={handleAddComment}
                 onCommentOnSelection={handleCommentOnSelection}
-                onMarkQuote={handleMarkQuote}
-                onResolveComment={handleResolveComment}
+                onAddNote={handleAddNote}
+                onEditComment={handleEditComment}
                 onDeleteComment={handleDeleteComment}
                 onDeleteAnnotation={handleDeleteAnnotation}
               />
@@ -1590,7 +1536,6 @@ export default function SessionPlayer({
               openCommentAnn={null}
               openThread={[]}
               commentError={commentError}
-              commentDraft={commentDraft}
               selectionCommentDraft={selectionCommentDraft}
               commentBusy={commentBusy}
               commentRowBusyId={commentRowBusyId}
@@ -1598,15 +1543,12 @@ export default function SessionPlayer({
               composerTextareaRef={composerTextareaRef}
               busyId={busyId}
               formatTime={formatTime}
-              formatCommentTime={formatCommentTime}
               onClose={closeCard}
               onSeek={seekTo}
-              onChangeCommentDraft={setCommentDraft}
               onChangeSelectionDraft={setSelectionCommentDraft}
-              onAddComment={handleAddComment}
               onCommentOnSelection={handleCommentOnSelection}
-              onMarkQuote={handleMarkQuote}
-              onResolveComment={handleResolveComment}
+              onAddNote={handleAddNote}
+              onEditComment={handleEditComment}
               onDeleteComment={handleDeleteComment}
               onDeleteAnnotation={handleDeleteAnnotation}
             />
@@ -1733,7 +1675,6 @@ export default function SessionPlayer({
       openCommentAnnId,
       comments,
       commentError,
-      commentDraft,
       selectionCommentDraft,
       commentBusy,
       commentRowBusyId,
@@ -1742,10 +1683,9 @@ export default function SessionPlayer({
       pending,
       closeCard,
       seekTo,
-      handleAddComment,
       handleCommentOnSelection,
-      handleMarkQuote,
-      handleResolveComment,
+      handleAddNote,
+      handleEditComment,
       handleDeleteComment,
       handleDeleteAnnotation,
       openThreadForAnnotation,
@@ -2591,7 +2531,6 @@ function CommentCard({
   openCommentAnn,
   openThread,
   commentError,
-  commentDraft,
   selectionCommentDraft,
   commentBusy,
   commentRowBusyId,
@@ -2599,15 +2538,12 @@ function CommentCard({
   composerTextareaRef,
   busyId,
   formatTime: fmtTime,
-  formatCommentTime: fmtCommentTime,
   onClose,
   onSeek,
-  onChangeCommentDraft,
   onChangeSelectionDraft,
-  onAddComment,
   onCommentOnSelection,
-  onMarkQuote,
-  onResolveComment,
+  onAddNote,
+  onEditComment,
   onDeleteComment,
   onDeleteAnnotation,
 }: {
@@ -2616,7 +2552,6 @@ function CommentCard({
   openCommentAnn: MyAnnotationView | null;
   openThread: AnnotationCommentView[];
   commentError: string | null;
-  commentDraft: string;
   selectionCommentDraft: string;
   commentBusy: boolean;
   commentRowBusyId: string | null;
@@ -2624,15 +2559,12 @@ function CommentCard({
   composerTextareaRef: React.RefObject<HTMLTextAreaElement | null>;
   busyId: string | null;
   formatTime: (ms: number) => string;
-  formatCommentTime: (iso: string) => string;
   onClose: () => void;
   onSeek: (ms: number) => void;
-  onChangeCommentDraft: (v: string) => void;
   onChangeSelectionDraft: (v: string) => void;
-  onAddComment: () => void;
   onCommentOnSelection: () => void;
-  onMarkQuote: () => void;
-  onResolveComment: (id: string, resolved: boolean) => void;
+  onAddNote: (text: string) => void;
+  onEditComment: (id: string, next: string, prev: string) => void;
   onDeleteComment: (id: string) => void;
   onDeleteAnnotation: (id: string) => void;
 }) {
@@ -2667,9 +2599,14 @@ function CommentCard({
               {commentError}
             </p>
           )}
+          {/* UNCONTROLLED (defaultValue, no value prop): the DOM owns the text so
+              React never rewrites it mid-edit and the caret is never clobbered.
+              onChange still mirrors to state so the Comment button's enablement
+              tracks emptiness. Cleared imperatively via composerTextareaRef on
+              submit (see handleCommentOnSelection). */}
           <textarea
             ref={composerTextareaRef}
-            value={selectionCommentDraft}
+            defaultValue={selectionCommentDraft}
             onChange={(e) => onChangeSelectionDraft(e.target.value)}
             onKeyDown={(e) => {
               // Enter submits; Shift+Enter inserts a newline. Guard empty/
@@ -2683,28 +2620,19 @@ function CommentCard({
                 if (canCommentOnSelection) onCommentOnSelection();
               }
             }}
-            placeholder="Comment… (Enter to send · ⇧⏎ newline)"
+            placeholder="Note… (Enter to add · ⇧⏎ newline)"
             rows={2}
             className="mb-2 w-full resize-none rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
-            aria-label="Comment on selection"
+            aria-label="Note on selection"
           />
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={onMarkQuote}
-              disabled={commentBusy}
-              title="Mark this selection as an important quote (⌘⇧J)"
-              className="rounded border border-amber-500/60 px-2.5 py-1 text-xs text-amber-700 hover:bg-amber-500/10 disabled:opacity-40 dark:text-amber-300"
-            >
-              Mark quote ❝
-            </button>
+          <div className="flex items-center justify-end">
             <button
               type="button"
               onClick={onCommentOnSelection}
               disabled={!canCommentOnSelection}
               className="rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
             >
-              {commentBusy ? 'Commenting…' : 'Comment'}
+              {commentBusy ? 'Adding…' : 'Add note'}
             </button>
           </div>
         </>
@@ -2738,102 +2666,117 @@ function CommentCard({
             </p>
           )}
 
-          {openThread.length === 0 ? (
-            <p className="mb-2 text-sm text-foreground/50">No comments yet. Start the thread below.</p>
-          ) : (
-            <ul className="mb-1.5 divide-y divide-foreground/10">
-              {openThread.map((c) => (
-                <li key={c.id} className="py-1 text-xs">
-                  <div className="flex items-baseline gap-2">
-                    <span className="font-semibold">{c.authorName}</span>
-                    <span className="font-mono text-xs text-foreground/40">
-                      {fmtCommentTime(c.createdAt)}
-                    </span>
-                    {c.resolved && (
-                      <span className="rounded bg-emerald-500/15 px-1 text-xs text-emerald-700 dark:text-emerald-300">
-                        resolved
-                      </span>
-                    )}
-                    <span className="ml-auto flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => onResolveComment(c.id, !c.resolved)}
-                        disabled={commentRowBusyId === c.id}
-                        className="text-xs text-foreground/50 underline hover:text-foreground disabled:opacity-40"
-                      >
-                        {c.resolved ? 'Re-open' : 'Resolve'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onDeleteComment(c.id)}
-                        disabled={commentRowBusyId === c.id}
-                        aria-label="Delete comment"
-                        className="text-foreground/40 hover:text-red-500 disabled:opacity-40"
-                      >
-                        {'✕'}
-                      </button>
-                    </span>
-                  </div>
-                  <p className={`mt-0.5 whitespace-pre-wrap text-foreground/80 ${c.resolved ? 'line-through opacity-60' : ''}`}>
-                    {c.body}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <div className="flex items-start gap-2">
-            <textarea
-              value={commentDraft}
-              onChange={(e) => onChangeCommentDraft(e.target.value)}
-              onKeyDown={(e) => {
-                // Enter submits; Shift+Enter inserts a newline. Guard empty/
-                // whitespace and IME composition.
-                if (
-                  e.key === 'Enter' &&
-                  !e.shiftKey &&
-                  !e.nativeEvent.isComposing
-                ) {
-                  e.preventDefault();
-                  if (commentDraft.trim() !== '' && !commentBusy) onAddComment();
-                }
-              }}
-              placeholder="Add a comment… (Enter to send · ⇧⏎ newline)"
-              rows={2}
-              className="flex-1 resize-none rounded border border-foreground/20 bg-transparent px-2 py-1 text-xs"
-              aria-label="Add a comment"
-            />
-            <button
-              type="button"
-              onClick={onAddComment}
-              disabled={commentDraft.trim() === '' || commentBusy}
-              className="rounded bg-sky-600 px-3 py-1 text-sm text-white disabled:opacity-40"
-            >
-              {commentBusy ? 'Saving…' : 'Comment'}
-            </button>
+          {/* Notes: each a slim gold-border line, click the text to edit inline
+              (uncontrolled → caret-safe), ⌘/Ctrl+Delete to remove. No resolve, no
+              timestamps, no thread chrome. Keyed on id+body so a server-side edit
+              remounts with fresh text rather than React rewriting the node. */}
+          <div className="mb-1 space-y-1">
+            {openThread.map((c) => (
+              <EditableNote
+                key={`${c.id}:${c.body}`}
+                author={c.authorName}
+                initialText={c.body}
+                busy={commentRowBusyId === c.id}
+                onCommit={(text) => onEditComment(c.id, text, c.body)}
+                onDelete={() => onDeleteComment(c.id)}
+              />
+            ))}
           </div>
 
-          <div className="mt-2 flex items-center justify-between gap-2 border-t border-foreground/10 pt-2">
-            <button
-              type="button"
-              onClick={onMarkQuote}
-              disabled={commentBusy || openCommentAnn.kind === 'quote'}
-              title="Mark this excerpt as an important quote (⌘⇧J)"
-              className="rounded border border-amber-500/60 px-2 py-1 text-xs text-amber-700 hover:bg-amber-500/10 disabled:opacity-40 dark:text-amber-300"
-            >
-              {openCommentAnn.kind === 'quote' ? 'Quote ❝' : 'Mark quote ❝'}
-            </button>
+          {/* Add a note — the same inline editor, empty. Enter commits; it remounts
+              empty via its key when the reloaded thread grows. */}
+          <EditableNote
+            key={`add:${openCommentAnn.id}:${openThread.length}`}
+            author={null}
+            initialText=""
+            placeholder="Add a note…"
+            busy={commentBusy}
+            onCommit={(text) => onAddNote(text)}
+            onDelete={() => {}}
+          />
+
+          <div className="mt-1.5 flex justify-end">
             <button
               type="button"
               onClick={() => onDeleteAnnotation(openCommentAnn.id)}
               disabled={busyId === openCommentAnn.id}
-              className="text-xs text-foreground/40 underline hover:text-red-500 disabled:opacity-40"
+              className="text-[0.7rem] text-foreground/30 underline hover:text-red-500 disabled:opacity-40"
             >
               Delete excerpt
             </button>
           </div>
         </>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * A single comment rendered as a slim, inline-editable NOTE: a gold left-border
+ * line showing the author and the body. Clicking the body edits it in place;
+ * Enter commits, Shift+Enter is a newline, ⌘/Ctrl+Delete (or Backspace) removes it.
+ *
+ * UNCONTROLLED on purpose — the SAME pattern as `InlineCueEditor`. The initial
+ * text is set ONCE as children; the browser owns the DOM text during editing and
+ * we read `textContent` on commit. React never rewrites the node mid-edit, so the
+ * caret is never clobbered — this is the fix for the reversed-typing ("elloH")
+ * bug the old controlled `<textarea value={draft}>` had. The caller KEYS this on
+ * `id:body`, so an external change (another coder's edit, a reload) remounts it
+ * with fresh text rather than fighting the live edit.
+ *
+ * Enter both commits AND blurs; `skipBlurRef` stops the ensuing blur from firing
+ * a second (duplicate) commit.
+ */
+function EditableNote({
+  author,
+  initialText,
+  placeholder,
+  busy,
+  onCommit,
+  onDelete,
+}: {
+  author: string | null;
+  initialText: string;
+  placeholder?: string;
+  busy: boolean;
+  onCommit: (text: string) => void;
+  onDelete: () => void;
+}) {
+  const skipBlurRef = useRef(false);
+  return (
+    <div className={`border-l-2 border-amber-400 pl-2 ${busy ? 'opacity-50' : ''}`}>
+      {author && <div className="text-[0.7rem] text-foreground/40">{author}</div>}
+      <div
+        contentEditable={!busy}
+        suppressContentEditableWarning
+        role="textbox"
+        aria-label={author ? `Edit note by ${author}` : 'Add a note'}
+        data-placeholder={placeholder ?? ''}
+        onBlur={(e) => {
+          if (skipBlurRef.current) {
+            skipBlurRef.current = false;
+            return;
+          }
+          onCommit(e.currentTarget.textContent ?? '');
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            skipBlurRef.current = true;
+            onCommit(e.currentTarget.textContent ?? '');
+            e.currentTarget.blur();
+          } else if (
+            (e.metaKey || e.ctrlKey) &&
+            (e.key === 'Backspace' || e.key === 'Delete')
+          ) {
+            e.preventDefault();
+            onDelete();
+          }
+        }}
+        className="min-h-[1.2rem] whitespace-pre-wrap rounded-sm px-0.5 text-sm text-foreground/90 outline-none empty:before:text-foreground/30 empty:before:content-[attr(data-placeholder)] focus:bg-amber-500/5"
+      >
+        {initialText}
+      </div>
     </div>
   );
 }
