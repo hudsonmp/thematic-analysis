@@ -161,7 +161,7 @@ export async function addAnnotation({
 /**
  * List the signed-in coder's OWN annotations for a session (own-coding
  * isolation): `cb_annotations where session_id = ? and coder_id = auth.uid()`,
- * each joined to its `cb_annotation_codes → cb_codes(mnemonic, name)`. Ordered by
+ * each joined to its `cb_annotation_codes → cb_codes(mnemonic)`. Ordered by
  * `t_start_ms` so the rail reads in playback order.
  *
  * The `coder_id = auth.uid()` filter is explicit AND redundant-with-RLS for
@@ -176,7 +176,7 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
   const { data, error } = await sb
     .from('cb_annotations')
     .select(
-      'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name)), cb_annotation_comments(id)',
+      'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
     )
     .eq('session_id', sessionId)
     .eq('coder_id', user.id)
@@ -198,7 +198,7 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
     created_at: string;
     cb_annotation_codes: Array<{
       code_id: string;
-      cb_codes: { id: string; mnemonic: string; name: string } | null;
+      cb_codes: { id: string; mnemonic: string } | null;
     }> | null;
     cb_annotation_comments: Array<{ id: string }> | null;
   }>;
@@ -246,7 +246,7 @@ export async function listMyAnnotationsForVersion(
   const { data, error } = await sb
     .from('cb_annotations')
     .select(
-      'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic, name)), cb_annotation_comments(id)',
+      'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
     )
     .eq('session_id', sessionId)
     .eq('version_id', versionId)
@@ -271,7 +271,7 @@ export async function listMyAnnotationsForVersion(
     created_at: string;
     cb_annotation_codes: Array<{
       code_id: string;
-      cb_codes: { id: string; mnemonic: string; name: string } | null;
+      cb_codes: { id: string; mnemonic: string } | null;
     }> | null;
     cb_annotation_comments: Array<{ id: string }> | null;
   }>;
@@ -484,7 +484,7 @@ export type CompareCoder = { coderId: string; coderName: string };
  *
  * Two reads, joined in JS:
  *   1. `cb_annotations where session_id = ?` (every coder — NO coder_id filter),
- *      joined to `cb_annotation_codes → cb_codes(id, mnemonic, name)` and to the
+ *      joined to `cb_annotation_codes → cb_codes(id, mnemonic)` and to the
  *      anchor segment's `cb_segments(ordinal)` so we can order by transcript
  *      position. We also pull the segment ordinal to sort by.
  *   2. `cb_profiles(user_id, display_name)` for the distinct coder_ids. `coder_id`
@@ -506,7 +506,7 @@ export async function listAllAnnotations(
   const { data, error } = await sb
     .from('cb_annotations')
     .select(
-      'id, coder_id, segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments(ordinal), cb_annotation_codes(code_id, cb_codes(id, mnemonic, name))',
+      'id, coder_id, segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments(ordinal), cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
     )
     .eq('session_id', sessionId);
   if (error) {
@@ -524,7 +524,7 @@ export async function listAllAnnotations(
     cb_segments: { ordinal: number } | null;
     cb_annotation_codes: Array<{
       code_id: string;
-      cb_codes: { id: string; mnemonic: string; name: string } | null;
+      cb_codes: { id: string; mnemonic: string } | null;
     }> | null;
   }>;
 
