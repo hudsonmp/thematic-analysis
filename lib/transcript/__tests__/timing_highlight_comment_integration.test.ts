@@ -305,46 +305,58 @@ describe('Property 5: rail eligibility and turn bucketing', () => {
   const turnIndexBySegIdx = new Map<number, number>();
   turns.forEach((t, ti) => t.segIndices.forEach((si) => turnIndexBySegIdx.set(si, ti)));
 
-  it('a quote with no comments and a commented code are eligible; a bare code is not', () => {
-    // (annotationHasRailCard is exercised via cardsByTurn here: a bare code drops out.)
+  it('only annotations with notes are eligible; bare quotes and bare codes are not', () => {
+    // (annotationHasRailCard is exercised via cardsByTurn here.) Marginalia ARE
+    // the notes: a bare quote's yellow span is its presence, so it renders no
+    // margin entry — same as a bare code anchor (whose brace is its rendering).
     const anns: RailAnnotation[] = [
-      { id: 'q-bare-quote', segmentId: ordered[1].id, kind: 'quote' }, // eligible (quote)
-      { id: 'c-commented', segmentId: ordered[2].id, kind: 'code' }, // eligible (commented)
-      { id: 'c-bare', segmentId: ordered[3].id, kind: 'code' }, // NOT eligible
+      { id: 'q-bare-quote', segmentId: ordered[1].id }, // NOT eligible (no notes)
+      { id: 'c-commented', segmentId: ordered[2].id }, // eligible (has a note)
+      { id: 'c-bare', segmentId: ordered[3].id }, // NOT eligible
     ];
     const map = cardsByTurn(anns, new Set(['c-commented']), segIndexById, turnIndexBySegIdx);
     const allIds = [...map.values()].flat().map((c) => c.annId);
-    expect(allIds).toContain('q-bare-quote');
+    expect(allIds).not.toContain('q-bare-quote');
     expect(allIds).toContain('c-commented');
     expect(allIds).not.toContain('c-bare');
   });
 
   it('buckets each eligible annotation into the turn of its START segment', () => {
     const anns: RailAnnotation[] = [
-      { id: 'on-blob', segmentId: ordered[0].id, kind: 'quote' }, // David turn 0
-      { id: 'on-phrase', segmentId: ordered[5].id, kind: 'quote' }, // Hudson turn 1
-      { id: 'on-tail', segmentId: ordered[13].id, kind: 'quote' }, // David turn 2
+      { id: 'on-blob', segmentId: ordered[0].id }, // David turn 0
+      { id: 'on-phrase', segmentId: ordered[5].id }, // Hudson turn 1
+      { id: 'on-tail', segmentId: ordered[13].id }, // David turn 2
     ];
-    const map = cardsByTurn(anns, new Set(), segIndexById, turnIndexBySegIdx);
+    const map = cardsByTurn(
+      anns,
+      new Set(['on-blob', 'on-phrase', 'on-tail']),
+      segIndexById,
+      turnIndexBySegIdx,
+    );
     expect(map.get(0)?.map((c) => c.annId)).toEqual(['on-blob']);
     expect(map.get(1)?.map((c) => c.annId)).toEqual(['on-phrase']);
     expect(map.get(2)?.map((c) => c.annId)).toEqual(['on-tail']);
   });
 
   it('drops an annotation whose start segment is not in the active version', () => {
-    const anns: RailAnnotation[] = [{ id: 'stale', segmentId: 'seg-999', kind: 'quote' }];
-    const map = cardsByTurn(anns, new Set(), segIndexById, turnIndexBySegIdx);
+    const anns: RailAnnotation[] = [{ id: 'stale', segmentId: 'seg-999' }];
+    const map = cardsByTurn(anns, new Set(['stale']), segIndexById, turnIndexBySegIdx);
     expect(map.size).toBe(0);
   });
 
   it('preserves input (time) order within a turn', () => {
-    // Three quotes all on Hudson phrases (turn 1), in playback/time order.
+    // Three noted excerpts all on Hudson phrases (turn 1), in playback/time order.
     const anns: RailAnnotation[] = [
-      { id: 'first', segmentId: ordered[1].id, kind: 'quote' },
-      { id: 'second', segmentId: ordered[6].id, kind: 'quote' },
-      { id: 'third', segmentId: ordered[11].id, kind: 'quote' },
+      { id: 'first', segmentId: ordered[1].id },
+      { id: 'second', segmentId: ordered[6].id },
+      { id: 'third', segmentId: ordered[11].id },
     ];
-    const map = cardsByTurn(anns, new Set(), segIndexById, turnIndexBySegIdx);
+    const map = cardsByTurn(
+      anns,
+      new Set(['first', 'second', 'third']),
+      segIndexById,
+      turnIndexBySegIdx,
+    );
     expect(map.get(1)?.map((c) => c.annId)).toEqual(['first', 'second', 'third']);
   });
 });
@@ -380,7 +392,7 @@ describe('Property 6: end-to-end — highlight cue, anchor index, and card turn 
     const orderedIdx = segIndexById.get(phrase.id)!;
 
     // (a) The annotation's start segment id resolves to the phrase's ordered index.
-    const ann: RailAnnotation = { id: 'q-consistent', segmentId: phrase.id, kind: 'quote' };
+    const ann: RailAnnotation = { id: 'q-consistent', segmentId: phrase.id };
     const resolvedIdx = segIndexById.get(ann.segmentId);
     expect(resolvedIdx).toBe(orderedIdx);
 
@@ -395,11 +407,11 @@ describe('Property 6: end-to-end — highlight cue, anchor index, and card turn 
     // The flag-mapping path (nearestCueIndex) lands on the same cue at that time.
     expect(nearestCueIndex(ordered, midMs)).toBe(orderedIdx);
 
-    // (c) The rail card buckets into the Hudson-monologue turn — the same turn
-    //     turnIndexBySegIdx assigns to that ordered index.
+    // (c) The rail card (the excerpt carries a note) buckets into the Hudson-
+    //     monologue turn — the same turn turnIndexBySegIdx assigns to that index.
     const expectedTurnIdx = turnIndexBySegIdx.get(orderedIdx)!;
     expect(turns[expectedTurnIdx].speaker).toBe('Hudson');
-    const map = cardsByTurn([ann], new Set(), segIndexById, turnIndexBySegIdx);
+    const map = cardsByTurn([ann], new Set(['q-consistent']), segIndexById, turnIndexBySegIdx);
     expect(map.get(expectedTurnIdx)?.map((c) => c.annId)).toEqual(['q-consistent']);
     // And it appears in NO other turn.
     for (const [ti, cards] of map) {
@@ -430,8 +442,8 @@ describe('Property 6: end-to-end — highlight cue, anchor index, and card turn 
     expect(endIdx).toBeGreaterThan(startIdx); // ordered range is well-formed
 
     // The rail card anchors to the START segment id → start index → its turn.
-    const ann: RailAnnotation = { id: 'q-multi', segmentId: startSeg.id, kind: 'quote' };
-    const map = cardsByTurn([ann], new Set(), segIndexById, turnIndexBySegIdx);
+    const ann: RailAnnotation = { id: 'q-multi', segmentId: startSeg.id };
+    const map = cardsByTurn([ann], new Set(['q-multi']), segIndexById, turnIndexBySegIdx);
     const cardTurn = turnIndexBySegIdx.get(startIdx)!;
     expect(map.get(cardTurn)?.map((c) => c.annId)).toEqual(['q-multi']);
     // The whole multi-cue span lives in ONE turn (the Hudson monologue), so the
