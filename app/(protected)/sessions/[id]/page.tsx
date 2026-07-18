@@ -179,6 +179,7 @@ export default async function SessionPage({
       segments={session.segments}
       durationMs={session.durationMs ?? 0}
       codingEnabled={role !== 'viewer'}
+      canComment
       versionId={session.versionId}
       versions={versions}
       codes={codes}

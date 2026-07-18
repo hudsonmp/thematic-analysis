@@ -246,6 +246,7 @@ export default function SessionPlayer({
   segments: initialSegments,
   durationMs,
   codingEnabled = false,
+  canComment = false,
   versionId: originalVersionId = null,
   versions = [],
   codes = [],
@@ -266,8 +267,11 @@ export default function SessionPlayer({
   /** The ORIGINAL version's segments (the default tab the page renders). */
   segments: CloudSegment[];
   durationMs: number;
-  /** Render the coding affordances (selection, comments, coding mode). */
+  /** Editor-only affordances: coding mode + the code popup + code assignment. */
   codingEnabled?: boolean;
+  /** Any authed coder (viewers included) may comment: selection + comment rail +
+   *  composer. Split from `codingEnabled` so viewers can comment but not code. */
+  canComment?: boolean;
   /** The original transcript version id annotations anchor to (version_id). */
   versionId?: string | null;
   /** All of the session's transcript versions (the Original/Cleaned tab set). */
@@ -1101,7 +1105,7 @@ export default function SessionPlayer({
         clearSelection(); // also closes the coding popup (popupPos lives in it)
         return;
       }
-      if (!codingEnabled) return;
+      if (!codingEnabled && !canComment) return;
 
       // COMMENT mode, marginalia-style: with a selection pending, just START TYPING
       // and the margin composer opens seeded with that first keystroke (the
@@ -1137,7 +1141,7 @@ export default function SessionPlayer({
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [codingEnabled, pending, composerOpen, popupPos, mode, clearSelection]);
+  }, [codingEnabled, canComment, pending, composerOpen, popupPos, mode, clearSelection]);
 
   // --- Derived view helpers ----------------------------------------------
 
@@ -1443,7 +1447,7 @@ export default function SessionPlayer({
 
   const openCommentAnn = openCommentAnnId ? annById.get(openCommentAnnId) ?? null : null;
 
-  const railEnabled = !editing && codingEnabled;
+  const railEnabled = !editing && (codingEnabled || canComment);
   // The TRANSIENT composer card (a fresh, uncommitted selection) — not yet a
   // persisted annotation, so it isn't in `railCardsByTurn`. Its anchor turn is the
   // selection's start cue's turn; default to the first turn if it can't be resolved.
@@ -2336,7 +2340,7 @@ export default function SessionPlayer({
               <div
                 ref={transcriptRef}
                 onMouseUp={
-                  codingEnabled && !editing && activeTab !== 'specification'
+                  (codingEnabled || canComment) && !editing && activeTab !== 'specification'
                     ? handleTranscriptMouseUp
                     : undefined
                 }

@@ -2,6 +2,7 @@
 
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
+import { requireEditor } from '@/lib/auth/roles';
 import type { Tables } from '@/lib/types/cb-db';
 
 type Annotation = Tables<'cb_annotations'>;
@@ -107,6 +108,12 @@ export async function addAnnotation({
   codeIds: string[];
 }): Promise<Annotation> {
   const user = await requireAuthUser();
+  // An annotation carrying CODES is a coding act → editor-only. A bare anchor (a
+  // comment/quote with no codes) is open to any authed user, so viewers can comment
+  // on their own selections. Without this, a viewer coding attempt hit the RLS
+  // editor policy on cb_annotation_codes and surfaced as a raw 500 instead of a
+  // clean permission error.
+  if (codeIds.length > 0) await requireEditor();
   const sb = await createUserServerClient();
 
   const annRes = await sb
@@ -335,6 +342,10 @@ export async function addCodeToAnnotation(
   codeId: string,
 ): Promise<'added' | 'annotation_gone'> {
   await requireAuthUser();
+  // Codes are editor-only (viewers may comment, not code). Belt-and-suspenders with
+  // the RLS editor policy — the user client enforces RLS, but guarding here gives a
+  // clean error instead of a silent RLS no-op, and documents the invariant.
+  await requireEditor();
   const id = (annotationId ?? '').trim();
   const code = (codeId ?? '').trim();
   if (!id || !code) {
@@ -391,6 +402,7 @@ export async function removeCodeFromAnnotation(
   codeId: string,
 ): Promise<void> {
   await requireAuthUser();
+  await requireEditor(); // codes are editor-only (see addCodeToAnnotation)
   const sb = await createUserServerClient();
   const del = await sb
     .from('cb_annotation_codes')
