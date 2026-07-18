@@ -1,20 +1,20 @@
-// Pure layout math for the review-mode comment RAIL (the Google-Docs-style margin
-// of cards beside the transcript). No DOM, no React — just "which annotation's
-// card hangs in which turn's gutter, and which ones are visible at all". Kept here
-// so it is unit-testable and the component only does rendering.
+// Pure layout math for the review-mode comment RAIL (the marginalia beside the
+// transcript). No DOM, no React — just "which annotation's notes hang in which
+// turn's gutter, and which ones are visible at all". Kept here so it is
+// unit-testable and the component only does rendering.
 //
-// A card is shown for an annotation that carries SIGNAL on the rail: it has ≥1
-// comment, OR it is an important quote (`kind === 'quote'`). A bare code anchor
-// with no comments does NOT get a persistent card (it is still visible as an
-// emerald span in the transcript and opens a card on click). The transient
-// composer (a fresh, uncommitted selection) is laid out separately by the caller.
+// A margin entry is shown ONLY for an annotation with ≥1 note: marginalia ARE the
+// notes, so an annotation with nothing to say renders nothing. A bare quote's
+// yellow span in the text is its presence (clicking it opens the thread), and a
+// bare code anchor renders as a gutter brace — neither earns a persistent margin
+// entry. The transient composer (a fresh, uncommitted selection) is laid out
+// separately by the caller.
 
 /** The minimal annotation shape the rail reads. `MyAnnotationView` is assignable. */
 export type RailAnnotation = {
   id: string;
   /** The START segment id — the card anchors to this segment's turn. */
   segmentId: string;
-  kind: string;
 };
 
 /** An annotation eligible for a persistent rail card, with its anchor turn. */
@@ -25,20 +25,23 @@ export type RailCard = {
 };
 
 /**
- * Decide whether an annotation earns a PERSISTENT card on the rail: it has at
- * least one comment, OR it is an important quote. `commentedAnnIds` is the set the
- * player already derives (annotations with ≥1 comment, reconciled against the
- * loaded threads), so this stays the single source of truth for "has comments".
+ * Decide whether an annotation earns a PERSISTENT margin entry: it has at least
+ * one note. `commentedAnnIds` is the set the player already derives (annotations
+ * with ≥1 comment, reconciled against the loaded threads), so this stays the
+ * single source of truth for "has notes". Quotes are NOT special-cased: a bare
+ * quote's yellow span is its presence, and an empty margin entry beside it would
+ * be chrome saying nothing.
  */
 export function annotationHasRailCard(
   ann: RailAnnotation,
   commentedAnnIds: Set<string>,
 ): boolean {
-  return ann.kind === 'quote' || commentedAnnIds.has(ann.id);
+  return commentedAnnIds.has(ann.id);
 }
 
 /**
- * Group every rail-eligible annotation into the turn whose gutter hosts its card.
+ * Group every rail-eligible annotation into the turn whose gutter hosts its
+ * margin entry.
  *
  * For each annotation we resolve its START segment id → seg index (`segIndexById`)
  * → turn index (`turnIndexBySegIdx`). An annotation whose start segment isn't in
