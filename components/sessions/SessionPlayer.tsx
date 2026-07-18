@@ -1718,6 +1718,7 @@ export default function SessionPlayer({
             name: c.mnemonic,
             origin: 'emergent',
             definition: null,
+            exemplars: [],
           },
       ),
     [assignedAnn, popupCodeById],
