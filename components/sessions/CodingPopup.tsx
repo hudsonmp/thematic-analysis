@@ -16,6 +16,11 @@ export type PopupCode = {
   /** Exemplar texts from the code's current version (jsonb → strings). Shown when
    *  a row is expanded, and searched alongside the slug + definition. */
   exemplars: string[];
+  /** The disconfirming pattern — the near-miss this code is NOT. Shown in the
+   *  expanded row (it's the highest-leverage field for coder agreement) but
+   *  deliberately EXCLUDED from search: matching a code by text it explicitly
+   *  does not cover would rank exactly the wrong codes. */
+  counterExample: string | null;
 };
 
 const POPUP_W = 400;
@@ -359,6 +364,14 @@ export default function CodingPopup({
                           </li>
                         ))}
                       </ul>
+                    )}
+                    {c.counterExample && (
+                      <p className="mt-1 text-foreground/55">
+                        <span className="text-[11px] uppercase tracking-wide text-red-700/60 dark:text-red-400/60">
+                          not:{' '}
+                        </span>
+                        {c.counterExample}
+                      </p>
                     )}
                     <p className="mt-0.5 text-[11px] uppercase tracking-wide text-foreground/35">
                       {c.origin.replace('_', ' ')}
