@@ -344,15 +344,14 @@ function CodeChip({
         const dragged = e.dataTransfer.getData('text/code-id');
         if (dragged) onDropCode(dragged);
       }}
-      title={code.name}
+      title={code.mnemonic}
       className={`cursor-grab truncate border px-1.5 py-1 text-[11px] transition active:cursor-grabbing ${
         over
           ? 'border-foreground bg-foreground/[0.06]'
           : 'border-foreground/20 text-foreground/70 hover:border-foreground/50'
       }`}
     >
-      <span className="font-mono text-foreground/50">{code.mnemonic}</span>{' '}
-      {code.name}
+      <span className="font-mono text-foreground/70">{code.mnemonic}</span>
     </div>
   );
 }

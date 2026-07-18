@@ -156,7 +156,6 @@ export default async function SessionPage({
   const codes = tree.codes.map((c) => ({
     id: c.id,
     mnemonic: c.mnemonic,
-    name: c.name,
     origin: c.origin,
     definition: c.current?.definition ?? null,
     exemplars: exemplarTexts(c.current?.exemplars),

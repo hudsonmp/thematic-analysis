@@ -58,7 +58,6 @@ export async function createCodeAction(
 ): Promise<NewCodeState> {
   const codebookId = (formData.get('codebookId') ?? '').toString().trim();
   const mnemonic = (formData.get('mnemonic') ?? '').toString().trim();
-  const name = (formData.get('name') ?? '').toString().trim();
   const originRaw = (formData.get('origin') ?? '').toString().trim();
   const definition = (formData.get('definition') ?? '').toString().trim();
   // Bound "code from citation" mode marker (empty string when unbound).
@@ -74,8 +73,7 @@ export async function createCodeAction(
   ];
 
   if (!codebookId) return { error: 'Missing codebook.' };
-  if (!mnemonic) return { error: 'Mnemonic is required.' };
-  if (!name) return { error: 'Name is required.' };
+  if (!mnemonic) return { error: 'A slug (mnemonic) is required.' };
   if (!definition) return { error: 'A one-line definition is required.' };
   if (!isOrigin(originRaw)) return { error: 'Invalid origin.' };
 
@@ -84,7 +82,6 @@ export async function createCodeAction(
     newId = await createCode({
       codebookId,
       mnemonic,
-      name,
       origin: originRaw,
       version: { definition, include_if: [], exclude_if: [], exemplars: [] },
     });

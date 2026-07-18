@@ -34,7 +34,7 @@ type Citation = Tables<'cb_citations'>;
  * ANATOMY IS APPEND-ONLY. Editing any versioned field writes a NEW cb_code_versions row
  * rather than overwriting: the instrument's history has to survive a tightening you later
  * decide was wrong. So the version fields save TOGETHER, on an explicit "Save version"
- * — unlike name/mnemonic/answers, which are cheap and commit on blur. A per-keystroke
+ * — unlike the slug/answers, which are cheap and commit on blur. A per-keystroke
  * version history would be noise, and noise in a history is the same as no history.
  */
 export default function CodeEditor({
@@ -57,7 +57,6 @@ export default function CodeEditor({
   const [error, setError] = useState<string | null>(null);
 
   const [mnemonic, setMnemonic] = useState(code.mnemonic);
-  const [name, setName] = useState(code.name);
 
   const v = code.current;
   const [definition, setDefinition] = useState(v?.definition ?? '');
@@ -113,7 +112,7 @@ export default function CodeEditor({
 
   return (
     <div className="space-y-3">
-      {/* Cheap fields: commit on blur. */}
+      {/* Cheap field: the slug (mnemonic) is the code's sole identifier; commits on blur. */}
       <div className="flex gap-2">
         <input
           value={mnemonic}
@@ -132,26 +131,8 @@ export default function CodeEditor({
               () => setMnemonic(code.mnemonic),
             );
           }}
-          aria-label="Mnemonic"
-          className="w-32 shrink-0 border border-foreground/20 bg-background px-2 py-1 font-mono text-sm focus:border-foreground focus:outline-none"
-        />
-        <input
-          value={name}
-          disabled={pending}
-          onChange={(e) => setName(e.target.value)}
-          onBlur={() => {
-            const next = name.trim();
-            if (!next || next === code.name) {
-              setName(code.name);
-              return;
-            }
-            run(
-              () => renameCode(code.id, { name: next }),
-              () => setName(code.name),
-            );
-          }}
-          aria-label="Name"
-          className="min-w-0 flex-1 border border-foreground/20 bg-background px-2 py-1 text-sm focus:border-foreground focus:outline-none"
+          aria-label="Slug"
+          className="min-w-0 flex-1 border border-foreground/20 bg-background px-2 py-1 font-mono text-sm focus:border-foreground focus:outline-none"
         />
       </div>
 

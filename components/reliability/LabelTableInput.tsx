@@ -152,7 +152,7 @@ export default function LabelTableInput({
             <option value="">— pick a code —</option>
             {codes.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.mnemonic} — {c.name}
+                {c.mnemonic}
               </option>
             ))}
           </select>

@@ -30,7 +30,7 @@ function CodeChip({ code }: { code: CodeWithRefs }) {
   return (
     <Link
       href={`/codes/${code.id}`}
-      title={`${code.name} (${code.status})`}
+      title={`${code.mnemonic} (${code.status})`}
       className="inline-flex items-center gap-1.5 border border-foreground/15 px-2 py-0.5 text-xs hover:border-foreground hover:bg-foreground/5 transition max-w-full"
     >
       <span
@@ -198,14 +198,8 @@ function NewCodeForm({
         <input
           name="mnemonic"
           required
-          placeholder="mnemonic (e.g. SPEC-GAP)"
-          className="border border-foreground/15 px-2 py-1 text-sm bg-background font-mono w-44"
-        />
-        <input
-          name="name"
-          required
-          placeholder="name"
-          className="border border-foreground/15 px-2 py-1 text-sm bg-background flex-1 min-w-40"
+          placeholder="slug (e.g. SPEC-GAP)"
+          className="border border-foreground/15 px-2 py-1 text-sm bg-background font-mono flex-1 min-w-44"
         />
         <select
           name="origin"

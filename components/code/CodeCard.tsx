@@ -108,7 +108,6 @@ export default function CodeCard({
       <header className="space-y-2 border-b border-foreground/15 pb-4">
         <div className="flex items-baseline gap-3 flex-wrap">
           <h1 className="font-mono text-lg font-medium">{code.mnemonic}</h1>
-          <span className="text-foreground/70">{code.name}</span>
           <span className="text-xs text-foreground/40 border border-foreground/15 px-1.5 py-0.5">
             {code.origin}
           </span>
