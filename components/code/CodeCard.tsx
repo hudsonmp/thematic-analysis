@@ -197,6 +197,7 @@ export default function CodeCard({
         {tab === 'anatomy' && (
           <AnatomyEditor
             codeId={code.id}
+            origin={code.origin}
             current={code.current}
             episodes={episodes}
             allCodes={allCodes}

@@ -14,6 +14,7 @@ import { linkCitation, unlinkCitation } from '@/app/actions/citations';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import BulletListEditor from '@/components/code/BulletListEditor';
 import MentionTextarea, { type MentionCode } from '@/components/codebook/MentionTextarea';
+import { splitDefinition, joinDefinition } from '@/lib/codebook/definition';
 import type { ExemplarT } from '@/lib/types/contracts';
 import type { Tables } from '@/lib/types/cb-db';
 import ValueList from './ValueList';
@@ -74,7 +75,16 @@ export default function CodeEditor({
   const mentionables = allCodes.filter((c) => c.id !== code.id);
 
   const v = code.current;
-  const [definition, setDefinition] = useState(v?.definition ?? '');
+  // The stored definition is ONE field with an optional `==` separator
+  // (Literature/Applied — lib/codebook/definition.ts). The EDITOR presents the
+  // two halves as two inputs so the convention is visible where definitions are
+  // written, and re-joins them on save. The Literature box shows for a-priori
+  // codes (that's where a literature description belongs) and for ANY code that
+  // already carries one (never hide stored data behind an origin change).
+  const stored = splitDefinition(v?.definition);
+  const [literature, setLiterature] = useState(stored.literature ?? '');
+  const [definition, setDefinition] = useState(stored.applied);
+  const showLiterature = code.origin === 'a_priori' || literature.trim() !== '';
   const [includeIf, setIncludeIf] = useState<string[]>(asStrings(v?.include_if));
   const [excludeIf, setExcludeIf] = useState<string[]>(asStrings(v?.exclude_if));
   const [exemplars, setExemplars] = useState<string[]>(asExemplarText(v?.exemplars));
@@ -82,7 +92,7 @@ export default function CodeEditor({
   const [changeNote, setChangeNote] = useState('');
 
   const dirty =
-    definition !== (v?.definition ?? '') ||
+    joinDefinition(literature, definition) !== (v?.definition ?? '') ||
     !same(includeIf, asStrings(v?.include_if)) ||
     !same(excludeIf, asStrings(v?.exclude_if)) ||
     !same(exemplars, asExemplarText(v?.exemplars)) ||
@@ -108,7 +118,7 @@ export default function CodeEditor({
     }
     run(async () => {
       await saveNewVersion(code.id, {
-        definition: definition.trim(),
+        definition: joinDefinition(literature, definition),
         include_if: includeIf,
         exclude_if: excludeIf,
         exemplars: exemplars.map((text) => ({ text })),
@@ -217,7 +227,30 @@ export default function CodeEditor({
 
       {/* ---- ANATOMY: versioned, saved together ---- */}
       <section className="space-y-2 border-t border-foreground/10 pt-3">
-        <Field label="Definition" hint="@ mentions another code by its slug.">
+        {showLiterature && (
+          <Field
+            label="Literature description"
+            hint="Codebook + LaTeX only — never shown while coding."
+          >
+            <MentionTextarea
+              value={literature}
+              disabled={pending}
+              onChange={setLiterature}
+              codes={mentionables}
+              rows={3}
+              className={input}
+              aria-label="Literature description"
+            />
+          </Field>
+        )}
+        <Field
+          label="Definition"
+          hint={
+            showLiterature
+              ? 'The applied rule coders see. @ mentions another code by its slug.'
+              : '@ mentions another code by its slug.'
+          }
+        >
           <MentionTextarea
             value={definition}
             disabled={pending}

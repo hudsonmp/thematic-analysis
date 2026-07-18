@@ -9,6 +9,7 @@ import type { CodeVersionInputT, EpisodeRefT, ExemplarT } from '@/lib/types/cont
 import type { Tables } from '@/lib/types/cb-db';
 import BulletListEditor from './BulletListEditor';
 import EpisodePicker from './EpisodePicker';
+import { splitDefinition, joinDefinition } from '@/lib/codebook/definition';
 
 type CodeVersion = Tables<'cb_code_versions'>;
 
@@ -49,11 +50,14 @@ function asExemplars(j: unknown): DraftExemplar[] {
  */
 export default function AnatomyEditor({
   codeId,
+  origin,
   current,
   episodes,
   allCodes,
 }: {
   codeId: string;
+  /** The code's origin — a_priori codes get the Literature-description field. */
+  origin: string;
   current: CodeVersion | null;
   episodes: ProtocolEpisode[];
   /** Every code in the codebook — for @-mentioning in the definition and
@@ -69,7 +73,12 @@ export default function AnatomyEditor({
   // its own definition says nothing.
   const mentionables = allCodes.filter((c) => c.id !== codeId);
 
-  const [definition, setDefinition] = useState(current?.definition ?? '');
+  // One stored field, optional `==` separator (Literature/Applied). The editor
+  // shows the halves as two inputs and re-joins on save — see CodeEditor's twin.
+  const storedDef = splitDefinition(current?.definition);
+  const [literature, setLiterature] = useState(storedDef.literature ?? '');
+  const [definition, setDefinition] = useState(storedDef.applied);
+  const showLiterature = origin === 'a_priori' || literature.trim() !== '';
   const [includeIf, setIncludeIf] = useState<string[]>(asStringArray(current?.include_if));
   const [excludeIf, setExcludeIf] = useState<string[]>(asStringArray(current?.exclude_if));
   const [exemplars, setExemplars] = useState<DraftExemplar[]>(asExemplars(current?.exemplars));
@@ -104,7 +113,7 @@ export default function AnatomyEditor({
       }));
 
     const input: CodeVersionInputT = {
-      definition: definition.trim(),
+      definition: joinDefinition(literature, definition),
       include_if: includeIf.map((s) => s.trim()).filter(Boolean),
       exclude_if: excludeIf.map((s) => s.trim()).filter(Boolean),
       exemplars: cleanedExemplars,
@@ -133,6 +142,26 @@ export default function AnatomyEditor({
 
   return (
     <div className="space-y-6">
+      {/* Literature description — a-priori codes (or any code already carrying
+          one). Codebook + LaTeX only; never shown while coding. */}
+      {showLiterature && (
+        <div className="space-y-1">
+          <label className="text-xs uppercase tracking-wider text-foreground/50">
+            Literature description
+          </label>
+          <MentionTextarea
+            value={literature}
+            disabled={isPending}
+            onChange={setLiterature}
+            codes={mentionables}
+            rows={3}
+            placeholder="The theoretical framing from the literature — shown in the codebook, hidden while coding."
+            className="w-full border border-foreground/15 px-2 py-1.5 text-sm bg-background"
+            aria-label="Literature description"
+          />
+        </div>
+      )}
+
       {/* Definition */}
       <div className="space-y-1">
         <label className="text-xs uppercase tracking-wider text-foreground/50">
