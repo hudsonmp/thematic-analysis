@@ -63,7 +63,7 @@ export default function ReliabilityPanel({
   }, [facets]);
   const codeName = useMemo(() => {
     const m = new Map<string, string>();
-    for (const c of codes) m.set(c.id, `${c.mnemonic} — ${c.name}`);
+    for (const c of codes) m.set(c.id, c.mnemonic);
     return m;
   }, [codes]);
 

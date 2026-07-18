@@ -10,7 +10,7 @@ import { createFacetValue, setFacetValueParent } from '@/app/actions/facets';
 import { descendantIds } from '@/lib/codebook/tree';
 import type { FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
-import { deriveMnemonic, uniqueMnemonic } from '@/lib/codebook/mnemonic';
+import { normalizeSlug } from '@/lib/codebook/mnemonic';
 import BulletListEditor from '@/components/code/BulletListEditor';
 import ValueList from './ValueList';
 import type { Tables } from '@/lib/types/cb-db';
@@ -46,9 +46,10 @@ export type DialogTarget =
  *   CODE   — the only thing applied to data. It ANSWERS values, and may answer two
  *            on one dimension (the cross-cutting case) without being duplicated.
  *
- * A new code's fields are its ANATOMY (mnemonic, name, definition — first-class,
- * versioned columns on cb_code_versions) plus its ANSWERS on every declared
- * dimension. The dialog invents no fields: the dimensions come from the codebook.
+ * A new code's fields are its ANATOMY (the slug/mnemonic — its sole identifier,
+ * typed directly — plus the definition, versioned on cb_code_versions) plus its
+ * ANSWERS on every declared dimension. The dialog invents no fields: the
+ * dimensions come from the codebook.
  *
  * ORIGIN defaults to `a_priori` under a pinned paper but is never forced — "came from
  * a paper" and "is a priori" are different claims, and a code drawn from a paper can
@@ -72,7 +73,7 @@ export default function NewCodeDialog({
   /** Every dimension — a new code answers all of them, not just the one on screen. */
   facets: FacetWithValues[];
   /** Every code — so the dialog can name an EXISTING one, not only author a new one. */
-  codes: (Pick<Code, 'id' | 'mnemonic' | 'name'> & { facetValueIds: string[] })[];
+  codes: (Pick<Code, 'id' | 'mnemonic'> & { facetValueIds: string[] })[];
   nodeNameById: ReadonlyMap<string, string>;
   pinnedCitationId: string | null;
   onClose: () => void;
@@ -84,8 +85,8 @@ export default function NewCodeDialog({
   const [kind, setKind] = useState<Kind>(target.kind === 'root' ? 'subvalue' : 'code');
   const [query, setQuery] = useState('');
 
-  const [mnemonic, setMnemonic] = useState('');
-  const [name, setName] = useState('');
+  // The SLUG the researcher types IS the mnemonic (the code's sole identifier).
+  const [slug, setSlug] = useState('');
 
   // The ANATOMY — first-class, versioned columns on cb_code_versions. These used to
   // be faked as valueless open_text "facets", which meant include_if lived in two
@@ -122,14 +123,13 @@ export default function NewCodeDialog({
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
-  /** What a blank mnemonic will become. Shown as the placeholder, recomputed as the
-   *  name is typed, so the researcher sees the generated value before committing. */
-  const autoMnemonic = useMemo(
-    () =>
-      name.trim()
-        ? uniqueMnemonic(deriveMnemonic(name.trim()), new Set(codes.map((c) => c.mnemonic)))
-        : '',
-    [name, codes],
+  /** The normalized slug (UPPER-KEBAB) that will actually be saved as the mnemonic.
+   *  Shown live under the input so the researcher sees the canonical form before
+   *  committing, and used to check the uniqueness of the typed slug. */
+  const normalizedSlug = useMemo(() => (slug.trim() ? normalizeSlug(slug.trim()) : ''), [slug]);
+  const slugTaken = useMemo(
+    () => normalizedSlug !== '' && codes.some((c) => c.mnemonic === normalizedSlug),
+    [normalizedSlug, codes],
   );
 
   /**
@@ -228,26 +228,23 @@ export default function NewCodeDialog({
             parentId: parentValueId,
           });
         } else {
-          if (!name.trim() || !definition.trim()) {
-            setError('A code needs a name and a definition.');
+          if (!slug.trim() || !definition.trim()) {
+            setError('A code needs a slug and a definition.');
             return;
           }
-          // A BLANK mnemonic is derived from the name, made unique against every
-          // mnemonic already in the codebook. cb_codes has UNIQUE(codebook_id,
-          // mnemonic) and NOT NULL, so a blank one would otherwise be a hard failure —
-          // and demanding it up front taxes capture for a field that is almost always
-          // just the name in short form. Same pure helpers the bulk grid uses.
-          const resolvedMnemonic =
-            mnemonic.trim() ||
-            uniqueMnemonic(
-              deriveMnemonic(name.trim()),
-              new Set(codes.map((c) => c.mnemonic)),
-            );
+          // The typed slug IS the mnemonic (the code's sole identifier). Normalize
+          // it to the canonical UPPER-KEBAB form and reject a collision outright —
+          // cb_codes has UNIQUE(codebook_id, mnemonic), and silently auto-suffixing
+          // a hand-typed slug would hide a naming decision the researcher must make.
+          const resolvedMnemonic = normalizeSlug(slug.trim());
+          if (codes.some((c) => c.mnemonic === resolvedMnemonic)) {
+            setError(`The slug "${resolvedMnemonic}" is already in use.`);
+            return;
+          }
 
           const codeId = await createCodeInTree({
             codebookId,
             mnemonic: resolvedMnemonic,
-            name: name.trim(),
             origin,
             version: {
               definition: definition.trim(),
@@ -411,8 +408,7 @@ export default function NewCodeDialog({
                         : 'border-transparent hover:border-foreground/30 hover:bg-foreground/[0.03]'
                     }`}
                   >
-                    <span className="font-mono">{h.mnemonic}</span>{' '}
-                    <span className="text-foreground/60">{h.name}</span>
+                    <span className="font-mono">{h.mnemonic}</span>
                     {h.status === 'here' && (
                       <span className="ml-1 text-foreground/30">· already answers this</span>
                     )}
@@ -448,28 +444,24 @@ export default function NewCodeDialog({
             </>
           ) : (
             <>
-              <div className="grid grid-cols-[7rem_1fr] gap-3">
-                <Field label="Mnemonic">
-                  {/* Optional. Left blank it is derived from the name — and the
-                      derivation is SHOWN as the placeholder, so the value that will be
-                      saved is never a surprise you discover after the fact. */}
-                  <input
-                    value={mnemonic}
-                    onChange={(e) => setMnemonic(e.target.value)}
-                    className={`${inputCls} font-mono`}
-                    placeholder={autoMnemonic || 'auto'}
-                  />
-                </Field>
-                <Field label="Name">
-                  <input
-                    autoFocus
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    className={inputCls}
-                    placeholder="Confirmation bias in review"
-                  />
-                </Field>
-              </div>
+              <Field
+                label="Slug"
+                hint={
+                  normalizedSlug
+                    ? slugTaken
+                      ? `"${normalizedSlug}" is already in use — pick another.`
+                      : `Saved as ${normalizedSlug}`
+                    : 'The code’s sole identifier — you type it. Normalized to UPPER-KEBAB.'
+                }
+              >
+                <input
+                  autoFocus
+                  value={slug}
+                  onChange={(e) => setSlug(e.target.value)}
+                  className={`${inputCls} font-mono`}
+                  placeholder="CONF-BIAS-REVIEW"
+                />
+              </Field>
 
               <Field label="Definition">
                 <textarea

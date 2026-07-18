@@ -211,8 +211,7 @@ function CodeEntry({
   return (
     <article className="break-inside-avoid-page border-l-2 border-foreground/15 pl-3">
       <p className="text-sm">
-        <span className="font-mono text-foreground/60">{code.mnemonic}</span>{' '}
-        <span className="font-medium">{code.name}</span>
+        <span className="font-mono font-medium">{code.mnemonic}</span>
         <span className="ml-2 text-[11px] uppercase tracking-wide text-foreground/40">
           {code.origin.replace('_', ' ')}
         </span>

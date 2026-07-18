@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { searchCodes } from '@/lib/codebook/codePicker';
 
 const CODES = [
-  { id: 'c1', mnemonic: 'AMB', name: 'Ambiguity unresolved', labelIds: ['n1'] },
-  { id: 'c2', mnemonic: 'SCOPE', name: 'Scope creep', labelIds: [] },
-  { id: 'c3', mnemonic: 'UND', name: 'Ambiguous underspecification', labelIds: ['n1', 'n2'] },
-  { id: 'c4', mnemonic: 'ZED', name: 'Zed', labelIds: ['n2'] },
+  { id: 'c1', mnemonic: 'AMB', labelIds: ['n1'] },
+  { id: 'c2', mnemonic: 'SCOPE', labelIds: [] },
+  { id: 'c3', mnemonic: 'AMB-UND', labelIds: ['n1', 'n2'] },
+  { id: 'c4', mnemonic: 'ZED', labelIds: ['n2'] },
 ];
 
 const NAMES = new Map([
@@ -55,16 +55,16 @@ describe('searchCodes — placement status', () => {
 });
 
 describe('searchCodes — matching and ranking', () => {
-  it('ranks a mnemonic prefix above a name substring', () => {
-    // "amb" prefixes the mnemonic AMB (c1) and appears mid-name in c3
-    // ("Ambiguous…" is a NAME prefix, so c3 outranks a mere substring but not c1).
+  it('ranks mnemonic-prefix hits ahead of mere substring hits, tie-broken by mnemonic', () => {
+    // "amb" prefixes AMB (c1) and AMB-UND (c3) — both rank 0, tie-broken
+    // alphabetically so AMB precedes AMB-UND.
     const hits = searchCodes(CODES, 'amb', null, NAMES);
     expect(hits.map((h) => h.id)).toEqual(['c1', 'c3']);
   });
 
-  it('is case-insensitive on both mnemonic and name', () => {
+  it('is case-insensitive on the mnemonic', () => {
     expect(searchCodes(CODES, 'sCoPe', null).map((h) => h.id)).toEqual(['c2']);
-    expect(searchCodes(CODES, 'CREEP', null).map((h) => h.id)).toEqual(['c2']);
+    expect(searchCodes(CODES, 'zEd', null).map((h) => h.id)).toEqual(['c4']);
   });
 
   it('returns EVERYTHING on an empty query — the picker opens browsable, not blank', () => {
@@ -72,7 +72,7 @@ describe('searchCodes — matching and ranking', () => {
     expect(hits).toHaveLength(4);
     // Ties all rank 3, so the order is alphabetical by mnemonic — deterministic, so
     // the list cannot reshuffle under the cursor between renders.
-    expect(hits.map((h) => h.mnemonic)).toEqual(['AMB', 'SCOPE', 'UND', 'ZED']);
+    expect(hits.map((h) => h.mnemonic)).toEqual(['AMB', 'AMB-UND', 'SCOPE', 'ZED']);
   });
 
   it('returns nothing for a query that matches nothing', () => {

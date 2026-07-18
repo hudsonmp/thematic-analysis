@@ -1,35 +1,38 @@
 // ---------------------------------------------------------------------------
-// Mnemonic derivation + bulk-row validation — pure helpers for Codebook bulk
+// Slug normalization + bulk-row validation — pure helpers for Codebook bulk
 // entry.
 //
-// `cb_codes.mnemonic` is NOT NULL with a UNIQUE (codebook_id, mnemonic)
-// constraint. The spreadsheet bulk-entry surface lets a researcher leave the
-// mnemonic blank (only Name is required), so we must synthesize a NON-EMPTY,
-// codebook-UNIQUE mnemonic for each such row — otherwise the second blank-
-// mnemonic row in a batch would collide with the first on `''`.
+// `cb_codes.mnemonic` (the SLUG) is the sole human identifier for a code: NOT
+// NULL with a UNIQUE (codebook_id, mnemonic) constraint. The researcher TYPES
+// the slug directly (there is no `name` to derive it from); `normalizeSlug`
+// canonicalizes what they type into an UPPER-KEBAB form so casing/spacing slips
+// don't mint accidental near-duplicates. `uniqueMnemonic` remains available for
+// the server-side race-safety path (createCode `autoUniqueMnemonic`).
 //
-// `deriveMnemonic` slugifies the name; `uniqueMnemonic` makes that slug unique
-// against a set of already-used mnemonics (existing codebook mnemonics + the
-// mnemonics assigned earlier in THIS batch) by appending `-2`, `-3`, … . These
-// are PURE (no I/O) so they unit-test cleanly; the server action threads the
-// "used" set through the batch and seeds it from the codebook's existing codes.
+// These are PURE (no I/O) so they unit-test cleanly; the server action seeds the
+// "used" set from the codebook's existing mnemonics and threads it through the
+// batch.
 // ---------------------------------------------------------------------------
 
-/** A single spreadsheet row of the bulk-entry grid (pre-validation). */
+/** A single spreadsheet row of the bulk-entry grid (pre-validation). The slug is
+ *  the code's mnemonic (its sole identifier), typed directly by the researcher. */
 export type CodebookRow = {
-  name: string;
-  mnemonic: string;
+  slug: string;
   definition: string;
 };
 
 /**
- * Slugify a code name into an UPPER-KEBAB mnemonic stub: letters/digits kept,
+ * Normalize a typed slug into an UPPER-KEBAB mnemonic: letters/digits kept,
  * everything else collapsed to single dashes, trimmed, upper-cased, capped at
- * `maxLen`. Returns `'CODE'` as a last resort when the name has no slug-able
+ * `maxLen`. Returns `'CODE'` as a last resort when the input has no slug-able
  * characters (e.g. all punctuation) so the result is never empty.
  */
-export function deriveMnemonic(name: string, maxLen = 24): string {
-  const slug = name
+export function normalizeSlug(input: string, maxLen = 24): string {
+  // LOWER-kebab to match the existing corpus (every code minted by the old
+  // `deriveMnemonic` is lower-kebab, e.g. `analysis-behavior`, `give-up`).
+  // Upper-casing here would fracture the identifier space and defeat the
+  // case-sensitive collision check.
+  const slug = input
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -52,18 +55,18 @@ export function uniqueMnemonic(base: string, used: ReadonlySet<string>): string 
 }
 
 /**
- * A row is non-empty iff any of its three cells has content. The always-present
+ * A row is non-empty iff either of its two cells has content. The always-present
  * trailing blank row in the grid is empty by this test and is skipped on commit.
  */
 export function isRowEmpty(row: CodebookRow): boolean {
-  return !row.name.trim() && !row.mnemonic.trim() && !row.definition.trim();
+  return !row.slug.trim() && !row.definition.trim();
 }
 
-/** A validated, ready-to-create row: trimmed cells + a resolved unique mnemonic. */
+/** A validated, ready-to-create row: a resolved (normalized, unique) mnemonic +
+ *  trimmed definition. */
 export type ResolvedRow = {
   /** 0-based index of the row in the ORIGINAL input array (for error reporting). */
   index: number;
-  name: string;
   mnemonic: string;
   definition: string;
 };
@@ -73,14 +76,13 @@ export type ValidationError = { index: number; message: string };
 /**
  * Validate + resolve a batch of grid rows into create-ready rows.
  *
- * - Empty rows (all cells blank) are dropped silently (the trailing blank row).
- * - A row with content but no Name is an error (Name is the only required cell).
- * - For a row with a blank mnemonic, derive one from the name and make it unique
- *   against `existingMnemonics` PLUS every mnemonic already assigned in this
- *   batch (explicit or derived), so no two rows collide on the UNIQUE constraint.
- * - An explicit mnemonic that duplicates one already used in this batch (or the
- *   codebook) is likewise an error — we surface it rather than silently mangling
- *   the researcher's chosen key.
+ * - Empty rows (both cells blank) are dropped silently (the trailing blank row).
+ * - A row with content but no slug is an error (the slug is the required cell).
+ * - The typed slug is NORMALIZED (`normalizeSlug`) — the normalized value is the
+ *   mnemonic. A slug that collides with one already used in this batch (or the
+ *   codebook) is an error — we surface it rather than silently auto-suffixing,
+ *   because the slug is the code's sole identifier and two codes the researcher
+ *   named the same thing is a naming decision to make, not a conflict to paper over.
  *
  * `existingMnemonics` should be the codebook's current `cb_codes.mnemonic` set
  * (case-sensitive). Returns the resolved rows (in input order, empties removed)
@@ -99,28 +101,22 @@ export function resolveRows(
   rows.forEach((row, index) => {
     if (isRowEmpty(row)) return;
 
-    const name = row.name.trim();
-    const mnemonicRaw = row.mnemonic.trim();
+    const slugRaw = row.slug.trim();
     const definition = row.definition.trim();
 
-    if (!name) {
-      errors.push({ index, message: 'Name is required.' });
+    if (!slugRaw) {
+      errors.push({ index, message: 'A slug is required.' });
       return;
     }
 
-    let mnemonic: string;
-    if (mnemonicRaw) {
-      if (used.has(mnemonicRaw)) {
-        errors.push({ index, message: `Mnemonic "${mnemonicRaw}" already in use.` });
-        return;
-      }
-      mnemonic = mnemonicRaw;
-    } else {
-      mnemonic = uniqueMnemonic(deriveMnemonic(name), used);
+    const mnemonic = normalizeSlug(slugRaw);
+    if (used.has(mnemonic)) {
+      errors.push({ index, message: `Slug "${mnemonic}" already in use.` });
+      return;
     }
 
     used.add(mnemonic);
-    resolved.push({ index, name, mnemonic, definition });
+    resolved.push({ index, mnemonic, definition });
   });
 
   return { resolved, errors };
@@ -128,16 +124,16 @@ export function resolveRows(
 
 /**
  * Detect "state 3" rows: a row that carries SIDE-CAR writes (label tags and/or
- * facet selections) but whose three CORE cells (name/mnemonic/definition) are all
- * blank, so `resolveRows` judged it empty and dropped it SILENTLY — neither
- * resolved nor errored.
+ * facet selections) but whose CORE cells (slug/definition) are both blank, so
+ * `resolveRows` judged it empty and dropped it SILENTLY — neither resolved nor
+ * errored.
  *
  * Such a row was submitted by the client (its `isGridRowEmpty` counts labels /
  * facets, so the row is non-empty there) but produces NO code server-side, and —
  * without this check — no error either, so the researcher's label / facet tags
  * vanish on the success reset with zero feedback. This helper closes that gap: it
  * returns the original-index errors the bulk-create action must append so the
- * write-bearing-but-nameless rows surface as "Name is required" and are kept in
+ * write-bearing-but-slugless rows surface as "a slug is required" and are kept in
  * the grid for the researcher to name and resubmit.
  *
  * It is the PURE decision core (no I/O) so it unit-tests cleanly; the action
@@ -146,7 +142,7 @@ export function resolveRows(
  *
  * An index counts as needing the error iff it bears writes AND is neither resolved
  * (a code was created — labels/facets applied) NOR already errored (e.g. a content
- * row missing a name, or a duplicate mnemonic — already surfaced). De-duped + in
+ * row missing a slug, or a duplicate slug — already surfaced). De-duped + in
  * ascending index order for stable reporting.
  */
 export function writeOnlyRowErrors(
@@ -163,7 +159,7 @@ export function writeOnlyRowErrors(
   for (const index of writeBearingIndices) {
     if (accounted.has(index) || seen.has(index)) continue;
     seen.add(index);
-    out.push({ index, message: 'Name is required to save its labels/facets.' });
+    out.push({ index, message: 'A slug is required to save its labels/facets.' });
   }
   return out.sort((a, b) => a.index - b.index);
 }

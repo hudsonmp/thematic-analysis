@@ -43,7 +43,6 @@ function code(id: string, mnemonic: string): Code {
     codebook_id: 'cb',
     created_at: '2026-01-01T00:00:00.000Z',
     current_version_id: null,
-    name: mnemonic,
     origin: 'manual',
     parent_code_id: null,
     retired_at: null,

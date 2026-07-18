@@ -30,7 +30,7 @@ function CodeRow({ code }: { code: CodeWithRefs }) {
   return (
     <Link
       href={`/codes/${code.id}`}
-      title={`${code.name} (${code.status})`}
+      title={`${code.mnemonic} (${code.status})`}
       className="flex items-center gap-2 px-2 py-1 text-xs hover:bg-foreground/5 transition"
     >
       <span
@@ -39,7 +39,6 @@ function CodeRow({ code }: { code: CodeWithRefs }) {
         aria-hidden
       />
       <span className="truncate font-mono text-foreground/80">{code.mnemonic}</span>
-      <span className="truncate text-foreground/50">{code.name}</span>
     </Link>
   );
 }

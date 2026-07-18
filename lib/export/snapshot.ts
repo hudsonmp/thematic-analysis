@@ -48,7 +48,6 @@ type SnapshotCodeVersion = {
 type SnapshotCode = {
   id: string;
   mnemonic: string;
-  name: string;
   origin: string;
   status: string;
   current_version_id: string | null;
@@ -88,7 +87,10 @@ export type FrozenCodeVersion = {
 export type FrozenCode = {
   id: string;
   mnemonic: string;
-  name: string;
+  /** LEGACY: older frozen snapshots carry a display name. Never written by
+   *  `buildSnapshot` today (the slug/mnemonic is the sole identifier); optional so
+   *  already-frozen snapshots that still contain it still parse. */
+  name?: string;
   origin: string;
   status: string;
   current_version: FrozenCodeVersion | null;
@@ -136,7 +138,6 @@ export function buildSnapshot(tree: SnapshotTree): CodebookSnapshot {
   const codes: FrozenCode[] = tree.codes.map((code) => ({
     id: code.id,
     mnemonic: code.mnemonic,
-    name: code.name,
     origin: code.origin,
     status: code.status,
     current_version: code.current

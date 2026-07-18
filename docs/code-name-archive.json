@@ -1,0 +1,31 @@
+{
+  "note": "Archive of cb_codes.name values captured immediately before the column was dropped (slug = mnemonic is now the sole identifier). Every code ROW, slug, definition, and exemplar survives the drop; only these redundant Title-Case name labels were removed. Kept in git so the pre-drop names are recoverable. Captured 2026-07-16 from project wuvtffnomynoafbilzxw.",
+  "codes": [
+    { "slug": "analysis-behavior", "name": "Analysis of Behavior" },
+    { "slug": "behavior-prediction", "name": "Behavior Prediction" },
+    { "slug": "behavior-reconciliation", "name": "Behavior Reconciliation" },
+    { "slug": "brehavior-driven-change", "name": "Brehavior-driven-change" },
+    { "slug": "familiarization", "name": "Familiarization" },
+    { "slug": "formalization", "name": "Formalization" },
+    { "slug": "gap", "name": "Gap Identification" },
+    { "slug": "give-up", "name": "Give Up" },
+    { "slug": "goal-deconstruction", "name": "Goal deconstruction" },
+    { "slug": "implications", "name": "Implications" },
+    { "slug": "incorrect-goal", "name": "Incorrect Goal" },
+    { "slug": "instantiated-vague-idea", "name": "Instantiated Vague Idea" },
+    { "slug": "lost", "name": "Lost" },
+    { "slug": "new-components", "name": "New Components" },
+    { "slug": "noticing", "name": "Noticing" },
+    { "slug": "persistence", "name": "Persistence" },
+    { "slug": "prior-knowledge", "name": "Prior Knowledge" },
+    { "slug": "probe-goal-tree", "name": "Probe goal tree" },
+    { "slug": "reviewing-independently", "name": "Reviewing Independently" },
+    { "slug": "structure-driven-change", "name": "Structure Driven Change" },
+    { "slug": "structure-driven-goal", "name": "Structure Driven Goal" },
+    { "slug": "structure-reconciliation", "name": "Structure Reconciliation" },
+    { "slug": "sudden-illumination", "name": "Sudden Illumination" },
+    { "slug": "symbolization", "name": "Symbolization" },
+    { "slug": "tested-user-story", "name": "Tested User Story" },
+    { "slug": "vague-utterance", "name": "Vague Utterance" }
+  ]
+}

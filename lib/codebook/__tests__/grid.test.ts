@@ -47,7 +47,7 @@ describe('emptyFacetCell', () => {
 describe('emptyRow', () => {
   it('has blank core cells and an unset cell per column', () => {
     const r = emptyRow(COLS);
-    expect(r.core).toEqual({ name: '', mnemonic: '', definition: '' });
+    expect(r.core).toEqual({ slug: '', definition: '' });
     expect(Object.keys(r.facets).sort()).toEqual(['f-bool', 'f-enum1', 'f-enumN', 'f-text']);
     expect(r.facets['f-bool']).toEqual({ kind: 'boolean', bool: null });
   });
@@ -76,7 +76,7 @@ describe('isGridRowEmpty', () => {
     expect(isGridRowEmpty(emptyRow(COLS))).toBe(true);
   });
   it('is non-empty when a core cell has content', () => {
-    expect(isGridRowEmpty(row({ core: { name: 'Alpha', mnemonic: '', definition: '' } }))).toBe(false);
+    expect(isGridRowEmpty(row({ core: { slug: 'Alpha', definition: '' } }))).toBe(false);
   });
   it('is non-empty when only a facet cell is set (so facet-only rows are not silently dropped)', () => {
     expect(isGridRowEmpty(row({ facets: { 'f-bool': { kind: 'boolean', bool: true } } }))).toBe(false);
@@ -125,7 +125,7 @@ describe('assembleLabelWrites', () => {
   it('is empty when no submitted row has labels', () => {
     const submitted = [
       { index: 0, row: row() },
-      { index: 1, row: row({ core: { name: 'Alpha', mnemonic: '', definition: '' } }) },
+      { index: 1, row: row({ core: { slug: 'Alpha', definition: '' } }) },
     ];
     expect(assembleLabelWrites(submitted)).toEqual({});
   });
@@ -175,9 +175,9 @@ describe('lastFilledIndex', () => {
   });
   it('finds the last non-empty row even with empty rows after it', () => {
     const rows = [
-      row({ core: { name: 'a', mnemonic: '', definition: '' } }),
+      row({ core: { slug: 'a', definition: '' } }),
       emptyRow(COLS),
-      row({ core: { name: 'b', mnemonic: '', definition: '' } }),
+      row({ core: { slug: 'b', definition: '' } }),
       emptyRow(COLS),
       emptyRow(COLS),
     ];
@@ -193,8 +193,8 @@ describe('nextRowFocusIndex', () => {
 });
 
 describe('arrowTargetCell', () => {
-  // 7 columns: 3 core (Name/Mnemonic/Definition) + 4 facets (matching COLS).
-  const COL_COUNT = CORE_COL_COUNT + COLS.length; // 3 + 4 = 7
+  // 6 columns: 2 core (Slug/Definition) + 4 facets (matching COLS).
+  const COL_COUNT = CORE_COL_COUNT + COLS.length; // 2 + 4 = 6
   const ROW_COUNT = 500;
 
   /** Build an ArrowNavInput with sensible defaults; override per-case. */
@@ -286,7 +286,7 @@ describe('arrowTargetCell', () => {
   });
 
   it('traverses every column type left-to-right across a row (caret-at-end text)', () => {
-    // From Name (col 0, text, caret at end) walk right to the last facet column.
+    // From Slug (col 0, text, caret at end) walk right to the last facet column.
     let pos = { row: 2, col: 0 };
     for (let expected = 1; expected < COL_COUNT; expected += 1) {
       const next = arrowTargetCell(
@@ -301,7 +301,7 @@ describe('arrowTargetCell', () => {
     ).toBeNull();
   });
 
-  it('CORE_COL_COUNT is the three fixed leading columns', () => {
-    expect(CORE_COL_COUNT).toBe(3);
+  it('CORE_COL_COUNT is the two fixed leading columns', () => {
+    expect(CORE_COL_COUNT).toBe(2);
   });
 });

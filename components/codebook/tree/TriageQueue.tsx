@@ -91,10 +91,9 @@ export default function TriageQueue({
                   open ? 'bg-foreground/[0.04]' : 'hover:bg-foreground/[0.03]'
                 }`}
               >
-                <span className="shrink-0 truncate font-mono text-xs text-foreground/50">
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground/70">
                   {code.mnemonic}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-xs">{code.name}</span>
                 <span
                   className="shrink-0 text-[11px] text-amber-700 dark:text-amber-500"
                   title={`${item.gaps.length} unanswered dimension${item.gaps.length === 1 ? '' : 's'}`}

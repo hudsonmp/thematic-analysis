@@ -69,7 +69,6 @@ function singleCode(): CodebookTree {
         id: 'code-1',
         codebook_id: 'cb-1',
         mnemonic: 'ALPHA',
-        name: 'Alpha code',
         origin: 'a_priori',
         status: 'active',
         parent_code_id: null,

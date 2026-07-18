@@ -68,7 +68,6 @@ function versionInsert(
 export async function createCode({
   codebookId,
   mnemonic,
-  name,
   origin,
   version,
   studyLabel,
@@ -76,7 +75,6 @@ export async function createCode({
 }: {
   codebookId: string;
   mnemonic: string;
-  name: string;
   origin: CodeOrigin;
   version: CodeVersionInputT;
   studyLabel?: string | null;
@@ -105,7 +103,6 @@ export async function createCode({
     .insert({
       codebook_id: codebookId,
       mnemonic,
-      name,
       origin,
       status: 'proposed',
       study_label: studyLabel?.trim() || null,
@@ -167,7 +164,6 @@ export async function createCode({
 export async function createCodeInTree({
   codebookId,
   mnemonic,
-  name,
   origin,
   version,
   labelId,
@@ -176,7 +172,6 @@ export async function createCodeInTree({
 }: {
   codebookId: string;
   mnemonic: string;
-  name: string;
   origin: CodeOrigin;
   version: CodeVersionInputT;
   /** The node whose `+` was clicked. `null` = author into the Unplaced tray. */
@@ -186,7 +181,7 @@ export async function createCodeInTree({
   studyLabel?: string | null;
 }): Promise<string> {
   await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
-  const codeId = await createCode({ codebookId, mnemonic, name, origin, version, studyLabel });
+  const codeId = await createCode({ codebookId, mnemonic, origin, version, studyLabel });
 
   if (labelId !== null) await attachCodeToLabel(codeId, labelId);
   if (citationId !== null) await linkCitation(codeId, citationId, 'derived_from');
@@ -341,11 +336,9 @@ export async function setCodeFacetValues(codeId: string, facetValueIds: string[]
  * passes neither is treated as a clear.
  */
 /**
- * Rename a code's MNEMONIC (and/or name). The mnemonic is a display handle, not an
- * identity: every reference is by `cb_codes.id`, so changing it breaks nothing — which
- * is exactly why it is safe to auto-derive one at capture time and let the researcher
- * fix it later, when they can see it next to its siblings and notice that the derived
- * `ANALYSIS-BEHAVIOR` should have been `ANLZ`.
+ * Rename a code's MNEMONIC (the slug — its sole human identifier). Identity is by
+ * `cb_codes.id`, so changing the slug breaks no references; it is a rename of the
+ * label the researcher reads, made once they can see it next to its siblings.
  *
  * UNIQUE(codebook_id, mnemonic) is enforced by Postgres; a collision surfaces as a
  * clear error rather than being silently de-duplicated, because two codes the
@@ -354,19 +347,14 @@ export async function setCodeFacetValues(codeId: string, facetValueIds: string[]
  */
 export async function renameCode(
   codeId: string,
-  { mnemonic, name }: { mnemonic?: string; name?: string },
+  { mnemonic }: { mnemonic?: string },
 ): Promise<void> {
   await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
-  const patch: { mnemonic?: string; name?: string } = {};
+  const patch: { mnemonic?: string } = {};
   if (mnemonic !== undefined) {
     const trimmed = mnemonic.trim();
     if (!trimmed) throw new Error('renameCode: a mnemonic cannot be blank.');
     patch.mnemonic = trimmed;
-  }
-  if (name !== undefined) {
-    const trimmed = name.trim();
-    if (!trimmed) throw new Error('renameCode: a name cannot be blank.');
-    patch.name = trimmed;
   }
   if (Object.keys(patch).length === 0) return;
 
@@ -492,25 +480,24 @@ export type BulkCreateResult = {
 /**
  * Bulk-create codes from the Codebook spreadsheet grid.
  *
- * Each row is `{ name, mnemonic?, definition? }`; only `name` is required.
- * `origin` (the session "mode") applies to EVERY code in the batch; an optional
- * `citationId` links every created code `derived_from` that paper (the same
- * binding the deductive `/?fromCitation` flow uses, applied to a whole batch).
+ * Each row is `{ slug, definition? }`; only `slug` is required (the slug IS the
+ * mnemonic — the code's sole identifier). `origin` (the session "mode") applies
+ * to EVERY code in the batch; an optional `citationId` links every created code
+ * `derived_from` that paper (the same binding the deductive `/?fromCitation` flow
+ * uses, applied to a whole batch).
  *
  * Mnemonic handling: `cb_codes.mnemonic` is NOT NULL + UNIQUE(codebook_id,
- * mnemonic), so a blank mnemonic is synthesized from the name (slugified + made
- * unique against the codebook's existing mnemonics and the rest of this batch).
- * `resolveRows` (pure, unit-tested) does that validation/derivation up front,
- * so each create gets a non-empty, batch-unique mnemonic; a row with content but
- * no name, or an explicit mnemonic that duplicates an existing/earlier one, is
- * returned as an error and NOT created.
+ * mnemonic). The typed slug is NORMALIZED (`normalizeSlug`) and that value is the
+ * mnemonic. `resolveRows` (pure, unit-tested) does that validation up front; a row
+ * with content but no slug, or a slug that duplicates an existing/earlier one, is
+ * returned as an error and NOT created (never silently auto-suffixed).
  *
  * Creation reuses the single-row `createCode` path (no duplicated version logic)
  * and runs sequentially so a partial failure reports the exact failing row index
  * (and the already-created rows persist). A blank definition cell falls back to
- * the code NAME: both `cb_code_versions.definition` (DB) and `CodeVersionInput`
+ * the code's SLUG: both `cb_code_versions.definition` (DB) and `CodeVersionInput`
  * (Zod `.min(1)`) require a non-empty definition, so a meaningful non-empty
- * stand-in is needed; the name is the natural one (and is overwritten the moment
+ * stand-in is needed; the slug is the natural one (and is overwritten the moment
  * the researcher edits the code's anatomy). Where a definition IS provided it is
  * stored verbatim, exactly like the one-line form.
  */
@@ -532,12 +519,11 @@ export async function createCodesBulk(
       const newId = await createCode({
         codebookId,
         mnemonic: row.mnemonic,
-        name: row.name,
         origin,
         version: {
-          // Blank definition → fall back to the name (DB + Zod both require a
-          // non-empty definition; the name is a meaningful stand-in).
-          definition: row.definition || row.name,
+          // Blank definition → fall back to the slug (DB + Zod both require a
+          // non-empty definition; the slug is a meaningful stand-in).
+          definition: row.definition || row.mnemonic,
           include_if: [],
           exclude_if: [],
           exemplars: [],
@@ -563,8 +549,8 @@ export async function createCodesBulk(
  * Codebook spreadsheet grid.
  *
  * Same core path as `createCodesBulk` (origin applies to the batch; optional
- * `citationId` links every code `derived_from`; blank mnemonics synthesized;
- * blank definition falls back to the name). The ADDITION is per-row facet writes:
+ * `citationId` links every code `derived_from`; typed slug normalized to the
+ * mnemonic; blank definition falls back to the slug). The ADDITION is per-row facet writes:
  * `facetWritesByIndex` is keyed by the row's ORIGINAL 0-based input index (the
  * same index `resolveRows` preserves through dropped empties) and carries, per
  * row:
@@ -590,11 +576,11 @@ export async function createCodesBulk(
  * (or with an empty list) gets no `setCodeLabels` call. It defaults to `{}` so
  * existing callers that create codes without labels are unaffected.
  *
- * STATE-3 ROWS (write-bearing but nameless). A row may carry label / facet writes
+ * STATE-3 ROWS (write-bearing but slugless). A row may carry label / facet writes
  * yet have all-blank core cells. `resolveRows` (core-only emptiness) drops it
  * silently — no code, no error — so its tags would be lost with no feedback on the
  * client's success reset. We cross-reference the write-bearing indices against
- * `resolveRows`'s resolved + errored sets and append a "Name is required" error
+ * `resolveRows`'s resolved + errored sets and append a "slug is required" error
  * for any unaccounted write-bearing index (via `writeOnlyRowErrors`). The created
  * count excludes them (no code was made) and the client keeps the errored rows in
  * the grid for the researcher to name and resubmit — tags preserved.
@@ -619,10 +605,10 @@ export async function createCodesBulkWithFacets(
   // labels + facets), so without this they vanish on the success reset, losing the
   // researcher's tags with no feedback. Collect the indices that actually bear a
   // write — label ids present, or a facet write with at least one enum value / one
-  // field — and append a "Name is required" error for any that `resolveRows`
+  // field — and append a "slug is required" error for any that `resolveRows`
   // neither resolved nor errored. This makes the row surface (and be kept in the
   // grid for retry) instead of being a silent no-op. (Mirrors grid.ts's promise
-  // that a tagged-but-nameless row is "surfaced ... as a 'Name is required' error".)
+  // that a tagged-but-slugless row is "surfaced ... as a 'slug is required' error".)
   const writeBearingIndices = new Set<number>();
   for (const key of Object.keys(labelWritesByIndex)) {
     if ((labelWritesByIndex[Number(key)] ?? []).length > 0) writeBearingIndices.add(Number(key));
@@ -639,10 +625,9 @@ export async function createCodesBulkWithFacets(
       const newId = await createCode({
         codebookId,
         mnemonic: row.mnemonic,
-        name: row.name,
         origin,
         version: {
-          definition: row.definition || row.name,
+          definition: row.definition || row.mnemonic,
           include_if: [],
           exclude_if: [],
           exemplars: [],

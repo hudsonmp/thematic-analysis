@@ -678,7 +678,7 @@ export default function FacetCanvas({
                                 ? 'border-foreground bg-foreground text-background'
                                 : 'border-foreground/25 text-foreground/70 hover:border-foreground'
                             }`}
-                            title={`${c.name} — answers this value directly`}
+                            title={`${c.mnemonic} — answers this value directly`}
                           >
                             {c.mnemonic}
                           </button>
@@ -1069,10 +1069,9 @@ function ValueInspector({
             <div key={c.id} className="flex items-center gap-2 text-xs">
               <Link
                 href={`/codes/${c.id}`}
-                className="min-w-0 flex-1 truncate underline-offset-2 hover:underline"
+                className="min-w-0 flex-1 truncate font-mono underline-offset-2 hover:underline"
               >
-                <span className="font-mono">{c.mnemonic}</span>{' '}
-                <span className="text-foreground/60">{c.name}</span>
+                {c.mnemonic}
               </Link>
               <button
                 type="button"
@@ -1100,9 +1099,9 @@ function ValueInspector({
             <Link
               key={c.id}
               href={`/codes/${c.id}`}
-              className="block truncate text-xs text-foreground/50 underline-offset-2 hover:underline"
+              className="block truncate font-mono text-xs text-foreground/50 underline-offset-2 hover:underline"
             >
-              <span className="font-mono">{c.mnemonic}</span> {c.name}
+              {c.mnemonic}
             </Link>
           ))}
         </div>
@@ -1154,8 +1153,7 @@ function ValueInspector({
                       : 'border-transparent hover:border-foreground/30 hover:bg-foreground/[0.03]'
                   }`}
                 >
-                  <span className="font-mono">{h.mnemonic}</span>{' '}
-                  <span className="text-foreground/60">{h.name}</span>
+                  <span className="font-mono">{h.mnemonic}</span>
                   {h.status === 'here' && (
                     <span className="ml-1 text-foreground/30">· already answers this</span>
                   )}

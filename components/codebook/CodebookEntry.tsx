@@ -71,8 +71,8 @@ function citationLabel(c: Citation): string {
  * Codebook bulk-entry surface (client). A scheme-derived, spreadsheet-fast grid
  * for adding many codes at once.
  *
- *  - COLUMNS ARE THE SCHEME. Three core columns (Name* / Mnemonic / Definition)
- *    then one column per facet, rendered by the facet's TYPE (`facetRenderMode`):
+ *  - COLUMNS ARE THE SCHEME. Two core columns (Slug* / Definition) then one column
+ *    per facet, rendered by the facet's TYPE (`facetRenderMode`):
  *    enum-single → <select> of values + "Other…" (inline-add via createFacetValue);
  *    enum-multi → a checkbox menu; boolean → tri-state yes/no/unset; open_text →
  *    a text input. The grid scrolls horizontally when the scheme is wide.
@@ -80,7 +80,7 @@ function citationLabel(c: Citation): string {
  *    optional citation that links every created code `derived_from` that paper.
  *  - ~500 READY ROWS that AUTO-EXTEND: a comfortable empty tail is always kept
  *    below the last filled row, so the researcher never clicks "add row."
- *  - KEYBOARD: Enter in any cell → focus the Name cell of the NEXT row (commit);
+ *  - KEYBOARD: Enter in any cell → focus the Slug cell of the NEXT row (commit);
  *    Shift+Enter in a text cell → insert a newline (multi-line definitions).
  *  - "Create N codes" bulk-creates every named row via `createCodesBulkWithFacets`
  *    (code + version + citation + facet writes). On success committed rows clear
@@ -169,7 +169,7 @@ export default function CodebookEntry({
   const [filledCount, setFilledCount] = useState(0);
   const filledFlags = useRef<boolean[]>(new Array(INITIAL_ROWS).fill(false));
 
-  // Name-cell refs by index, for Enter-to-next-row focus.
+  // Slug-cell refs by index, for Enter-to-next-row focus.
   const nameRefs = useRef<Map<number, HTMLTextAreaElement>>(new Map());
   const setNameRef = useCallback(
     (index: number) => (el: HTMLTextAreaElement | null) => {
@@ -181,8 +181,8 @@ export default function CodebookEntry({
 
   // ---- Arrow-key cell navigation -----------------------------------------
   // Registry of the FOCUSABLE element for every (row, col) cell, keyed
-  // "row:col". Each cell registers its primary focusable element (the Name /
-  // Mnemonic / Definition textarea, the open-text textarea, the enum <select>,
+  // "row:col". Each cell registers its primary focusable element (the Slug /
+  // Definition textarea, the open-text textarea, the enum <select>,
   // or the first button of a boolean / chips cell). The keydown handler resolves
   // the arrow TARGET via the pure `arrowTargetCell`, then focuses that cell's
   // element here — navigation never re-renders the grid (it only moves focus and,
@@ -203,7 +203,7 @@ export default function CodebookEntry({
   );
 
   /** Is the column at `col` a free-text cell (so Left/Right gate on the caret)?
-   *  Core columns (Name/Mnemonic/Definition) and open-text facets are text. */
+   *  Core columns (Slug/Definition) and open-text facets are text. */
   const isTextCol = useCallback(
     (col: number) => {
       if (col < CORE_COL_COUNT) return true;
@@ -551,8 +551,9 @@ export default function CodebookEntry({
             facets
           </Link>
           . <kbd className="font-mono text-xs">Enter</kbd> jumps to the next row;{' '}
-          <kbd className="font-mono text-xs">Shift+Enter</kbd> adds a line. Only{' '}
-          <span className="font-medium text-foreground/80">Name</span> is required.
+          <kbd className="font-mono text-xs">Shift+Enter</kbd> adds a line. Only the{' '}
+          <span className="font-medium text-foreground/80">slug</span> is required — it
+          is the code&apos;s sole identifier.
         </p>
       </header>
 
@@ -622,10 +623,7 @@ export default function CodebookEntry({
             <thead>
               <tr className="border-b border-foreground/15 text-left">
                 <th className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-foreground/50" style={{ width: 220 }}>
-                  Name<span className="text-red-600">*</span>
-                </th>
-                <th className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-foreground/50" style={{ width: 150 }}>
-                  Mnemonic
+                  Slug<span className="text-red-600">*</span>
                 </th>
                 <th className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-foreground/50" style={{ width: 260 }}>
                   Definition
@@ -722,7 +720,6 @@ const LABEL_COL_WIDTH = 240;
 function tableMinWidth(columns: FacetColumn[], hasLabels: boolean): number {
   return (
     220 +
-    150 +
     260 +
     columns.reduce((sum, c) => sum + facetColWidth(c.mode), 0) +
     (hasLabels ? LABEL_COL_WIDTH : 0)
@@ -783,19 +780,14 @@ const GridRowView = memo(function GridRowView({
   addFacetValue,
 }: GridRowProps) {
   // Local mirror of this row's data; the parent ref is the durable source.
-  const [name, setName] = useState(initial.core.name);
-  const [mnemonic, setMnemonic] = useState(initial.core.mnemonic);
+  const [slug, setSlug] = useState(initial.core.slug);
   const [definition, setDefinition] = useState(initial.core.definition);
   const [facetState, setFacetState] = useState<Record<string, FacetCell>>(initial.facets);
   const [labelState, setLabelState] = useState<string[]>(initial.labels);
 
-  function commitName(v: string) {
-    setName(v);
-    writeCore(index, { name: v });
-  }
-  function commitMnemonic(v: string) {
-    setMnemonic(v);
-    writeCore(index, { mnemonic: v });
+  function commitSlug(v: string) {
+    setSlug(v);
+    writeCore(index, { slug: v });
   }
   function commitDefinition(v: string) {
     setDefinition(v);
@@ -816,14 +808,14 @@ const GridRowView = memo(function GridRowView({
     });
   }
 
-  /** The Name cell registers with BOTH the name-ref map (Enter focus) and the
+  /** The Slug cell registers with BOTH the name-ref map (Enter focus) and the
    *  generic cell-ref registry (arrow nav at col 0). */
   const nameCellRef = (el: HTMLTextAreaElement | null) => {
     setNameRef(index)(el);
     setCellRef(index, 0)(el);
   };
 
-  /** Keydown for a CORE text cell at `col`: Enter→next Name, Shift+Enter→newline,
+  /** Keydown for a CORE text cell at `col`: Enter→next Slug, Shift+Enter→newline,
    *  arrows→cell nav (caret-aware via the parent handler). */
   function onCoreTextKeyDown(col: number) {
     return (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -842,38 +834,25 @@ const GridRowView = memo(function GridRowView({
       <td className="align-top">
         <textarea
           ref={nameCellRef}
-          value={name}
+          value={slug}
           rows={1}
           disabled={disabled}
-          onChange={(e) => commitName(e.target.value)}
+          onChange={(e) => commitSlug(e.target.value)}
           onKeyDown={onCoreTextKeyDown(0)}
-          placeholder="code name"
-          aria-label="Code name"
-          className="w-full resize-none bg-transparent px-3 py-1.5 outline-none focus:bg-foreground/5 disabled:opacity-50"
+          placeholder="code slug"
+          aria-label="Code slug"
+          className="w-full resize-none bg-transparent px-3 py-1.5 font-mono text-xs outline-none focus:bg-foreground/5 disabled:opacity-50"
         />
         {error && <div className="px-3 pb-1 text-xs text-red-600">{error}</div>}
       </td>
       <td className="align-top">
         <textarea
           ref={setCellRef(index, 1)}
-          value={mnemonic}
-          rows={1}
-          disabled={disabled}
-          onChange={(e) => commitMnemonic(e.target.value)}
-          onKeyDown={onCoreTextKeyDown(1)}
-          placeholder="(auto)"
-          aria-label="Code mnemonic (optional)"
-          className="w-full resize-none bg-transparent px-3 py-1.5 font-mono text-xs outline-none focus:bg-foreground/5 disabled:opacity-50"
-        />
-      </td>
-      <td className="align-top">
-        <textarea
-          ref={setCellRef(index, 2)}
           value={definition}
           rows={1}
           disabled={disabled}
           onChange={(e) => commitDefinition(e.target.value)}
-          onKeyDown={onCoreTextKeyDown(2)}
+          onKeyDown={onCoreTextKeyDown(1)}
           placeholder="one-line definition (optional)"
           aria-label="Code definition (optional)"
           className="w-full resize-none bg-transparent px-3 py-1.5 outline-none focus:bg-foreground/5 disabled:opacity-50"

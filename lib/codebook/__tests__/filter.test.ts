@@ -10,9 +10,9 @@ import {
 } from '@/lib/codebook/filter';
 
 const codes: FilterableCode[] = [
-  { mnemonic: 'SPEC-GAP', name: 'Specification gap', episodeIds: ['e1', 'e2'], labelIds: ['l1'], citationIds: ['c1', 'c2'] },
-  { mnemonic: 'EDGE', name: 'Edge case', episodeIds: ['e2'], labelIds: ['l1', 'l2'], citationIds: ['c2'] },
-  { mnemonic: 'NULL', name: 'Null handling', episodeIds: [], labelIds: [], citationIds: [] },
+  { mnemonic: 'SPEC-GAP', episodeIds: ['e1', 'e2'], labelIds: ['l1'], citationIds: ['c1', 'c2'] },
+  { mnemonic: 'EDGE', episodeIds: ['e2'], labelIds: ['l1', 'l2'], citationIds: ['c2'] },
+  { mnemonic: 'NULL', episodeIds: [], labelIds: [], citationIds: [] },
 ];
 
 describe('matchesQuery', () => {
@@ -21,14 +21,15 @@ describe('matchesQuery', () => {
     expect(matchesQuery(codes[0], '   ')).toBe(true);
   });
 
-  it('is case-insensitive over mnemonic OR name', () => {
+  it('is case-insensitive over the mnemonic (the slug)', () => {
     expect(matchesQuery(codes[0], 'spec')).toBe(true); // mnemonic
     expect(matchesQuery(codes[0], 'GAP')).toBe(true); // mnemonic, upper
-    expect(matchesQuery(codes[0], 'specification')).toBe(true); // name
+    expect(matchesQuery(codes[0], 'spec-gap')).toBe(true); // full slug
   });
 
-  it('returns false when neither mnemonic nor name contains the query', () => {
+  it('returns false when the mnemonic does not contain the query', () => {
     expect(matchesQuery(codes[0], 'zzz')).toBe(false);
+    expect(matchesQuery(codes[0], 'specification')).toBe(false); // no name to match
   });
 });
 

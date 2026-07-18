@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
 // Pure grid logic for the scheme-derived Codebook bulk-entry spreadsheet.
 //
-// The grid's COLUMNS are derived from the codebook's scheme: three core columns
-// (Name / Mnemonic / Definition) followed by one column per facet, rendered by
-// the facet's TYPE (`facetRenderMode`). A grid ROW therefore carries the three
-// core cells PLUS a per-facet value bag.
+// The grid's COLUMNS are derived from the codebook's scheme: two core columns
+// (Slug / Definition) followed by one column per facet, rendered by the facet's
+// TYPE (`facetRenderMode`). A grid ROW therefore carries the two core cells PLUS
+// a per-facet value bag.
 //
 // This module is PURE (no I/O, no React) so it unit-tests cleanly and is the
 // single source of truth shared by the client grid and the bulk-create action:
@@ -14,10 +14,10 @@
 //                             boolean/open_text fields), dropping unset cells;
 //   - `bufferedRowCount`    — the auto-extend buffer math (how many rows to keep
 //                             so there is always a comfortable empty tail);
-//   - `nextRowFocusIndex`   — the Enter-key target (Name cell of the next row).
+//   - `nextRowFocusIndex`   — the Enter-key target (Slug cell of the next row).
 //
 // `RowData.core` reuses `CodebookRow` (lib/codebook/mnemonic.ts) so the existing
-// `resolveRows` validation/mnemonic-derivation path is unchanged.
+// `resolveRows` validation path is unchanged.
 // ---------------------------------------------------------------------------
 
 import type { CodebookRow } from './mnemonic';
@@ -82,7 +82,7 @@ export function emptyFacetCell(mode: FacetRenderMode): FacetCell {
 export function emptyRow(columns: FacetColumn[]): RowData {
   const facets: Record<string, FacetCell> = {};
   for (const col of columns) facets[col.facetId] = emptyFacetCell(col.mode);
-  return { core: { name: '', mnemonic: '', definition: '' }, facets, labels: [] };
+  return { core: { slug: '', definition: '' }, facets, labels: [] };
 }
 
 /** Whether a facet cell carries any value (would produce a write). */
@@ -99,12 +99,12 @@ export function isFacetCellSet(cell: FacetCell | undefined): boolean {
 }
 
 /**
- * A row is empty iff its three core cells are blank AND no facet cell is set AND
+ * A row is empty iff its two core cells are blank AND no facet cell is set AND
  * no label is tagged. The always-present trailing buffer rows are empty by this
  * test and skipped on commit. (A row with ONLY facet data or ONLY labels but no
- * name is NOT empty here, so the client submits it. Server-side, `resolveRows`
+ * slug is NOT empty here, so the client submits it. Server-side, `resolveRows`
  * judges it empty by its CORE cells alone and drops it — so `createCodesBulkWith-
- * Facets` cross-references the write-bearing indices and surfaces a "Name is
+ * Facets` cross-references the write-bearing indices and surfaces a "slug is
  * required" error for it via `writeOnlyRowErrors` (mnemonic.ts). The row is then
  * kept in the grid with that error rather than silently cleared, so the researcher
  * does not lose the facet selections or label tags they made on a nameless row.)
@@ -226,7 +226,7 @@ export function lastFilledIndex(rows: RowData[]): number {
 }
 
 /**
- * The Enter-key focus target: the index of the NEXT row (whose Name cell should
+ * The Enter-key focus target: the index of the NEXT row (whose Slug cell should
  * receive focus). Pressing Enter on the last row returns `currentIndex + 1`,
  * which the caller treats as "append a row, then focus it" (the grid auto-
  * extends, so the next row always exists after the count is recomputed).
@@ -240,7 +240,7 @@ export function nextRowFocusIndex(currentIndex: number): number {
 // Arrow-key cell navigation (pure target-cell computation)
 //
 // The grid is a spreadsheet of CELLS addressed by (rowIndex, colIndex):
-//   col 0 = Name, col 1 = Mnemonic, col 2 = Definition, col 3.. = one per facet.
+//   col 0 = Slug, col 1 = Definition, col 2.. = one per facet.
 // `CORE_COL_COUNT` is the count of fixed leading columns; `colCount` for a grid
 // is therefore `CORE_COL_COUNT + facetColumns.length`.
 //
@@ -252,8 +252,8 @@ export function nextRowFocusIndex(currentIndex: number): number {
 // right element for the target cell's type and to auto-extend the grid.
 // ---------------------------------------------------------------------------
 
-/** Number of fixed leading columns before the facet columns (Name/Mnemonic/Definition). */
-export const CORE_COL_COUNT = 3;
+/** Number of fixed leading columns before the facet columns (Slug/Definition). */
+export const CORE_COL_COUNT = 2;
 
 /** The four arrow keys this navigation responds to. */
 export type ArrowKey = 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight';
@@ -265,8 +265,8 @@ export type CellPos = { row: number; col: number };
  * Inputs to the pure arrow-navigation decision:
  *   - `row`/`col`     — the currently focused cell.
  *   - `key`           — the arrow key pressed.
- *   - `isTextCell`    — whether the FOCUSED cell is a free-text field (Name /
- *                       Mnemonic / Definition / open-text facet). Only text
+ *   - `isTextCell`    — whether the FOCUSED cell is a free-text field (Slug /
+ *                       Definition / open-text facet). Only text
  *                       cells gate Left/Right on the caret; non-text cells
  *                       (select, yes/no, chips) move cells immediately.
  *   - `caretAtStart`  — for a text cell, whether the caret sits at offset 0 with

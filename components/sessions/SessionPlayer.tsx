@@ -1715,7 +1715,6 @@ export default function SessionPlayer({
           popupCodeById.get(c.id) ?? {
             id: c.id,
             mnemonic: c.mnemonic,
-            name: c.mnemonic,
             origin: 'emergent',
             definition: null,
             exemplars: [],

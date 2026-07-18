@@ -149,7 +149,7 @@ export async function createFacetValue(
  *   A VALUE is an ANSWER — the place you file what you pointed at.
  *
  * If you cannot point until you have decided WHICH sub-thing happened, the thing is a
- * value, not a code. This converts it: the code's name becomes the value's label, its
+ * value, not a code. This converts it: the code's slug becomes the value's label, its
  * definition becomes the value's description, and every code that was going to sit
  * under it can now simply ANSWER it.
  *
@@ -165,7 +165,7 @@ export async function promoteCodeToValue(
 ): Promise<FacetValue> {
   await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
   const code = await cbFrom('cb_codes')
-    .select('id, name, current_version_id')
+    .select('id, mnemonic, current_version_id')
     .eq('id', codeId)
     .single();
   if (code.error || !code.data) {
@@ -188,7 +188,7 @@ export async function promoteCodeToValue(
     .insert({
       facet_id: facetId,
       key: code.data.id, // breadcrumb: this value used to be that code
-      label: code.data.name,
+      label: code.data.mnemonic,
       description,
       parent_id: parentValueId,
       color: autoColor(position),

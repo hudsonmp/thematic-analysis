@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createCode, type CodeOrigin } from '@/app/actions/codes';
-import { deriveMnemonic, uniqueMnemonic } from '@/lib/codebook/mnemonic';
+import { normalizeSlug } from '@/lib/codebook/mnemonic';
 import { fuzzyRank } from '@/lib/transcript/fuzzy';
 
 /** What the popup knows about a code — enough to assign it AND to read it before
@@ -10,7 +10,6 @@ import { fuzzyRank } from '@/lib/transcript/fuzzy';
 export type PopupCode = {
   id: string;
   mnemonic: string;
-  name: string;
   origin: string;
   definition: string | null;
   /** Exemplar texts from the code's current version (jsonb → strings). Shown when
@@ -38,7 +37,7 @@ const POPUP_MAX_H = 480;
  * pending selection stays painted in the transcript (the synthetic pending highlight)
  * precisely because focus moves INTO this popup and the native selection dies.
  *
- * The New-code section carries only name + optional definition + origin. NO facet
+ * The New-code section carries only the slug + optional definition + origin. NO facet
  * answers on purpose: a code born mid-transcript lands UNCLASSIFIED and surfaces in
  * the codebook's triage queue — classification is a different cognitive mode from
  * capture, and the queue is where it happens (Exploration is optional by construction).
@@ -77,7 +76,7 @@ export default function CodingPopup({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
 
-  const [newName, setNewName] = useState('');
+  const [newSlug, setNewSlug] = useState('');
   const [newDefinition, setNewDefinition] = useState('');
   const [newOrigin, setNewOrigin] = useState<CodeOrigin>('emergent');
   const [creating, setCreating] = useState(false);
@@ -172,38 +171,34 @@ export default function CodingPopup({
   }
 
   async function createAndAssign() {
-    const name = newName.trim();
-    if (!name || creating || busy) return;
+    const typed = newSlug.trim();
+    if (!typed || creating || busy) return;
+    // The typed slug IS the mnemonic (the code's sole identifier). Normalize to the
+    // canonical UPPER-KEBAB form and reject a collision against the current snapshot
+    // rather than silently mangling it. NO facet answers: the code lands unclassified
+    // → the triage queue picks it up. Definition falls back to the slug so
+    // cb_code_versions' NOT NULL is satisfied without demanding prose mid-coding.
+    const mnemonic = normalizeSlug(typed);
+    if (codes.some((c) => c.mnemonic === mnemonic)) {
+      setCreateError(`The slug "${mnemonic}" is already in use.`);
+      return;
+    }
     setCreating(true);
     setCreateError(null);
     try {
-      // Mnemonic auto-derives (unique against the whole codebook). NO facet answers:
-      // the code lands unclassified → the triage queue picks it up. Definition falls
-      // back to the name so cb_code_versions' NOT NULL is satisfied without demanding
-      // prose mid-coding.
-      // Client-side derivation is a PREVIEW; the server re-uniquifies against the
-      // live codebook (autoUniqueMnemonic) because this popup's `codes` prop is a
-      // snapshot — another coder can mint the same mnemonic between render and
-      // submit, and UNIQUE(codebook_id, mnemonic) would reject the insert.
-      const mnemonic = uniqueMnemonic(
-        deriveMnemonic(name),
-        new Set(codes.map((c) => c.mnemonic)),
-      );
       const codeId = await createCode({
         codebookId,
         mnemonic,
-        autoUniqueMnemonic: true,
-        name,
         origin: newOrigin,
         version: {
-          definition: newDefinition.trim() || name,
+          definition: newDefinition.trim() || mnemonic,
           include_if: [],
           exclude_if: [],
           exemplars: [],
         },
         studyLabel,
       });
-      setNewName('');
+      setNewSlug('');
       setNewDefinition('');
       setShowNew(false);
       onCodeCreated(codeId);
@@ -368,8 +363,8 @@ export default function CodingPopup({
             <div className="space-y-1.5">
               <input
                 autoFocus
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
+                value={newSlug}
+                onChange={(e) => setNewSlug(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
@@ -377,8 +372,8 @@ export default function CodingPopup({
                   }
                   if (e.key === 'Escape') setShowNew(false);
                 }}
-                placeholder="Code name (mnemonic auto-derives)"
-                className="w-full border border-foreground/20 bg-background px-2 py-1 text-sm focus:border-foreground focus:outline-none"
+                placeholder="Slug (the code's identifier · UPPER-KEBAB)"
+                className="w-full border border-foreground/20 bg-background px-2 py-1 font-mono text-sm focus:border-foreground focus:outline-none"
               />
               <textarea
                 value={newDefinition}
@@ -403,7 +398,7 @@ export default function CodingPopup({
                 </span>
                 <button
                   type="button"
-                  disabled={creating || busy || !newName.trim()}
+                  disabled={creating || busy || !newSlug.trim()}
                   onClick={() => void createAndAssign()}
                   className="shrink-0 border border-foreground bg-foreground px-2 py-1 text-xs text-background transition hover:opacity-90 disabled:opacity-40"
                 >
