@@ -140,12 +140,26 @@ export default async function SessionPage({
   // Flatten the codebook tree to what the coding popup consumes: the picker's
   // identity fields PLUS origin/definition — a row click EXPANDS metadata (reading
   // is not assigning), so the popup must know what the code means, not just its name.
+  // `exemplars` is a jsonb column (untyped `Json`) holding `{ text, … }[]`. Pull the
+  // texts defensively — a malformed row must not throw in a server component render.
+  const exemplarTexts = (raw: unknown): string[] =>
+    Array.isArray(raw)
+      ? raw
+          .map((e) =>
+            e && typeof e === 'object' && typeof (e as { text?: unknown }).text === 'string'
+              ? (e as { text: string }).text
+              : '',
+          )
+          .filter((t) => t !== '')
+      : [];
+
   const codes = tree.codes.map((c) => ({
     id: c.id,
     mnemonic: c.mnemonic,
     name: c.name,
     origin: c.origin,
     definition: c.current?.definition ?? null,
+    exemplars: exemplarTexts(c.current?.exemplars),
   }));
 
   // Effective recording anchor (Task 5) — MUST match materializeAutoEpisodes so

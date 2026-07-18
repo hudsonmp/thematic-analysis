@@ -13,6 +13,9 @@ export type PopupCode = {
   name: string;
   origin: string;
   definition: string | null;
+  /** Exemplar texts from the code's current version (jsonb → strings). Shown when
+   *  a row is expanded, and searched alongside the slug + definition. */
+  exemplars: string[];
 };
 
 const POPUP_W = 400;
@@ -118,7 +121,15 @@ export default function CodingPopup({
   const assignedIds = useMemo(() => new Set(assigned.map((c) => c.id)), [assigned]);
   const ranked = useMemo(
     () =>
-      fuzzyRank(query, codes, (c) => `${c.mnemonic} ${c.name}`)
+      // Search matches the SLUG (mnemonic) + definition + exemplars — the code's
+      // meaning, not a display name. Matching exemplars lets a coder find a code by
+      // recalling an instance ("the one about reassigning drivers") when the slug
+      // doesn't come to mind.
+      fuzzyRank(
+        query,
+        codes,
+        (c) => `${c.mnemonic} ${c.definition ?? ''} ${c.exemplars.join(' ')}`,
+      )
         .map((m) => m.item)
         .filter((c) => !assignedIds.has(c.id))
         .slice(0, 50),
@@ -307,8 +318,9 @@ export default function CodingPopup({
                     onClick={() => setExpandedId(expanded ? null : c.id)}
                     className="min-w-0 flex-1 text-left"
                   >
-                    <span className="font-mono text-xs text-foreground/50">{c.mnemonic}</span>{' '}
-                    <span className="text-sm">{c.name}</span>
+                    {/* Collapsed = the SLUG only (the code's identity). Click to
+                        expand definition + exemplars before committing. */}
+                    <span className="font-mono text-sm">{c.mnemonic}</span>
                   </button>
                   <button
                     type="button"
@@ -324,6 +336,15 @@ export default function CodingPopup({
                 {expanded && (
                   <div className="mx-3 mb-1 border-l-2 border-foreground/15 py-0.5 pl-2 text-xs text-foreground/60">
                     <p>{c.definition ?? <em>No definition yet.</em>}</p>
+                    {c.exemplars.length > 0 && (
+                      <ul className="mt-1 list-disc space-y-0.5 pl-4 text-foreground/55">
+                        {c.exemplars.map((ex, i) => (
+                          <li key={i} className="italic">
+                            “{ex}”
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                     <p className="mt-0.5 text-[11px] uppercase tracking-wide text-foreground/35">
                       {c.origin.replace('_', ' ')}
                     </p>
