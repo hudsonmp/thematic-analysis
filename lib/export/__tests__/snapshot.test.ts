@@ -90,7 +90,6 @@ function fixture(): CodebookTree {
         id: 'code-1',
         codebook_id: 'cb-1',
         mnemonic: 'ALPHA',
-        name: 'Alpha code',
         origin: 'a_priori',
         status: 'active',
         parent_code_id: null,
@@ -123,7 +122,6 @@ function fixture(): CodebookTree {
         id: 'code-2',
         codebook_id: 'cb-1',
         mnemonic: 'BETA',
-        name: 'Beta code',
         origin: 'emergent',
         status: 'proposed',
         parent_code_id: null,
@@ -198,10 +196,11 @@ describe('buildSnapshot', () => {
     expect(alpha).toMatchObject({
       id: 'code-1',
       mnemonic: 'ALPHA',
-      name: 'Alpha code',
       origin: 'a_priori',
       status: 'active',
     });
+    // The slug/mnemonic is the sole identifier now — no display name is emitted.
+    expect('name' in alpha).toBe(false);
     expect(alpha.current_version).toEqual({
       version: 3,
       definition: 'When the learner does X.',

@@ -13,7 +13,7 @@ function facet(id: string, values: { id: string; parent_id: string | null }[]): 
 }
 
 function code(id: string, mnemonic: string, facetValueIds: string[]): CodeWithRefs {
-  return { id, mnemonic, name: mnemonic, facetValueIds } as unknown as CodeWithRefs;
+  return { id, mnemonic, facetValueIds } as unknown as CodeWithRefs;
 }
 
 //  Space
