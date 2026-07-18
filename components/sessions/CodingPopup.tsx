@@ -75,6 +75,7 @@ export default function CodingPopup({
   const [query, setQuery] = useState('');
   const [cursor, setCursor] = useState(0);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
 
   const [newSlug, setNewSlug] = useState('');
@@ -304,9 +305,18 @@ export default function CodingPopup({
           )}
           {ranked.map((c, i) => {
             const focused = i === safeCursor;
-            const expanded = expandedId === c.id;
+            // Details reveal on HOVER as well as click: hovering is transient
+            // (leave → collapse), a click PINS the expansion open. Both show the
+            // same block — slug alone is recognition-hostile for terse slugs, so
+            // the meaning must be one glance away, not one commit away.
+            const expanded = expandedId === c.id || hoveredId === c.id;
             return (
-              <div key={c.id} data-row>
+              <div
+                key={c.id}
+                data-row
+                onMouseEnter={() => setHoveredId(c.id)}
+                onMouseLeave={() => setHoveredId((h) => (h === c.id ? null : h))}
+              >
                 <div
                   className={`flex items-center gap-2 px-3 py-1 ${
                     focused ? 'bg-foreground/[0.06]' : ''
