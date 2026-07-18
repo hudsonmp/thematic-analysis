@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { saveNewVersion } from '@/app/actions/codes';
 import type { ProtocolEpisode } from '@/app/actions/protocol';
+import MentionTextarea, { type MentionCode } from '@/components/codebook/MentionTextarea';
 import type { CodeVersionInputT, EpisodeRefT, ExemplarT } from '@/lib/types/contracts';
 import type { Tables } from '@/lib/types/cb-db';
 import BulletListEditor from './BulletListEditor';
@@ -50,15 +51,23 @@ export default function AnatomyEditor({
   codeId,
   current,
   episodes,
+  allCodes,
 }: {
   codeId: string;
   current: CodeVersion | null;
   episodes: ProtocolEpisode[];
+  /** Every code in the codebook — for @-mentioning in the definition and
+   *  counter-example. Threaded from the code page via CodeCard, never fetched. */
+  allCodes: MentionCode[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+
+  // @-mention candidates: every code but this one — a code citing itself in
+  // its own definition says nothing.
+  const mentionables = allCodes.filter((c) => c.id !== codeId);
 
   const [definition, setDefinition] = useState(current?.definition ?? '');
   const [includeIf, setIncludeIf] = useState<string[]>(asStringArray(current?.include_if));
@@ -129,13 +138,15 @@ export default function AnatomyEditor({
         <label className="text-xs uppercase tracking-wider text-foreground/50">
           Definition <span className="text-red-600">*</span>
         </label>
-        <textarea
+        <MentionTextarea
           value={definition}
           disabled={isPending}
-          onChange={(e) => setDefinition(e.target.value)}
+          onChange={setDefinition}
+          codes={mentionables}
           rows={3}
-          placeholder="What this code captures — the rule a coder applies."
+          placeholder="What this code captures — the rule a coder applies. @ mentions another code."
           className="w-full border border-foreground/15 px-2 py-1.5 text-sm bg-background"
+          aria-label="Definition"
         />
       </div>
 
@@ -227,13 +238,15 @@ export default function AnatomyEditor({
           <label className="text-xs uppercase tracking-wider text-foreground/50">
             Disconfirming pattern
           </label>
-          <textarea
+          <MentionTextarea
             value={disconfirming}
             disabled={isPending}
-            onChange={(e) => setDisconfirming(e.target.value)}
+            onChange={setDisconfirming}
+            codes={mentionables}
             rows={2}
-            placeholder="What evidence would count AGAINST this code applying."
+            placeholder="What evidence would count AGAINST this code applying. @ mentions the code it belongs to instead."
             className="w-full border border-foreground/15 px-2 py-1.5 text-sm bg-background"
+            aria-label="Disconfirming pattern"
           />
         </div>
       </div>

@@ -13,6 +13,7 @@ import {
 import { linkCitation, unlinkCitation } from '@/app/actions/citations';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import BulletListEditor from '@/components/code/BulletListEditor';
+import MentionTextarea, { type MentionCode } from '@/components/codebook/MentionTextarea';
 import type { ExemplarT } from '@/lib/types/contracts';
 import type { Tables } from '@/lib/types/cb-db';
 import ValueList from './ValueList';
@@ -41,6 +42,7 @@ export default function CodeEditor({
   code,
   facets,
   citations,
+  allCodes,
   /** Convert this code into a VALUE of the shown dimension — for the case where it turns
    *  out to be the CATEGORY its sub-themes answer. */
   onPromote,
@@ -50,6 +52,9 @@ export default function CodeEditor({
   code: CodeWithRefs;
   facets: FacetWithValues[];
   citations: Citation[];
+  /** Every code in the codebook — for @-mentioning in the definition and
+   *  counter-example. Threaded from the host (canvas/queue), never fetched. */
+  allCodes: MentionCode[];
   onPromote?: () => void;
   promoteTo?: string | null;
   /** Called after a SUCCESSFUL "Save version" — the host uses it to dismiss the
@@ -63,6 +68,10 @@ export default function CodeEditor({
   const [error, setError] = useState<string | null>(null);
 
   const [mnemonic, setMnemonic] = useState(code.mnemonic);
+
+  // @-mention candidates: every code but this one — a code citing itself in
+  // its own definition says nothing.
+  const mentionables = allCodes.filter((c) => c.id !== code.id);
 
   const v = code.current;
   const [definition, setDefinition] = useState(v?.definition ?? '');
@@ -208,13 +217,15 @@ export default function CodeEditor({
 
       {/* ---- ANATOMY: versioned, saved together ---- */}
       <section className="space-y-2 border-t border-foreground/10 pt-3">
-        <Field label="Definition">
-          <textarea
+        <Field label="Definition" hint="@ mentions another code by its slug.">
+          <MentionTextarea
             value={definition}
             disabled={pending}
-            onChange={(e) => setDefinition(e.target.value)}
+            onChange={setDefinition}
+            codes={mentionables}
             rows={3}
             className={input}
+            aria-label="Definition"
           />
         </Field>
 
@@ -242,14 +253,16 @@ export default function CodeEditor({
 
         <Field
           label="Counter-example"
-          hint="The near-miss that looks like this code but is NOT it — the single most useful field for coder agreement."
+          hint="The near-miss that looks like this code but is NOT it — the single most useful field for coder agreement. @ mentions the code the near-miss belongs to."
         >
-          <textarea
+          <MentionTextarea
             value={disconfirming}
             disabled={pending}
-            onChange={(e) => setDisconfirming(e.target.value)}
+            onChange={setDisconfirming}
+            codes={mentionables}
             rows={2}
             className={input}
+            aria-label="Counter-example"
           />
         </Field>
 

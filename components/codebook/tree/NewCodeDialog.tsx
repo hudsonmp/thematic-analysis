@@ -12,6 +12,7 @@ import type { FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
 import { normalizeSlug } from '@/lib/codebook/mnemonic';
 import BulletListEditor from '@/components/code/BulletListEditor';
+import MentionTextarea from '@/components/codebook/MentionTextarea';
 import ValueList from './ValueList';
 import type { Tables } from '@/lib/types/cb-db';
 
@@ -461,12 +462,14 @@ export default function NewCodeDialog({
                 />
               </Field>
 
-              <Field label="Definition">
-                <textarea
+              <Field label="Definition" hint="@ mentions an existing code by its slug.">
+                <MentionTextarea
                   value={definition}
-                  onChange={(e) => setDefinition(e.target.value)}
+                  onChange={setDefinition}
+                  codes={codes}
                   rows={3}
                   className={inputCls}
+                  aria-label="Definition"
                 />
               </Field>
 

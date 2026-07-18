@@ -37,6 +37,9 @@ export default async function CodePage({ params }: { params: Promise<{ id: strin
       versions={versions}
       comments={comments}
       episodes={episodes}
+      // The @-mention candidates for the anatomy editor: the tree is already
+      // in hand here, so the id+mnemonic pairs ride down as plain props.
+      allCodes={tree.codes.map((c) => ({ id: c.id, mnemonic: c.mnemonic }))}
     />
   );
 }

@@ -815,6 +815,7 @@ export default function FacetCanvas({
                 code={selectedCode}
                 facets={dimensions}
                 citations={citations}
+                allCodes={codes}
                 // A successful "Save version" IS "done with this code": dismiss the
                 // inspector through the same path as its ✕. A failed save never
                 // fires this, so the error stays visible.

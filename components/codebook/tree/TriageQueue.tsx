@@ -112,6 +112,7 @@ export default function TriageQueue({
                     code={code}
                     facets={facets}
                     citations={citations}
+                    allCodes={codes}
                     onSaved={() => setOpenId(null)}
                   />
                 </div>

@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { setCodeStatus, retireCode, type CodeStatus } from '@/app/actions/codes';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { splitDefinition } from '@/lib/codebook/definition';
+import type { MentionCode } from '@/components/codebook/MentionTextarea';
 import type { ProtocolEpisode } from '@/app/actions/protocol';
 import type { Tables } from '@/lib/types/cb-db';
 import AnatomyEditor from './AnatomyEditor';
@@ -65,6 +66,7 @@ export default function CodeCard({
   versions,
   comments,
   episodes,
+  allCodes,
 }: {
   code: CodeWithRefs;
   facets: FacetWithValues[];
@@ -74,6 +76,8 @@ export default function CodeCard({
   versions: CodeVersion[];
   comments: CoderComment[];
   episodes: ProtocolEpisode[];
+  /** Every code in the codebook — the anatomy editor @-mentions them. */
+  allCodes: MentionCode[];
 }) {
   const router = useRouter();
   const [tab, setTab] = useState<TabKey>('anatomy');
@@ -191,7 +195,12 @@ export default function CodeCard({
 
       <section>
         {tab === 'anatomy' && (
-          <AnatomyEditor codeId={code.id} current={code.current} episodes={episodes} />
+          <AnatomyEditor
+            codeId={code.id}
+            current={code.current}
+            episodes={episodes}
+            allCodes={allCodes}
+          />
         )}
         {tab === 'classification' && (
           <FacetTagger
