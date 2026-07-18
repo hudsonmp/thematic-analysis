@@ -40,7 +40,7 @@ import {
   type Highlight,
 } from '@/lib/transcript/selection';
 import { groupIntoTurns } from '@/lib/transcript/turns';
-import { findActiveIndex } from '@/lib/transcript/active';
+import { findActiveIndex, nearestCueIndex } from '@/lib/transcript/active';
 import { findPhraseMatches } from '@/lib/transcript/search';
 import { cardsByTurn, type RailCard } from '@/lib/transcript/rail';
 import { packGutter, sameAnchor, type GutterInput } from '@/lib/transcript/gutter';
@@ -434,7 +434,6 @@ export default function SessionPlayer({
   // Whether the new-comment COMPOSER card is open (⌘⌥M on a fresh selection).
   const [composerOpen, setComposerOpen] = useState(false);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const [selectionCommentDraft, setSelectionCommentDraft] = useState('');
   const [commentBusy, setCommentBusy] = useState(false);
   const [commentRowBusyId, setCommentRowBusyId] = useState<string | null>(null);
   const [commentError, setCommentError] = useState<string | null>(null);
@@ -972,7 +971,10 @@ export default function SessionPlayer({
   // Comment on a FRESH selection: create a kind:'quote' anchor, post the first
   // comment, then open its thread card. (Google-Docs comment-on-selection.)
   const handleCommentOnSelection = useCallback(async () => {
-    if (!pending || !versionId || selectionCommentDraft.trim() === '') return;
+    // Read the note text straight from the DOM (the composer is fully uncontrolled
+    // — no onChange/state — so nothing re-renders it mid-edit and the caret holds).
+    const text = composerTextareaRef.current?.value.trim() ?? '';
+    if (!pending || !versionId || text === '') return;
     setCommentBusy(true);
     setCommentError(null);
     try {
@@ -991,10 +993,7 @@ export default function SessionPlayer({
         kind: 'quote',
         codeIds: [],
       });
-      await addAnnotationComment(ann.id, selectionCommentDraft.trim());
-      setSelectionCommentDraft('');
-      // The composer textarea is UNCONTROLLED (no value prop) to keep the caret
-      // stable while typing; clear its DOM value imperatively on submit.
+      await addAnnotationComment(ann.id, text);
       if (composerTextareaRef.current) composerTextareaRef.current.value = '';
       clearSelection();
       setComposerOpen(false);
@@ -1005,7 +1004,7 @@ export default function SessionPlayer({
     } finally {
       setCommentBusy(false);
     }
-  }, [pending, versionId, selectionCommentDraft, id, clearSelection, afterAnnotationMutation, openCommentThread]);
+  }, [pending, versionId, id, clearSelection, afterAnnotationMutation, openCommentThread]);
 
   const handleDeleteComment = useCallback(
     async (commentId: string) => {
@@ -1119,9 +1118,19 @@ export default function SessionPlayer({
           if (printable || commitChord) {
             e.preventDefault();
             setOpenCommentAnnId(null);
-            if (printable) setSelectionCommentDraft((d) => d + e.key);
+            const seed = printable ? e.key : '';
             setComposerOpen(true);
-            setTimeout(() => composerTextareaRef.current?.focus(), 0);
+            // Seed the UNCONTROLLED textarea's DOM directly and put the caret AFTER
+            // the seed char. Seeding via React state + defaultValue placed the caret
+            // at position 0 on focus, so the rest of the word typed in REVERSED
+            // ("Hello" → "elloH"). Writing the DOM value + setSelectionRange fixes it.
+            setTimeout(() => {
+              const ta = composerTextareaRef.current;
+              if (!ta) return;
+              ta.value = seed;
+              ta.focus();
+              ta.setSelectionRange(seed.length, seed.length);
+            }, 0);
           }
         }
       }
@@ -1269,6 +1278,27 @@ export default function SessionPlayer({
   // dropped flags that fell in inter-cue gaps. EVERY flag must map onto some text, so
   // a gap-falling flag attaches to its nearest cue by time. Only an empty transcript
   // yields no mapping (idx < 0).
+  const flagHighlightsBySegment = useMemo(() => {
+    const m = new Map<string, Highlight[]>();
+    for (const { obs, offsetMs } of flagMarkers) {
+      const idx = nearestCueIndex(segments, offsetMs);
+      if (idx < 0) continue;
+      const seg = segments[idx];
+      const list = m.get(seg.id) ?? [];
+      list.push({
+        annotationId: `flag:${obs.id}`,
+        charStart: 0,
+        charEnd: seg.text.length,
+        kind: 'flag',
+        // A guaranteed hex so the renderer alpha-composites a TRANSLUCENT tint
+        // (`hexWithAlpha`). A colorless flag (a bare note) falls back to neutral
+        // gray — never the opaque `var(--foreground)`, which would black out the cue.
+        color: obs.color ?? '#9ca3af',
+      });
+      m.set(seg.id, list);
+    }
+    return m;
+  }, [flagMarkers, segments]);
   // Merge committed annotation highlights + flag highlights + the PENDING selection.
   // The pending range IS painted synthetically now (kind:'pending'): the coding popup
   // steals focus the moment it opens, which kills the native browser selection — and a
@@ -1277,13 +1307,17 @@ export default function SessionPlayer({
   const PENDING_ANN_ID = '__pending__';
   const highlightsBySegmentAll = useMemo(() => {
     const m = new Map<string, Highlight[]>();
-    const segIds = new Set<string>([...highlightsBySegment.keys()]);
-    // FLAG tints deliberately NOT merged: whole-cue washes reveal the cue
-    // segmentation and chop the paragraph into colored blocks — the transcript
-    // should read continuously, like an essay. Flags stay on the timeline bar and
-    // the flag list, which is where a time-anchored event belongs.
+    const segIds = new Set<string>([
+      ...highlightsBySegment.keys(),
+      ...flagHighlightsBySegment.keys(),
+    ]);
+    // Flag tints go UNDER annotation highlights (background wash first, foreground
+    // annotation spans on top), so a coded/commented span stays legible over a flag.
     for (const segId of segIds) {
-      m.set(segId, [...(highlightsBySegment.get(segId) ?? [])]);
+      m.set(segId, [
+        ...(flagHighlightsBySegment.get(segId) ?? []),
+        ...(highlightsBySegment.get(segId) ?? []),
+      ]);
     }
     if (textSel) {
       for (let i = textSel.startSegIdx; i <= textSel.endSegIdx; i++) {
@@ -1315,7 +1349,7 @@ export default function SessionPlayer({
       m.set(seg.id, list);
     });
     return m;
-  }, [highlightsBySegment, searchMatches, safeMatchIdx, segments, textSel]);
+  }, [highlightsBySegment, flagHighlightsBySegment, searchMatches, safeMatchIdx, segments, textSel]);
 
   const annById = useMemo(() => {
     const m = new Map<string, MyAnnotationView>();
@@ -1409,9 +1443,6 @@ export default function SessionPlayer({
 
   const openCommentAnn = openCommentAnnId ? annById.get(openCommentAnnId) ?? null : null;
 
-  const canCommentOnSelection =
-    !!pending && !!versionId && selectionCommentDraft.trim() !== '' && !commentBusy;
-
   const railEnabled = !editing && codingEnabled;
   // The TRANSIENT composer card (a fresh, uncommitted selection) — not yet a
   // persisted annotation, so it isn't in `railCardsByTurn`. Its anchor turn is the
@@ -1452,7 +1483,7 @@ export default function SessionPlayer({
     setComposerOpen(false);
     setOpenCommentAnnId(null);
     setCommentError(null);
-    setSelectionCommentDraft('');
+    if (composerTextareaRef.current) composerTextareaRef.current.value = '';
     clearSelection();
   }, [clearSelection]);
 
@@ -1499,16 +1530,13 @@ export default function SessionPlayer({
                 openCommentAnn={ann}
                 openThread={thread}
                 commentError={commentError}
-                selectionCommentDraft={selectionCommentDraft}
                 commentBusy={commentBusy}
                 commentRowBusyId={commentRowBusyId}
-                canCommentOnSelection={canCommentOnSelection}
                 composerTextareaRef={composerTextareaRef}
                 busyId={busyId}
                 formatTime={formatTime}
                 onClose={closeCard}
                 onSeek={seekTo}
-                onChangeSelectionDraft={setSelectionCommentDraft}
                 onCommentOnSelection={handleCommentOnSelection}
                 onAddNote={handleAddNote}
                 onEditComment={handleEditComment}
@@ -1536,16 +1564,13 @@ export default function SessionPlayer({
               openCommentAnn={null}
               openThread={[]}
               commentError={commentError}
-              selectionCommentDraft={selectionCommentDraft}
               commentBusy={commentBusy}
               commentRowBusyId={commentRowBusyId}
-              canCommentOnSelection={canCommentOnSelection}
               composerTextareaRef={composerTextareaRef}
               busyId={busyId}
               formatTime={formatTime}
               onClose={closeCard}
               onSeek={seekTo}
-              onChangeSelectionDraft={setSelectionCommentDraft}
               onCommentOnSelection={handleCommentOnSelection}
               onAddNote={handleAddNote}
               onEditComment={handleEditComment}
@@ -1675,10 +1700,8 @@ export default function SessionPlayer({
       openCommentAnnId,
       comments,
       commentError,
-      selectionCommentDraft,
       commentBusy,
       commentRowBusyId,
-      canCommentOnSelection,
       busyId,
       pending,
       closeCard,
@@ -2531,16 +2554,13 @@ function CommentCard({
   openCommentAnn,
   openThread,
   commentError,
-  selectionCommentDraft,
   commentBusy,
   commentRowBusyId,
-  canCommentOnSelection,
   composerTextareaRef,
   busyId,
   formatTime: fmtTime,
   onClose,
   onSeek,
-  onChangeSelectionDraft,
   onCommentOnSelection,
   onAddNote,
   onEditComment,
@@ -2552,16 +2572,13 @@ function CommentCard({
   openCommentAnn: MyAnnotationView | null;
   openThread: AnnotationCommentView[];
   commentError: string | null;
-  selectionCommentDraft: string;
   commentBusy: boolean;
   commentRowBusyId: string | null;
-  canCommentOnSelection: boolean;
   composerTextareaRef: React.RefObject<HTMLTextAreaElement | null>;
   busyId: string | null;
   formatTime: (ms: number) => string;
   onClose: () => void;
   onSeek: (ms: number) => void;
-  onChangeSelectionDraft: (v: string) => void;
   onCommentOnSelection: () => void;
   onAddNote: (text: string) => void;
   onEditComment: (id: string, next: string, prev: string) => void;
@@ -2599,25 +2616,20 @@ function CommentCard({
               {commentError}
             </p>
           )}
-          {/* UNCONTROLLED (defaultValue, no value prop): the DOM owns the text so
-              React never rewrites it mid-edit and the caret is never clobbered.
-              onChange still mirrors to state so the Comment button's enablement
-              tracks emptiness. Cleared imperatively via composerTextareaRef on
-              submit (see handleCommentOnSelection). */}
+          {/* FULLY uncontrolled: NO value AND NO onChange. Typing never touches React
+              state, so the composer never re-renders mid-edit and the caret can never
+              reset (the "Made"→"ade M" bug came from onChange→setState re-rendering on
+              the first keystroke). The text is read from the ref at submit; the button
+              is gated only on `commentBusy`, and empty submits are guarded in
+              handleCommentOnSelection. Cleared via the ref on submit. */}
           <textarea
             ref={composerTextareaRef}
-            defaultValue={selectionCommentDraft}
-            onChange={(e) => onChangeSelectionDraft(e.target.value)}
             onKeyDown={(e) => {
-              // Enter submits; Shift+Enter inserts a newline. Guard empty/
-              // whitespace and IME composition (a composing Enter commits the IME).
-              if (
-                e.key === 'Enter' &&
-                !e.shiftKey &&
-                !e.nativeEvent.isComposing
-              ) {
+              // Enter submits; Shift+Enter inserts a newline. Guard IME composition
+              // (a composing Enter commits the IME, not the note).
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                if (canCommentOnSelection) onCommentOnSelection();
+                onCommentOnSelection();
               }
             }}
             placeholder="Note… (Enter to add · ⇧⏎ newline)"
@@ -2629,7 +2641,7 @@ function CommentCard({
             <button
               type="button"
               onClick={onCommentOnSelection}
-              disabled={!canCommentOnSelection}
+              disabled={commentBusy}
               className="rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
             >
               {commentBusy ? 'Adding…' : 'Add note'}

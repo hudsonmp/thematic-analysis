@@ -451,7 +451,7 @@ export default function NewCodeDialog({
                     ? slugTaken
                       ? `"${normalizedSlug}" is already in use — pick another.`
                       : `Saved as ${normalizedSlug}`
-                    : 'The code’s sole identifier — you type it. Normalized to UPPER-KEBAB.'
+                    : 'The code’s sole identifier — you type it (e.g. reassign-driver).'
                 }
               >
                 <input

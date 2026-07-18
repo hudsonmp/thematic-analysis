@@ -173,11 +173,12 @@ export default function CodingPopup({
   async function createAndAssign() {
     const typed = newSlug.trim();
     if (!typed || creating || busy) return;
-    // The typed slug IS the mnemonic (the code's sole identifier). Normalize to the
-    // canonical UPPER-KEBAB form and reject a collision against the current snapshot
-    // rather than silently mangling it. NO facet answers: the code lands unclassified
-    // → the triage queue picks it up. Definition falls back to the slug so
-    // cb_code_versions' NOT NULL is satisfied without demanding prose mid-coding.
+    // The typed slug IS the mnemonic (the code's sole identifier). Normalize it to a
+    // safe identifier form and reject a collision rather than silently mangling it.
+    // NO facet answers: the code lands unclassified → the triage queue picks it up.
+    // Definition falls back to the slug so cb_code_versions' NOT NULL is satisfied
+    // without demanding prose mid-coding. The SELECTED TEXT is captured as the code's
+    // first exemplar — a code born from a span is defined, in part, by that span.
     const mnemonic = normalizeSlug(typed);
     if (codes.some((c) => c.mnemonic === mnemonic)) {
       setCreateError(`The slug "${mnemonic}" is already in use.`);
@@ -186,6 +187,7 @@ export default function CodingPopup({
     setCreating(true);
     setCreateError(null);
     try {
+      const seedExemplar = quote.trim();
       const codeId = await createCode({
         codebookId,
         mnemonic,
@@ -194,7 +196,7 @@ export default function CodingPopup({
           definition: newDefinition.trim() || mnemonic,
           include_if: [],
           exclude_if: [],
-          exemplars: [],
+          exemplars: seedExemplar ? [{ text: seedExemplar }] : [],
         },
         studyLabel,
       });
@@ -372,16 +374,24 @@ export default function CodingPopup({
                   }
                   if (e.key === 'Escape') setShowNew(false);
                 }}
-                placeholder="Slug (the code's identifier · UPPER-KEBAB)"
+                placeholder="Slug — the code's identifier (e.g. reassign-driver)"
                 className="w-full border border-foreground/20 bg-background px-2 py-1 font-mono text-sm focus:border-foreground focus:outline-none"
               />
               <textarea
                 value={newDefinition}
                 onChange={(e) => setNewDefinition(e.target.value)}
                 rows={2}
-                placeholder="Definition (optional — defaults to the name)"
+                placeholder="Definition (optional — defaults to the slug)"
                 className="w-full border border-foreground/20 bg-background px-2 py-1 text-xs focus:border-foreground focus:outline-none"
               />
+              {quote.trim() !== '' && (
+                <div className="border-l-2 border-amber-400 pl-2 text-[11px] text-foreground/50">
+                  <span className="text-foreground/40">Exemplar (from selection): </span>
+                  <span className="italic">
+                    “{quote.trim().length > 120 ? quote.trim().slice(0, 120) + '…' : quote.trim()}”
+                  </span>
+                </div>
+              )}
               <div className="flex items-center gap-2">
                 <select
                   value={newOrigin}
