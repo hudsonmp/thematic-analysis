@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { setCodeStatus, retireCode, type CodeStatus } from '@/app/actions/codes';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
+import { splitDefinition } from '@/lib/codebook/definition';
 import type { ProtocolEpisode } from '@/app/actions/protocol';
 import type { Tables } from '@/lib/types/cb-db';
 import AnatomyEditor from './AnatomyEditor';
@@ -96,6 +97,11 @@ export default function CodeCard({
   const commentCount = comments.length;
   const unresolvedCount = comments.filter((c) => !c.resolved).length;
 
+  // A 'Literature == Applied' definition renders split in the header — the code
+  // page is a codebook surface, so BOTH halves show, labeled. Plain definitions
+  // add nothing here (the anatomy tab already carries them verbatim).
+  const def = splitDefinition(code.current?.definition);
+
   return (
     <main className="flex-1 px-6 py-6 space-y-6 max-w-4xl">
       <div>
@@ -139,6 +145,19 @@ export default function CodeCard({
           )}
           {error && <span className="text-sm text-red-600">{error}</span>}
         </div>
+        {def.literature !== null && (
+          <div className="space-y-0.5 pt-1">
+            <p className="text-xs italic text-foreground/50">
+              <span className="not-italic text-[10px] uppercase tracking-wider text-foreground/40">
+                Literature
+              </span>{' '}
+              {def.literature}
+            </p>
+            {def.applied !== '' && (
+              <p className="text-sm text-foreground/75">{def.applied}</p>
+            )}
+          </div>
+        )}
       </header>
 
       {/* Tabs */}

@@ -21,6 +21,8 @@
  * real `CodebookTree` satisfies it by being a superset.
  */
 
+import { splitDefinition } from '@/lib/codebook/definition';
+
 // ---------------------------------------------------------------------------
 // Structural input — narrowed to the fields the renderer reads. The real
 // `CodebookTree` (a superset) is assignable to this.
@@ -136,6 +138,16 @@ function textCell(s: string | null | undefined): string {
   return t ? escapeLatex(t) : '---';
 }
 
+/** The definition cell. A 'Literature == Applied' definition (split post hoc —
+ *  the stored text and the JSON/snapshot exports keep it verbatim) renders the
+ *  literature half as its own labeled, italic paragraph BEFORE the applied
+ *  definition. Definitions without a separator render exactly as before. */
+function definitionCell(s: string | null | undefined): string {
+  const { literature, applied } = splitDefinition(s);
+  if (literature === null) return textCell(applied);
+  return `\\emph{Literature: ${escapeLatex(literature)}}\\par ${textCell(applied)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Methods paragraph (the epistemic-honesty boilerplate).
 // ---------------------------------------------------------------------------
@@ -183,7 +195,7 @@ function codeRow(code: LatexCode, keyById: Map<string, string>): string {
   const v = code.current!;
   const cells = [
     `\\textbf{${escapeLatex(code.mnemonic)}}`,
-    textCell(v.definition),
+    definitionCell(v.definition),
     listCell(asStringList(v.include_if)),
     listCell(asStringList(v.exclude_if)),
     listCell(asExemplarStrings(v.exemplars)),

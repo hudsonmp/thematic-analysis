@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
+import { splitDefinition } from '@/lib/codebook/definition';
 import {
   buildCodebookDocument,
   docNodesInOrder,
@@ -195,6 +196,9 @@ function CodeEntry({
   enumFacets: FacetWithValues[];
 }) {
   const v = code.current;
+  // The codebook document shows BOTH halves of a 'Literature == Applied'
+  // definition, labeled — this is the surface where provenance matters.
+  const def = splitDefinition(v?.definition);
   const includeIf = asStrings(v?.include_if);
   const excludeIf = asStrings(v?.exclude_if);
   const exemplars = asExemplarText(v?.exemplars);
@@ -217,8 +221,16 @@ function CodeEntry({
         </span>
       </p>
 
-      {v?.definition && (
-        <p className="mt-0.5 text-sm leading-relaxed text-foreground/75">{v.definition}</p>
+      {def.literature !== null && (
+        <div className="mt-0.5 text-xs italic leading-relaxed text-foreground/50">
+          <span className="not-italic text-[10px] uppercase tracking-wide text-foreground/40">
+            Literature
+          </span>{' '}
+          {def.literature}
+        </div>
+      )}
+      {def.applied !== '' && (
+        <p className="mt-0.5 text-sm leading-relaxed text-foreground/75">{def.applied}</p>
       )}
 
       <dl className="mt-1 space-y-0.5 text-xs text-foreground/70">

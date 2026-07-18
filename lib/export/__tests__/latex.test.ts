@@ -206,4 +206,29 @@ describe('codebookToLatex', () => {
     const out = codebookToLatex(tree, { groupByFacetKey: 'modality' });
     expect(out).toContain('Unassigned');
   });
+
+  it("renders a 'Literature == Applied' definition as a labeled paragraph before the applied text", () => {
+    const tree = singleCode();
+    tree.codes[0].current!.definition =
+      'Theory of 50% cases (Smith, 2020) == Apply when the student restates';
+    const out = codebookToLatex(tree);
+    // Literature half: its own labeled, italic paragraph, escaped.
+    expect(out).toContain(
+      '\\emph{Literature: Theory of 50\\% cases (Smith, 2020)}\\par Apply when the student restates',
+    );
+  });
+
+  it('renders a separator-less definition exactly as before (no Literature label)', () => {
+    const out = codebookToLatex(singleCode());
+    expect(out).toContain('50\\% \\& a\\_b \\#1');
+    expect(out).not.toContain('Literature:');
+  });
+
+  it('omits the Literature paragraph when the literature side is empty', () => {
+    const tree = singleCode();
+    tree.codes[0].current!.definition = '== applied only';
+    const out = codebookToLatex(tree);
+    expect(out).not.toContain('Literature:');
+    expect(out).toContain('applied only');
+  });
 });
