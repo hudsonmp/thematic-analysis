@@ -839,6 +839,8 @@ export default function SessionPlayer({
   // buttons/links do their own thing, contentEditable is mid-edit, and the
   // gutter's cards/blocks/braces are the margin's territory. The cue resolves via
   // the nearest [data-seg-idx] — the same element selection anchoring walks to.
+  // Pending click-to-seek timer (see the debounce note inside the handler).
+  const clickSeekTimer = useRef<number | null>(null);
   const handleTranscriptClick = useCallback(
     (e: React.MouseEvent) => {
       const sel = window.getSelection();
@@ -857,7 +859,24 @@ export default function SessionPlayer({
       if (!segEl) return;
       const seg = segments[Number(segEl.dataset.segIdx)];
       if (!seg) return;
-      seekTo(seg.startMs);
+      // DEBOUNCE double-click: a word-select double-click fires a click (detail 1,
+      // selection still collapsed at that instant) BEFORE the selection lands — an
+      // instant seek would yank the video mid-coding. Defer the seek one beat and
+      // let a second click (detail > 1) cancel it; 230ms sits under the OS
+      // double-click threshold and is imperceptible for a deliberate single click.
+      if (clickSeekTimer.current !== null) {
+        window.clearTimeout(clickSeekTimer.current);
+        clickSeekTimer.current = null;
+      }
+      if (e.detail > 1) return; // second click of a double-click: cancel only
+      clickSeekTimer.current = window.setTimeout(() => {
+        clickSeekTimer.current = null;
+        // Re-check the selection: a drag/double-click select may have completed
+        // during the debounce window.
+        const late = window.getSelection();
+        if (late && !late.isCollapsed) return;
+        seekTo(seg.startMs);
+      }, 230);
     },
     [segments, seekTo],
   );

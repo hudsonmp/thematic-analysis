@@ -160,6 +160,8 @@ export async function addAnnotation({
         `addAnnotation: cb_annotation_codes insert failed: ${linkRes.error.message}`,
       );
     }
+    // The coded span becomes an exemplar of each assigned code (deduped; non-fatal).
+    await appendSpanExemplars(sb, uniqueCodeIds, quoteText, sessionId);
   }
 
   return annotation;
@@ -337,6 +339,62 @@ export async function setAnnotationKind(
  * annotation belongs to auth.uid(), so a coder cannot attach codes to another coder's
  * annotation.
  */
+/**
+ * Append a coded span's quote to each assigned code's CURRENT version as an
+ * exemplar (`{text, source_pid}`), deduped on exact text. Exemplars thus
+ * accumulate from coding itself — the picker's expanded rows and its
+ * search-over-exemplars stay current without hand-curation (the create-flow seeds
+ * the FIRST exemplar; this keeps the invariant for every later assignment, the
+ * forward twin of the one-time retroactive backfill run 2026-07-18).
+ *
+ * NON-FATAL by design: an exemplar is derived convenience data, so a failure here
+ * must never fail the assignment that triggered it. In-place update of the current
+ * version row (no version bump) — same contract as the backfill.
+ */
+async function appendSpanExemplars(
+  sb: Awaited<ReturnType<typeof createUserServerClient>>,
+  codeIds: string[],
+  quoteText: string | null | undefined,
+  sessionId: string,
+): Promise<void> {
+  const text = (quoteText ?? '').trim();
+  if (text === '' || codeIds.length === 0) return;
+  try {
+    const { data: sess } = await sb
+      .from('cb_sessions')
+      .select('pid_label')
+      .eq('id', sessionId)
+      .maybeSingle();
+    const sourcePid = sess?.pid_label ?? null;
+    const { data: codes } = await sb
+      .from('cb_codes')
+      .select('id, current_version_id')
+      .in('id', codeIds);
+    for (const c of codes ?? []) {
+      if (!c.current_version_id) continue;
+      const { data: v } = await sb
+        .from('cb_code_versions')
+        .select('exemplars')
+        .eq('id', c.current_version_id)
+        .maybeSingle();
+      if (!v) continue;
+      const list = Array.isArray(v.exemplars) ? v.exemplars : [];
+      const exists = list.some(
+        (e) => !!e && typeof e === 'object' && (e as { text?: unknown }).text === text,
+      );
+      if (exists) continue;
+      await sb
+        .from('cb_code_versions')
+        .update({
+          exemplars: [...list, sourcePid ? { text, source_pid: sourcePid } : { text }],
+        })
+        .eq('id', c.current_version_id);
+    }
+  } catch {
+    // Non-fatal: exemplar accumulation must never break coding.
+  }
+}
+
 export async function addCodeToAnnotation(
   annotationId: string,
   codeId: string,
@@ -382,6 +440,17 @@ export async function addCodeToAnnotation(
     .neq('kind', 'code');
   if (promote.error) {
     throw new Error(`addCodeToAnnotation (promote) failed: ${promote.error.message}`);
+  }
+
+  // Exemplar accumulation: the just-coded span becomes an exemplar of the code
+  // (deduped; non-fatal). Needs the anchor's quote + session for source_pid.
+  const anchor = await sb
+    .from('cb_annotations')
+    .select('quote_text, session_id')
+    .eq('id', id)
+    .maybeSingle();
+  if (anchor.data) {
+    await appendSpanExemplars(sb, [code], anchor.data.quote_text, anchor.data.session_id);
   }
   return 'added';
 }
