@@ -53,3 +53,18 @@ export function splitDefinition(def: string | null | undefined): SplitDefinition
   const after = def.slice(at + 2).trim();
   return { literature: before === '' ? null : before, applied: after };
 }
+
+/**
+ * The inverse: join an edited (literature, applied) pair back into the ONE
+ * stored field. Empty/whitespace literature → just the applied text (no
+ * separator is written, so a code without a literature description round-trips
+ * unchanged). The canonical stored form puts `==` on its own line.
+ *
+ * `joinDefinition(splitDefinition(x).literature, splitDefinition(x).applied)`
+ * normalizes whitespace but preserves both parts verbatim.
+ */
+export function joinDefinition(literature: string | null | undefined, applied: string): string {
+  const lit = (literature ?? '').trim();
+  const app = applied.trim();
+  return lit === '' ? app : `${lit}\n==\n${app}`;
+}
