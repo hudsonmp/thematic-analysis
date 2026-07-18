@@ -13,22 +13,22 @@ function row(slug: string, definition = ''): CodebookRow {
 }
 
 describe('normalizeSlug', () => {
-  it('normalizes to UPPER-KEBAB', () => {
-    expect(normalizeSlug('Spec gap')).toBe('SPEC-GAP');
-    expect(normalizeSlug('  trailing  spaces  ')).toBe('TRAILING-SPACES');
-    expect(normalizeSlug('weird!!chars##here')).toBe('WEIRD-CHARS-HERE');
-    expect(normalizeSlug('already-KEBAB')).toBe('ALREADY-KEBAB');
+  it('normalizes to lower-kebab (matching the existing corpus)', () => {
+    expect(normalizeSlug('Spec gap')).toBe('spec-gap');
+    expect(normalizeSlug('  trailing  spaces  ')).toBe('trailing-spaces');
+    expect(normalizeSlug('weird!!chars##here')).toBe('weird-chars-here');
+    expect(normalizeSlug('already-KEBAB')).toBe('already-kebab');
   });
 
   it('caps length and never leaves a trailing dash', () => {
     const out = normalizeSlug('a'.repeat(40), 5);
-    expect(out).toBe('AAAAA');
-    expect(normalizeSlug('abcde fghij', 6)).toBe('ABCDE'); // slice would give "ABCDE-", trimmed
+    expect(out).toBe('aaaaa');
+    expect(normalizeSlug('abcde fghij', 6)).toBe('abcde'); // slice would give "abcde-", trimmed
   });
 
   it('falls back to a placeholder when nothing is slug-able', () => {
-    expect(normalizeSlug('!!!')).toBe('CODE');
-    expect(normalizeSlug('   ')).toBe('CODE');
+    expect(normalizeSlug('!!!')).toBe('code');
+    expect(normalizeSlug('   ')).toBe('code');
   });
 });
 
@@ -56,7 +56,7 @@ describe('resolveRows', () => {
       new Set(),
     );
     expect(errors).toEqual([]);
-    expect(resolved).toEqual([{ index: 0, mnemonic: 'SPEC-GAP', definition: 'a def' }]);
+    expect(resolved).toEqual([{ index: 0, mnemonic: 'spec-gap', definition: 'a def' }]);
   });
 
   it('errors a content row with no slug', () => {
@@ -70,18 +70,18 @@ describe('resolveRows', () => {
       [row('Spec gap'), row('spec-gap'), row('SPEC GAP')],
       new Set(),
     );
-    // First normalizes to SPEC-GAP; the other two collide with it in-batch.
-    expect(resolved.map((r) => r.mnemonic)).toEqual(['SPEC-GAP']);
+    // First normalizes to spec-gap; the other two collide with it in-batch.
+    expect(resolved.map((r) => r.mnemonic)).toEqual(['spec-gap']);
     expect(errors).toEqual([
-      { index: 1, message: 'Slug "SPEC-GAP" already in use.' },
-      { index: 2, message: 'Slug "SPEC-GAP" already in use.' },
+      { index: 1, message: 'Slug "spec-gap" already in use.' },
+      { index: 2, message: 'Slug "spec-gap" already in use.' },
     ]);
   });
 
   it('errors a slug that duplicates an EXISTING codebook mnemonic', () => {
-    const { resolved, errors } = resolveRows([row('spec gap')], new Set(['SPEC-GAP']));
+    const { resolved, errors } = resolveRows([row('spec gap')], new Set(['spec-gap']));
     expect(resolved).toEqual([]);
-    expect(errors).toEqual([{ index: 0, message: 'Slug "SPEC-GAP" already in use.' }]);
+    expect(errors).toEqual([{ index: 0, message: 'Slug "spec-gap" already in use.' }]);
   });
 
   it('preserves original indices across dropped empties (for error reporting)', () => {

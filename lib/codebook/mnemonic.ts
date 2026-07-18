@@ -28,14 +28,18 @@ export type CodebookRow = {
  * characters (e.g. all punctuation) so the result is never empty.
  */
 export function normalizeSlug(input: string, maxLen = 24): string {
+  // LOWER-kebab to match the existing corpus (every code minted by the old
+  // `deriveMnemonic` is lower-kebab, e.g. `analysis-behavior`, `give-up`).
+  // Upper-casing here would fracture the identifier space and defeat the
+  // case-sensitive collision check.
   const slug = input
     .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '-')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, maxLen)
     .replace(/-+$/g, ''); // a trailing dash left by the slice
-  return slug || 'CODE';
+  return slug || 'code';
 }
 
 /**
