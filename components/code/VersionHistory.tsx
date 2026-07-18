@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { splitDefinition } from '@/lib/codebook/definition';
 import type { ExemplarT } from '@/lib/types/contracts';
 import type { Tables } from '@/lib/types/cb-db';
 
@@ -33,6 +34,27 @@ function FieldText({ label, value }: { label: string; value: string | null }) {
     <div>
       <p className="text-xs uppercase tracking-wider text-foreground/40">{label}</p>
       <p className="text-sm whitespace-pre-wrap">{value}</p>
+    </div>
+  );
+}
+
+/** The definition field, split post hoc on 'Literature == Applied'. The stored
+ *  text is verbatim; this is a display concern only. Versions without a
+ *  separator render exactly as before. */
+function DefinitionText({ value }: { value: string | null }) {
+  if (!value) return null;
+  const { literature, applied } = splitDefinition(value);
+  if (literature === null) return <FieldText label="Definition" value={value} />;
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-wider text-foreground/40">Definition</p>
+      <p className="text-xs italic text-foreground/50 whitespace-pre-wrap">
+        <span className="not-italic text-[10px] uppercase tracking-wider text-foreground/40">
+          Literature
+        </span>{' '}
+        {literature}
+      </p>
+      <p className="text-sm whitespace-pre-wrap">{applied}</p>
     </div>
   );
 }
@@ -95,7 +117,7 @@ export default function VersionHistory({
             </button>
             {open && (
               <div className="px-3 pb-3 space-y-3 bg-foreground/[0.02]">
-                <FieldText label="Definition" value={v.definition} />
+                <DefinitionText value={v.definition} />
                 <FieldList label="Include if" items={asStringArray(v.include_if)} />
                 <FieldList label="Exclude if" items={asStringArray(v.exclude_if)} />
                 {(() => {

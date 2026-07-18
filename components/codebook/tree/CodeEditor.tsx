@@ -13,6 +13,7 @@ import {
 import { linkCitation, unlinkCitation } from '@/app/actions/citations';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import BulletListEditor from '@/components/code/BulletListEditor';
+import MentionTextarea, { type MentionCode } from '@/components/codebook/MentionTextarea';
 import type { ExemplarT } from '@/lib/types/contracts';
 import type { Tables } from '@/lib/types/cb-db';
 import ValueList from './ValueList';
@@ -41,16 +42,26 @@ export default function CodeEditor({
   code,
   facets,
   citations,
+  allCodes,
   /** Convert this code into a VALUE of the shown dimension — for the case where it turns
    *  out to be the CATEGORY its sub-themes answer. */
   onPromote,
   promoteTo,
+  onSaved,
 }: {
   code: CodeWithRefs;
   facets: FacetWithValues[];
   citations: Citation[];
+  /** Every code in the codebook — for @-mentioning in the definition and
+   *  counter-example. Threaded from the host (canvas/queue), never fetched. */
+  allCodes: MentionCode[];
   onPromote?: () => void;
   promoteTo?: string | null;
+  /** Called after a SUCCESSFUL "Save version" — the host uses it to dismiss the
+   *  panel/row the editor lives in. A failed save never fires it, so the editor
+   *  stays open showing the error. Cheap blur-commits (slug, origin, answers)
+   *  deliberately do NOT fire it: they are not "done editing" gestures. */
+  onSaved?: () => void;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -58,14 +69,16 @@ export default function CodeEditor({
 
   const [mnemonic, setMnemonic] = useState(code.mnemonic);
 
+  // @-mention candidates: every code but this one — a code citing itself in
+  // its own definition says nothing.
+  const mentionables = allCodes.filter((c) => c.id !== code.id);
+
   const v = code.current;
   const [definition, setDefinition] = useState(v?.definition ?? '');
   const [includeIf, setIncludeIf] = useState<string[]>(asStrings(v?.include_if));
   const [excludeIf, setExcludeIf] = useState<string[]>(asStrings(v?.exclude_if));
   const [exemplars, setExemplars] = useState<string[]>(asExemplarText(v?.exemplars));
   const [disconfirming, setDisconfirming] = useState(v?.disconfirming_pattern ?? '');
-  const [prediction, setPrediction] = useState(v?.prediction ?? '');
-  const [falsifier, setFalsifier] = useState(v?.prediction_falsifier ?? '');
   const [changeNote, setChangeNote] = useState('');
 
   const dirty =
@@ -73,9 +86,7 @@ export default function CodeEditor({
     !same(includeIf, asStrings(v?.include_if)) ||
     !same(excludeIf, asStrings(v?.exclude_if)) ||
     !same(exemplars, asExemplarText(v?.exemplars)) ||
-    disconfirming !== (v?.disconfirming_pattern ?? '') ||
-    prediction !== (v?.prediction ?? '') ||
-    falsifier !== (v?.prediction_falsifier ?? '');
+    disconfirming !== (v?.disconfirming_pattern ?? '');
 
   function run(fn: () => Promise<unknown>, onFail?: () => void) {
     setError(null);
@@ -102,11 +113,19 @@ export default function CodeEditor({
         exclude_if: excludeIf,
         exemplars: exemplars.map((text) => ({ text })),
         disconfirming_pattern: disconfirming.trim() || undefined,
-        prediction: prediction.trim() || undefined,
-        prediction_falsifier: falsifier.trim() || undefined,
+        // Prediction/falsifier no longer have inputs, but the columns and any
+        // stored values survive: carry the PREVIOUS version's values forward
+        // VERBATIM so saving an edit never clobbers them.
+        ...(v?.prediction != null ? { prediction: v.prediction } : {}),
+        ...(v?.prediction_falsifier != null
+          ? { prediction_falsifier: v.prediction_falsifier }
+          : {}),
         change_note: changeNote.trim() || undefined,
       });
       setChangeNote('');
+      // Only after the save succeeded: the run() wrapper catches failures
+      // before this line, so a failed save keeps the editor open on its error.
+      onSaved?.();
     });
   }
 
@@ -198,13 +217,15 @@ export default function CodeEditor({
 
       {/* ---- ANATOMY: versioned, saved together ---- */}
       <section className="space-y-2 border-t border-foreground/10 pt-3">
-        <Field label="Definition">
-          <textarea
+        <Field label="Definition" hint="@ mentions another code by its slug.">
+          <MentionTextarea
             value={definition}
             disabled={pending}
-            onChange={(e) => setDefinition(e.target.value)}
+            onChange={setDefinition}
+            codes={mentionables}
             rows={3}
             className={input}
+            aria-label="Definition"
           />
         </Field>
 
@@ -232,37 +253,18 @@ export default function CodeEditor({
 
         <Field
           label="Counter-example"
-          hint="The near-miss that looks like this code but is NOT it — the single most useful field for coder agreement."
+          hint="The near-miss that looks like this code but is NOT it — the single most useful field for coder agreement. @ mentions the code the near-miss belongs to."
         >
-          <textarea
+          <MentionTextarea
             value={disconfirming}
             disabled={pending}
-            onChange={(e) => setDisconfirming(e.target.value)}
+            onChange={setDisconfirming}
+            codes={mentionables}
             rows={2}
             className={input}
+            aria-label="Counter-example"
           />
         </Field>
-
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Prediction">
-            <textarea
-              value={prediction}
-              disabled={pending}
-              onChange={(e) => setPrediction(e.target.value)}
-              rows={2}
-              className={input}
-            />
-          </Field>
-          <Field label="…falsified by">
-            <textarea
-              value={falsifier}
-              disabled={pending}
-              onChange={(e) => setFalsifier(e.target.value)}
-              rows={2}
-              className={input}
-            />
-          </Field>
-        </div>
 
         {/* The anatomy saves as ONE new version, deliberately: a version per keystroke is
             noise, and noise in a history is the same as no history. */}

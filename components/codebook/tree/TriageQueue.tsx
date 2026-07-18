@@ -106,8 +106,15 @@ export default function TriageQueue({
                 <div className="border-t border-foreground/10 p-2">
                   {/* The SAME editor the inspector uses. A code must be edited identically
                       wherever you meet it — three partial editors that drift apart is the
-                      failure this avoids. */}
-                  <CodeEditor code={code} facets={facets} citations={citations} />
+                      failure this avoids. A successful "Save version" collapses the row
+                      (the queue's own dismiss path); a failed save keeps it open. */}
+                  <CodeEditor
+                    code={code}
+                    facets={facets}
+                    citations={citations}
+                    allCodes={codes}
+                    onSaved={() => setOpenId(null)}
+                  />
                 </div>
               )}
             </div>

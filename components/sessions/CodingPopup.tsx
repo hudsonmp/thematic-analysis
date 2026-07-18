@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createCode, type CodeOrigin } from '@/app/actions/codes';
+import { splitDefinition } from '@/lib/codebook/definition';
 import { normalizeSlug } from '@/lib/codebook/mnemonic';
 import { fuzzyRank } from '@/lib/transcript/fuzzy';
 
@@ -123,11 +124,15 @@ export default function CodingPopup({
       // Search matches the SLUG (mnemonic) + definition + exemplars — the code's
       // meaning, not a display name. Matching exemplars lets a coder find a code by
       // recalling an instance ("the one about reassigning drivers") when the slug
-      // doesn't come to mind.
+      // doesn't come to mind. Only the APPLIED side of a 'Literature == Applied'
+      // definition is searched: mid-coding you reach for the operational rule, and
+      // a hit inside the literature blurb would rank codes by provenance prose the
+      // popup doesn't even show.
       fuzzyRank(
         query,
         codes,
-        (c) => `${c.mnemonic} ${c.definition ?? ''} ${c.exemplars.join(' ')}`,
+        (c) =>
+          `${c.mnemonic} ${splitDefinition(c.definition).applied} ${c.exemplars.join(' ')}`,
       )
         .map((m) => m.item)
         .filter((c) => !assignedIds.has(c.id))
@@ -332,7 +337,10 @@ export default function CodingPopup({
                 </div>
                 {expanded && (
                   <div className="mx-3 mb-1 border-l-2 border-foreground/15 py-0.5 pl-2 text-xs text-foreground/60">
-                    <p>{c.definition ?? <em>No definition yet.</em>}</p>
+                    {/* APPLIED definition only. The literature half of a
+                        'Literature == Applied' definition is provenance, and the
+                        popup is a coding surface — the codebook views show both. */}
+                    <p>{splitDefinition(c.definition).applied || <em>No definition yet.</em>}</p>
                     {c.exemplars.length > 0 && (
                       <ul className="mt-1 list-disc space-y-0.5 pl-4 text-foreground/55">
                         {c.exemplars.map((ex, i) => (

@@ -12,6 +12,7 @@ import type { FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
 import { normalizeSlug } from '@/lib/codebook/mnemonic';
 import BulletListEditor from '@/components/code/BulletListEditor';
+import MentionTextarea from '@/components/codebook/MentionTextarea';
 import ValueList from './ValueList';
 import type { Tables } from '@/lib/types/cb-db';
 
@@ -96,8 +97,6 @@ export default function NewCodeDialog({
   const [excludeIf, setExcludeIf] = useState<string[]>([]);
   const [exemplars, setExemplars] = useState<string[]>([]);
   const [disconfirming, setDisconfirming] = useState('');
-  const [prediction, setPrediction] = useState('');
-  const [falsifier, setFalsifier] = useState('');
 
   // A pinned paper means a priori: a code you are deriving from a source IS
   // theory-derived. `originTouched` lets the researcher override afterwards without
@@ -254,9 +253,9 @@ export default function NewCodeDialog({
               // and enriched later in the full anatomy editor. An exemplar with no
               // provenance is still worth more than no exemplar.
               exemplars: exemplars.map((text) => ({ text })),
+              // Prediction/falsifier are no longer authored in the UI. The DB
+              // columns stay; a NEW code simply starts without them.
               disconfirming_pattern: disconfirming.trim() || undefined,
-              prediction: prediction.trim() || undefined,
-              prediction_falsifier: falsifier.trim() || undefined,
             },
             // The tree placement is gone: a code's home IS its answers.
             labelId: null,
@@ -463,12 +462,14 @@ export default function NewCodeDialog({
                 />
               </Field>
 
-              <Field label="Definition">
-                <textarea
+              <Field label="Definition" hint="@ mentions an existing code by its slug.">
+                <MentionTextarea
                   value={definition}
-                  onChange={(e) => setDefinition(e.target.value)}
+                  onChange={setDefinition}
+                  codes={codes}
                   rows={3}
                   className={inputCls}
+                  aria-label="Definition"
                 />
               </Field>
 
@@ -506,25 +507,6 @@ export default function NewCodeDialog({
                   className={inputCls}
                 />
               </Field>
-
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Prediction">
-                  <textarea
-                    value={prediction}
-                    onChange={(e) => setPrediction(e.target.value)}
-                    rows={2}
-                    className={inputCls}
-                  />
-                </Field>
-                <Field label="…falsified by">
-                  <textarea
-                    value={falsifier}
-                    onChange={(e) => setFalsifier(e.target.value)}
-                    rows={2}
-                    className={inputCls}
-                  />
-                </Field>
-              </div>
 
               <Field label="Origin">
                 <div className="flex gap-1 text-xs">
