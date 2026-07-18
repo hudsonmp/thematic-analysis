@@ -1905,6 +1905,7 @@ export default function SessionPlayer({
             origin: 'emergent',
             definition: null,
             exemplars: [],
+            counterExample: null,
           },
       ),
     [assignedAnn, popupCodeById],
