@@ -65,10 +65,6 @@ export default function AnatomyEditor({
   const [excludeIf, setExcludeIf] = useState<string[]>(asStringArray(current?.exclude_if));
   const [exemplars, setExemplars] = useState<DraftExemplar[]>(asExemplars(current?.exemplars));
   const [disconfirming, setDisconfirming] = useState(current?.disconfirming_pattern ?? '');
-  const [prediction, setPrediction] = useState(current?.prediction ?? '');
-  const [predictionFalsifier, setPredictionFalsifier] = useState(
-    current?.prediction_falsifier ?? '',
-  );
   const [changeNote, setChangeNote] = useState('');
 
   function addExemplar() {
@@ -104,9 +100,12 @@ export default function AnatomyEditor({
       exclude_if: excludeIf.map((s) => s.trim()).filter(Boolean),
       exemplars: cleanedExemplars,
       ...(disconfirming.trim() ? { disconfirming_pattern: disconfirming.trim() } : {}),
-      ...(prediction.trim() ? { prediction: prediction.trim() } : {}),
-      ...(predictionFalsifier.trim()
-        ? { prediction_falsifier: predictionFalsifier.trim() }
+      // Prediction/falsifier no longer have inputs, but the columns and any
+      // stored values survive: carry the PREVIOUS version's values forward
+      // VERBATIM so saving an edit never clobbers them.
+      ...(current?.prediction != null ? { prediction: current.prediction } : {}),
+      ...(current?.prediction_falsifier != null
+        ? { prediction_falsifier: current.prediction_falsifier }
         : {}),
       ...(changeNote.trim() ? { change_note: changeNote.trim() } : {}),
     };
@@ -221,7 +220,8 @@ export default function AnatomyEditor({
         </ul>
       </div>
 
-      {/* Falsification anatomy */}
+      {/* Counter-example (the falsification anatomy the editor still authors;
+          prediction/prediction_falsifier are display-only legacy columns now) */}
       <div className="space-y-3">
         <div className="space-y-1">
           <label className="text-xs uppercase tracking-wider text-foreground/50">
@@ -235,34 +235,6 @@ export default function AnatomyEditor({
             placeholder="What evidence would count AGAINST this code applying."
             className="w-full border border-foreground/15 px-2 py-1.5 text-sm bg-background"
           />
-        </div>
-        <div className="grid gap-3 md:grid-cols-2">
-          <div className="space-y-1">
-            <label className="text-xs uppercase tracking-wider text-foreground/50">
-              Prediction
-            </label>
-            <textarea
-              value={prediction}
-              disabled={isPending}
-              onChange={(e) => setPrediction(e.target.value)}
-              rows={2}
-              placeholder="If this code is real, we expect to also see…"
-              className="w-full border border-foreground/15 px-2 py-1.5 text-sm bg-background"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs uppercase tracking-wider text-foreground/50">
-              Prediction falsifier
-            </label>
-            <textarea
-              value={predictionFalsifier}
-              disabled={isPending}
-              onChange={(e) => setPredictionFalsifier(e.target.value)}
-              rows={2}
-              placeholder="An observation that would break the prediction."
-              className="w-full border border-foreground/15 px-2 py-1.5 text-sm bg-background"
-            />
-          </div>
         </div>
       </div>
 

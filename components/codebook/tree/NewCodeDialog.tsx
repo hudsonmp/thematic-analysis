@@ -96,8 +96,6 @@ export default function NewCodeDialog({
   const [excludeIf, setExcludeIf] = useState<string[]>([]);
   const [exemplars, setExemplars] = useState<string[]>([]);
   const [disconfirming, setDisconfirming] = useState('');
-  const [prediction, setPrediction] = useState('');
-  const [falsifier, setFalsifier] = useState('');
 
   // A pinned paper means a priori: a code you are deriving from a source IS
   // theory-derived. `originTouched` lets the researcher override afterwards without
@@ -254,9 +252,9 @@ export default function NewCodeDialog({
               // and enriched later in the full anatomy editor. An exemplar with no
               // provenance is still worth more than no exemplar.
               exemplars: exemplars.map((text) => ({ text })),
+              // Prediction/falsifier are no longer authored in the UI. The DB
+              // columns stay; a NEW code simply starts without them.
               disconfirming_pattern: disconfirming.trim() || undefined,
-              prediction: prediction.trim() || undefined,
-              prediction_falsifier: falsifier.trim() || undefined,
             },
             // The tree placement is gone: a code's home IS its answers.
             labelId: null,
@@ -506,25 +504,6 @@ export default function NewCodeDialog({
                   className={inputCls}
                 />
               </Field>
-
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Prediction">
-                  <textarea
-                    value={prediction}
-                    onChange={(e) => setPrediction(e.target.value)}
-                    rows={2}
-                    className={inputCls}
-                  />
-                </Field>
-                <Field label="…falsified by">
-                  <textarea
-                    value={falsifier}
-                    onChange={(e) => setFalsifier(e.target.value)}
-                    rows={2}
-                    className={inputCls}
-                  />
-                </Field>
-              </div>
 
               <Field label="Origin">
                 <div className="flex gap-1 text-xs">

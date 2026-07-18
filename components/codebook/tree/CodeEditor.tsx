@@ -45,12 +45,18 @@ export default function CodeEditor({
    *  out to be the CATEGORY its sub-themes answer. */
   onPromote,
   promoteTo,
+  onSaved,
 }: {
   code: CodeWithRefs;
   facets: FacetWithValues[];
   citations: Citation[];
   onPromote?: () => void;
   promoteTo?: string | null;
+  /** Called after a SUCCESSFUL "Save version" — the host uses it to dismiss the
+   *  panel/row the editor lives in. A failed save never fires it, so the editor
+   *  stays open showing the error. Cheap blur-commits (slug, origin, answers)
+   *  deliberately do NOT fire it: they are not "done editing" gestures. */
+  onSaved?: () => void;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -64,8 +70,6 @@ export default function CodeEditor({
   const [excludeIf, setExcludeIf] = useState<string[]>(asStrings(v?.exclude_if));
   const [exemplars, setExemplars] = useState<string[]>(asExemplarText(v?.exemplars));
   const [disconfirming, setDisconfirming] = useState(v?.disconfirming_pattern ?? '');
-  const [prediction, setPrediction] = useState(v?.prediction ?? '');
-  const [falsifier, setFalsifier] = useState(v?.prediction_falsifier ?? '');
   const [changeNote, setChangeNote] = useState('');
 
   const dirty =
@@ -73,9 +77,7 @@ export default function CodeEditor({
     !same(includeIf, asStrings(v?.include_if)) ||
     !same(excludeIf, asStrings(v?.exclude_if)) ||
     !same(exemplars, asExemplarText(v?.exemplars)) ||
-    disconfirming !== (v?.disconfirming_pattern ?? '') ||
-    prediction !== (v?.prediction ?? '') ||
-    falsifier !== (v?.prediction_falsifier ?? '');
+    disconfirming !== (v?.disconfirming_pattern ?? '');
 
   function run(fn: () => Promise<unknown>, onFail?: () => void) {
     setError(null);
@@ -102,11 +104,19 @@ export default function CodeEditor({
         exclude_if: excludeIf,
         exemplars: exemplars.map((text) => ({ text })),
         disconfirming_pattern: disconfirming.trim() || undefined,
-        prediction: prediction.trim() || undefined,
-        prediction_falsifier: falsifier.trim() || undefined,
+        // Prediction/falsifier no longer have inputs, but the columns and any
+        // stored values survive: carry the PREVIOUS version's values forward
+        // VERBATIM so saving an edit never clobbers them.
+        ...(v?.prediction != null ? { prediction: v.prediction } : {}),
+        ...(v?.prediction_falsifier != null
+          ? { prediction_falsifier: v.prediction_falsifier }
+          : {}),
         change_note: changeNote.trim() || undefined,
       });
       setChangeNote('');
+      // Only after the save succeeded: the run() wrapper catches failures
+      // before this line, so a failed save keeps the editor open on its error.
+      onSaved?.();
     });
   }
 
@@ -242,27 +252,6 @@ export default function CodeEditor({
             className={input}
           />
         </Field>
-
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Prediction">
-            <textarea
-              value={prediction}
-              disabled={pending}
-              onChange={(e) => setPrediction(e.target.value)}
-              rows={2}
-              className={input}
-            />
-          </Field>
-          <Field label="…falsified by">
-            <textarea
-              value={falsifier}
-              disabled={pending}
-              onChange={(e) => setFalsifier(e.target.value)}
-              rows={2}
-              className={input}
-            />
-          </Field>
-        </div>
 
         {/* The anatomy saves as ONE new version, deliberately: a version per keystroke is
             noise, and noise in a history is the same as no history. */}
