@@ -8,22 +8,21 @@
 /** The minimal code shape these filters read (a subset of `CodeWithRefs`). */
 export type FilterableCode = {
   mnemonic: string;
-  name: string;
   episodeIds: string[];
   labelIds: string[];
   citationIds: string[];
 };
 
 /**
- * Case-insensitive substring match over a code's mnemonic OR name. An
- * empty/whitespace query matches every code (the filter is "off"). Mirrors the
- * inline search the matrix has always had; extracted here so the text + episode
- * filters share one tested implementation.
+ * Case-insensitive substring match over a code's mnemonic (the slug — its sole
+ * identifier). An empty/whitespace query matches every code (the filter is
+ * "off"). Mirrors the inline search the matrix has always had; extracted here so
+ * the text + episode filters share one tested implementation.
  */
-export function matchesQuery(code: Pick<FilterableCode, 'mnemonic' | 'name'>, query: string): boolean {
+export function matchesQuery(code: Pick<FilterableCode, 'mnemonic'>, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return code.mnemonic.toLowerCase().includes(q) || code.name.toLowerCase().includes(q);
+  return code.mnemonic.toLowerCase().includes(q);
 }
 
 /**

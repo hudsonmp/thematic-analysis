@@ -576,7 +576,6 @@ export type Database = {
           current_version_id: string | null
           id: string
           mnemonic: string
-          name: string
           origin: string
           parent_code_id: string | null
           retired_at: string | null
@@ -589,7 +588,6 @@ export type Database = {
           current_version_id?: string | null
           id?: string
           mnemonic: string
-          name: string
           origin: string
           parent_code_id?: string | null
           retired_at?: string | null
@@ -602,7 +600,6 @@ export type Database = {
           current_version_id?: string | null
           id?: string
           mnemonic?: string
-          name?: string
           origin?: string
           parent_code_id?: string | null
           retired_at?: string | null
