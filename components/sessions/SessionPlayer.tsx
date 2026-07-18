@@ -395,6 +395,9 @@ export default function SessionPlayer({
   // The current playhead in ms, rounded to the second (drives the current-event
   // box + "apply code at current time"). Rounded so it re-renders ≤1×/s.
   const [currentMs, setCurrentMs] = useState(0);
+  // Last wall-clock instant the playback position was persisted (throttle gate
+  // for the resume-position localStorage write in handleTimeUpdate).
+  const posSaveAtRef = useRef(0);
 
   const [synced, setSynced] = useState(true);
   // Whether the time-aligned AI-chat replay pane is open (chat-replay feature).
@@ -457,7 +460,18 @@ export default function SessionPlayer({
     // Round to the second so the current-event box re-renders at most once/s.
     const sec = Math.floor(video.currentTime) * 1000;
     setCurrentMs((prev) => (prev === sec ? prev : sec));
-  }, [segments]);
+    // Persist the playback position (throttled to ~3s) so a reload resumes where
+    // the analyst left off — see the resume-position effect below.
+    const now = Date.now();
+    if (now - posSaveAtRef.current >= 3000) {
+      posSaveAtRef.current = now;
+      try {
+        window.localStorage.setItem(`ta:pos:${id}`, String(video.currentTime));
+      } catch {
+        // Quota/private-mode failures just lose resume — never break playback.
+      }
+    }
+  }, [segments, id]);
 
   useEffect(() => {
     if (activeIdx < 0) return;
@@ -483,15 +497,16 @@ export default function SessionPlayer({
       // element is ACTIVELY playing a streamed source makes it reload from the start
       // ("starts over"); paused, the same assignment seeks fine. So PAUSE first, set
       // the target, and resume once the seek completes. A no-op seek (target ≈ now)
-      // fires no 'seeked', so just play in place.
+      // fires no 'seeked', so just play in place. play() can reject (autoplay
+      // policy) — swallow it; the playhead is positioned either way.
       if (Math.abs(video.currentTime - t) < 0.05) {
-        void video.play();
+        video.play().catch(() => {});
         return;
       }
       video.pause();
       const onSeeked = () => {
         video.removeEventListener('seeked', onSeeked);
-        void video.play();
+        video.play().catch(() => {});
       };
       video.addEventListener('seeked', onSeeked);
       video.currentTime = t;
@@ -510,6 +525,69 @@ export default function SessionPlayer({
       video.addEventListener('loadedmetadata', onReady);
     }
   }, []);
+
+  // Transport skip: nudge the playhead ±deltaMs, PRESERVING play state — unlike
+  // seekTo, which means "play from here". Same pause-before-assign dance as
+  // seekTo: assigning currentTime while a streamed source is actively playing
+  // makes it reload from the start.
+  const skipBy = useCallback((deltaMs: number) => {
+    const video = videoRef.current;
+    if (!video || video.readyState < 1 /* HAVE_METADATA */) return;
+    const wasPaused = video.paused;
+    const dur =
+      Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null;
+    let t = Math.max(0, video.currentTime + deltaMs / 1000);
+    if (dur !== null) t = Math.min(t, Math.max(0, dur - 0.3));
+    if (Math.abs(video.currentTime - t) < 0.05) return;
+    video.pause();
+    const onSeeked = () => {
+      video.removeEventListener('seeked', onSeeked);
+      if (!wasPaused) video.play().catch(() => {});
+    };
+    video.addEventListener('seeked', onSeeked);
+    video.currentTime = t;
+  }, []);
+
+  // --- Resume position (per session, localStorage) -------------------------
+  // The playhead position is persisted under `ta:pos:<session id>` — throttled
+  // (~3s) from timeupdate in handleTimeUpdate below, plus a final write on
+  // pagehide here. On mount (or once metadata arrives), a saved position that is
+  // meaningfully inside the video (> 3s in, > 3s from the end) is restored and
+  // playback is ATTEMPTED — if the browser blocks autoplay we stay paused at the
+  // restored position. localStorage is touched only inside the effect/handlers,
+  // so SSR never sees it. Imperative video writes only — no setState.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const save = () => {
+      try {
+        window.localStorage.setItem(`ta:pos:${id}`, String(video.currentTime));
+      } catch {
+        // Quota/private-mode failures just lose resume — never break playback.
+      }
+    };
+    const restore = () => {
+      let saved = NaN;
+      try {
+        saved = Number(window.localStorage.getItem(`ta:pos:${id}`) ?? NaN);
+      } catch {
+        return;
+      }
+      const dur = video.duration;
+      if (!Number.isFinite(saved) || !Number.isFinite(dur)) return;
+      if (saved > 3 && saved < dur - 3) {
+        video.currentTime = saved;
+        video.play().catch(() => {});
+      }
+    };
+    if (video.readyState >= 1 /* HAVE_METADATA */) restore();
+    else video.addEventListener('loadedmetadata', restore, { once: true });
+    window.addEventListener('pagehide', save);
+    return () => {
+      video.removeEventListener('loadedmetadata', restore);
+      window.removeEventListener('pagehide', save);
+    };
+  }, [id]);
 
   // --- Version switching (Original / Cleaned tabs) ------------------------
 
@@ -753,6 +831,36 @@ export default function SessionPlayer({
     // COMMENT mode: the selection just sits (painted pending); typing opens the
     // marginalia composer via the keyboard handler below.
   }, [segments, myAnnotations, mode, reanchoringId, refreshActiveAnnotations]);
+
+  // CLICK-TO-SEEK: a single click on plain cue text jumps the video to that cue
+  // and plays. Click fires AFTER mouseup, so a drag-select arrives here with a
+  // non-collapsed selection and is ignored (the selection flow above owns it).
+  // Interactive chrome is ignored too: highlight <mark>s open their thread,
+  // buttons/links do their own thing, contentEditable is mid-edit, and the
+  // gutter's cards/blocks/braces are the margin's territory. The cue resolves via
+  // the nearest [data-seg-idx] — the same element selection anchoring walks to.
+  const handleTranscriptClick = useCallback(
+    (e: React.MouseEvent) => {
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.isContentEditable) return;
+      if (
+        target.closest(
+          'mark, button, a, [role="button"], [data-rail-card], [data-comment-card], [data-code-block], [data-code-brace]',
+        )
+      ) {
+        return;
+      }
+      const segEl = target.closest<HTMLElement>('[data-seg-idx]');
+      if (!segEl) return;
+      const seg = segments[Number(segEl.dataset.segIdx)];
+      if (!seg) return;
+      seekTo(seg.startMs);
+    },
+    [segments, seekTo],
+  );
 
   const clearSelection = useCallback(() => {
     setTextSel(null);
@@ -1308,6 +1416,25 @@ export default function SessionPlayer({
     const lastOffset = flagMarkers.length ? flagMarkers[flagMarkers.length - 1].offsetMs : 0;
     return Math.max(1, durationMs, lastOffset);
   }, [flagMarkers, durationMs]);
+
+  // The flags LIST follows playback: the CURRENT flag is the last one whose
+  // offset ≤ the playhead (the markers' own anchor math — `offsetMs` is video
+  // time, `currentMs` the second-rounded playhead). The row is scrolled into view
+  // INSIDE the list (block:'nearest') imperatively, and only when the active
+  // index CHANGES (the effect's dep is the index) — no setState in the effect.
+  const flagRowRefs = useRef<(HTMLLIElement | null)[]>([]);
+  const activeFlagIdx = useMemo(() => {
+    let idx = -1;
+    for (let i = 0; i < flagMarkers.length; i++) {
+      if (flagMarkers[i].offsetMs <= currentMs) idx = i;
+      else break;
+    }
+    return idx;
+  }, [flagMarkers, currentMs]);
+  useEffect(() => {
+    if (activeFlagIdx < 0) return;
+    flagRowRefs.current[activeFlagIdx]?.scrollIntoView({ block: 'nearest' });
+  }, [activeFlagIdx]);
 
   // FLAG → TEXT highlights (Change R4): each flag tints the cue playing at its
   // offset with the flag's swatch color, so a flag connects to the words it was
@@ -2039,6 +2166,29 @@ export default function SessionPlayer({
             className="w-full bg-black"
           />
 
+          {/* Transport: fine-grained ±5s nudges (the native scrubber is too
+              coarse for re-hearing one utterance). Play state is preserved. */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => skipBy(-5000)}
+              aria-label="Back 5 seconds"
+              title="Back 5 seconds"
+              className="rounded border border-foreground/20 px-2 py-1 font-mono text-xs text-foreground/70 hover:text-foreground"
+            >
+              −5s
+            </button>
+            <button
+              type="button"
+              onClick={() => skipBy(5000)}
+              aria-label="Forward 5 seconds"
+              title="Forward 5 seconds"
+              className="rounded border border-foreground/20 px-2 py-1 font-mono text-xs text-foreground/70 hover:text-foreground"
+            >
+              +5s
+            </button>
+          </div>
+
           {/* Current event (R2): the auto-derived episode now playing, in a small
               scrollable box (current + next visible, scroll for the rest). */}
           {codingEnabled && orderedEpisodes.length > 0 && (
@@ -2119,10 +2269,16 @@ export default function SessionPlayer({
               </div>
 
               <ul className="mt-3 max-h-64 divide-y divide-foreground/10 overflow-y-auto">
-                {flagMarkers.map(({ obs, offsetMs }) => {
+                {flagMarkers.map(({ obs, offsetMs }, i) => {
                   const label = observationLabel(obs);
                   return (
-                    <li key={obs.id} className="flex items-start gap-2 py-1.5 text-sm">
+                    <li
+                      key={obs.id}
+                      ref={(el) => {
+                        flagRowRefs.current[i] = el;
+                      }}
+                      className="flex items-start gap-2 py-1.5 text-sm"
+                    >
                       <button
                         type="button"
                         onClick={() => seekTo(offsetMs)}
@@ -2372,6 +2528,14 @@ export default function SessionPlayer({
                 onMouseUp={
                   (codingEnabled || canComment) && !editing && activeTab !== 'specification'
                     ? handleTranscriptMouseUp
+                    : undefined
+                }
+                onClick={
+                  // Click-to-seek works for EVERY role (it mutates nothing), on
+                  // the transcript tabs only — spec mode has no cues, and edit
+                  // mode's cue spans are contentEditable (guarded anyway).
+                  !editing && activeTab !== 'specification'
+                    ? handleTranscriptClick
                     : undefined
                 }
                 style={{ scrollbarGutter: 'stable' }}
