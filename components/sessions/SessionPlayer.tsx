@@ -762,6 +762,17 @@ export default function SessionPlayer({
     window.getSelection()?.removeAllRanges();
   }, []);
 
+  // Close any open margin group / composer and clear the selection. Shared by the
+  // open group's ✕ and by the comment handlers (an emptied, code-less anchor
+  // auto-deletes and its group must not linger).
+  const closeCard = useCallback(() => {
+    setComposerOpen(false);
+    setOpenCommentAnnId(null);
+    setCommentError(null);
+    if (composerTextareaRef.current) composerTextareaRef.current.value = '';
+    clearSelection();
+  }, [clearSelection]);
+
   // The START + END cues and char range to persist. A single-cue selection has
   // `startSeg === endSeg`. With NO selection there is nothing to code/comment.
   const pending = useMemo(() => {
@@ -787,6 +798,15 @@ export default function SessionPlayer({
     segments.forEach((s, i) => m.set(s.id, i));
     return m;
   }, [segments]);
+
+  // annotation id → the annotation. Defined here (not with the other derived view
+  // helpers) because the comment handlers below consult it: an emptied thread on a
+  // code-less anchor auto-deletes the annotation itself.
+  const annById = useMemo(() => {
+    const m = new Map<string, MyAnnotationView>();
+    for (const a of myAnnotations) m.set(a.id, a);
+    return m;
+  }, [myAnnotations]);
 
   // --- Mutations ----------------------------------------------------------
 
@@ -1013,15 +1033,24 @@ export default function SessionPlayer({
   const handleDeleteComment = useCallback(
     async (commentId: string) => {
       if (!openCommentAnnId) return;
+      const annId = openCommentAnnId;
       setCommentRowBusyId(commentId);
       setCommentError(null);
       try {
         await deleteAnnotationComment(commentId);
-        const grouped = await listAnnotationComments([openCommentAnnId]);
-        setComments((prev) => ({
-          ...prev,
-          [openCommentAnnId]: grouped[openCommentAnnId] ?? [],
-        }));
+        const grouped = await listAnnotationComments([annId]);
+        const thread = grouped[annId] ?? [];
+        setComments((prev) => ({ ...prev, [annId]: thread }));
+        // AUTO-DELETE an emptied anchor: marginalia ARE the notes, so when the
+        // last note goes and the annotation carries no codes, the anchor says
+        // nothing — deleting it stops an orphan highlight from lingering in the
+        // text. A CODED anchor survives (the codes are its remaining claim).
+        if (thread.length === 0 && annById.get(annId)?.codes.length === 0) {
+          await deleteAnnotation(annId);
+          await afterAnnotationMutation();
+          closeCard();
+          return;
+        }
         await afterAnnotationMutation();
       } catch (e) {
         setCommentError(e instanceof Error ? e.message : 'Failed to delete comment.');
@@ -1029,7 +1058,7 @@ export default function SessionPlayer({
         setCommentRowBusyId(null);
       }
     },
-    [openCommentAnnId, afterAnnotationMutation],
+    [openCommentAnnId, afterAnnotationMutation, annById, closeCard],
   );
 
   // Edit a note's body in place (inline-edit commit). An empty commit DELETES the
@@ -1038,6 +1067,7 @@ export default function SessionPlayer({
   const handleEditComment = useCallback(
     async (commentId: string, nextBody: string, prevBody: string) => {
       if (!openCommentAnnId) return;
+      const annId = openCommentAnnId;
       const trimmed = nextBody.trim();
       if (trimmed === prevBody.trim()) return; // unchanged → nothing to do
       setCommentRowBusyId(commentId);
@@ -1048,11 +1078,17 @@ export default function SessionPlayer({
         } else {
           await editAnnotationComment(commentId, trimmed);
         }
-        const grouped = await listAnnotationComments([openCommentAnnId]);
-        setComments((prev) => ({
-          ...prev,
-          [openCommentAnnId]: grouped[openCommentAnnId] ?? [],
-        }));
+        const grouped = await listAnnotationComments([annId]);
+        const thread = grouped[annId] ?? [];
+        setComments((prev) => ({ ...prev, [annId]: thread }));
+        // An edit that emptied the LAST note on a code-less anchor deletes the
+        // anchor itself — same policy as handleDeleteComment above.
+        if (thread.length === 0 && annById.get(annId)?.codes.length === 0) {
+          await deleteAnnotation(annId);
+          await afterAnnotationMutation();
+          closeCard();
+          return;
+        }
         await afterAnnotationMutation();
       } catch (e) {
         setCommentError(e instanceof Error ? e.message : 'Failed to edit comment.');
@@ -1060,7 +1096,7 @@ export default function SessionPlayer({
         setCommentRowBusyId(null);
       }
     },
-    [openCommentAnnId, afterAnnotationMutation],
+    [openCommentAnnId, afterAnnotationMutation, annById, closeCard],
   );
 
   // Clicking a highlighted span (or a code-chip block) opens its comment thread in
@@ -1355,12 +1391,6 @@ export default function SessionPlayer({
     return m;
   }, [highlightsBySegment, flagHighlightsBySegment, searchMatches, safeMatchIdx, segments, textSel]);
 
-  const annById = useMemo(() => {
-    const m = new Map<string, MyAnnotationView>();
-    for (const a of myAnnotations) m.set(a.id, a);
-    return m;
-  }, [myAnnotations]);
-
   const commentedAnnIds = useMemo(() => {
     const s = new Set<string>();
     for (const a of myAnnotations) if (a.commentCount > 0) s.add(a.id);
@@ -1434,11 +1464,12 @@ export default function SessionPlayer({
     return m;
   }, [myAnnotations, segIndexById, turns, turnIndexBySegIdxForCodes]);
 
-  // --- Comment-margin anchoring (flow gutter, no measurement) -------------
-  // The review-mode comment card renders in the GUTTER of the turn that holds the
-  // active anchor cue — so it aligns automatically and scrolls with the content,
-  // no offsetTop math (and no setState-in-effect). `segIndexById` (above) maps the
-  // anchor's segment id → seg index → turn index.
+  // --- Comment-margin anchoring ---------------------------------------------
+  // The review-mode margin notes render in the GUTTER CELL of the turn that holds
+  // the anchor cue (so they scroll with the content), and are then aligned beside
+  // the anchored SPAN itself by the shared measurement effect below — imperative
+  // DOM writes, no setState-in-effect. `segIndexById` (above) maps the anchor's
+  // segment id → seg index → turn index.
   const turnIndexBySegIdx = useMemo(() => {
     const m = new Map<number, number>();
     turns.forEach((t, ti) => t.segIndices.forEach((si) => m.set(si, ti)));
@@ -1481,23 +1512,13 @@ export default function SessionPlayer({
     [railEnabled, myAnnotations, commentedAnnIds, segIndexById, turnIndexBySegIdx, openCommentAnnId],
   );
 
-  // Close any open card / composer and clear the selection. Shared by every card's
-  // close button.
-  const closeCard = useCallback(() => {
-    setComposerOpen(false);
-    setOpenCommentAnnId(null);
-    setCommentError(null);
-    if (composerTextareaRef.current) composerTextareaRef.current.value = '';
-    clearSelection();
-  }, [clearSelection]);
-
-  // Render the stack of cards hanging in turn `turnIdx`'s gutter: every persistent
-  // card anchored to this turn, plus the transient composer when its anchor turn
-  // matches. Cards are absolutely positioned in the gutter cell (so they never grow
-  // the transcript row / misalign text); each is offset down a little so collapsed
-  // previews fan out and stay individually clickable. The OPEN card (composer or
-  // the open thread) is expanded and gets the top z-index so it sits ABOVE the rest
-  // (issue D). A bare-preview card shows a one-line summary; clicking it opens it.
+  // Render the marginalia hanging in turn `turnIdx`'s gutter: every persistent
+  // note group anchored to this turn, plus the transient composer when its anchor
+  // turn matches. Groups render POSITION-LESS (absolute, opacity-0, no top) tagged
+  // with their anchor CUE index — exactly like the code chip-blocks — and the
+  // measurement effect below aligns each beside its anchored SPAN (not the turn
+  // top) and packs it against the gutter's other tenants. The OPEN group (composer
+  // or open thread) keeps the top z-index so it sits above collapsed neighbors.
   const renderGutter = useCallback(
     (turnIdx: number): React.ReactNode => {
       if (!railEnabled) return null;
@@ -1506,54 +1527,44 @@ export default function SessionPlayer({
       const showComposerHere = composerOpenForRail && composerAnchorTurnIdx === turnIdx;
       if (cards.length === 0 && !showComposerHere && codeBlocks.length === 0) return null;
 
-      // Collapsed previews stack with a small vertical step; the open/composer card
-      // jumps to the top z-index. z-index base leaves headroom under the open card.
-      const STEP_REM = 2.5;
       const nodes: React.ReactNode[] = [];
 
       cards.forEach((card, i) => {
         const ann = annById.get(card.annId);
         if (!ann) return;
         const isOpen = openCommentAnnId === card.annId;
-        const top = isOpen ? 0 : i * STEP_REM;
-        const z = isOpen ? 40 : 10 + i;
         const thread = comments[card.annId] ?? [];
-        const previewText =
-          thread.length > 0 ? thread[thread.length - 1].body : ann.kind === 'quote' ? 'Quote' : '';
+        // No notes and not open → nothing in the margin. (Bare quotes/anchors are
+        // already excluded by the rail policy; the open-id union can still admit
+        // one here so its thread can be opened from its span — but until it is
+        // open there is nothing to show.)
+        if (!isOpen && thread.length === 0) return;
         nodes.push(
           <div
             key={card.annId}
             data-rail-card
-            className="absolute left-0 w-60"
-            style={{ top: `${top}rem`, zIndex: z }}
+            data-ann-id={card.annId}
+            data-start-idx={segIndexById.get(ann.segmentId) ?? 0}
+            className="absolute left-0 w-60 opacity-0"
+            style={{ zIndex: isOpen ? 40 : 10 + i }}
           >
             {isOpen ? (
               <CommentCard
                 composerMode={false}
-                pendingQuote={null}
                 openCommentAnn={ann}
                 openThread={thread}
                 commentError={commentError}
                 commentBusy={commentBusy}
                 commentRowBusyId={commentRowBusyId}
                 composerTextareaRef={composerTextareaRef}
-                busyId={busyId}
-                formatTime={formatTime}
                 onClose={closeCard}
-                onSeek={seekTo}
                 onCommentOnSelection={handleCommentOnSelection}
                 onAddNote={handleAddNote}
                 onEditComment={handleEditComment}
                 onDeleteComment={handleDeleteComment}
-                onDeleteAnnotation={handleDeleteAnnotation}
               />
             ) : (
-              <CommentPreviewCard
-                kind={ann.kind}
-                previewText={previewText}
-                quoteText={ann.quoteText}
-                onOpen={() => openThreadForAnnotation(ann)}
-              />
+              <MarginNotes thread={thread} onOpen={() => openThreadForAnnotation(ann)} />
             )}
           </div>,
         );
@@ -1561,25 +1572,27 @@ export default function SessionPlayer({
 
       if (showComposerHere) {
         nodes.push(
-          <div key="__composer__" data-rail-card className="absolute left-0 top-0 w-60" style={{ zIndex: 50 }}>
+          <div
+            key="__composer__"
+            data-rail-card
+            data-ann-id="__composer__"
+            data-start-idx={textSel?.startSegIdx ?? 0}
+            className="absolute left-0 w-60 opacity-0"
+            style={{ zIndex: 50 }}
+          >
             <CommentCard
               composerMode
-              pendingQuote={pending?.quoteText ?? null}
               openCommentAnn={null}
               openThread={[]}
               commentError={commentError}
               commentBusy={commentBusy}
               commentRowBusyId={commentRowBusyId}
               composerTextareaRef={composerTextareaRef}
-              busyId={busyId}
-              formatTime={formatTime}
               onClose={closeCard}
-              onSeek={seekTo}
               onCommentOnSelection={handleCommentOnSelection}
               onAddNote={handleAddNote}
               onEditComment={handleEditComment}
               onDeleteComment={handleDeleteComment}
-              onDeleteAnnotation={handleDeleteAnnotation}
             />
           </div>,
         );
@@ -1679,8 +1692,9 @@ export default function SessionPlayer({
                       void handleDeleteAnnotation(b.ann.id);
                     }
                   }}
+                  disabled={busyId === b.ann.id}
                   title="Delete the bracket"
-                  className="px-0.5 text-[11px] text-foreground/40 hover:text-red-600"
+                  className="px-0.5 text-[11px] text-foreground/40 hover:text-red-600 disabled:opacity-40"
                 >
                   🗑
                 </button>
@@ -1701,15 +1715,15 @@ export default function SessionPlayer({
       composerOpenForRail,
       composerAnchorTurnIdx,
       annById,
+      segIndexById,
+      textSel,
       openCommentAnnId,
       comments,
       commentError,
       commentBusy,
       commentRowBusyId,
       busyId,
-      pending,
       closeCard,
-      seekTo,
       handleCommentOnSelection,
       handleAddNote,
       handleEditComment,
@@ -1750,12 +1764,14 @@ export default function SessionPlayer({
     [assignedAnn, popupCodeById],
   );
 
-  // Lay the brace gutter out IMPERATIVELY: measure cue spans, pack chip blocks,
-  // write styles straight to the DOM. No setState — measurement-driven state would
-  // either loop (render → measure → setState → render) or trip the repo's
+  // Lay the WHOLE gutter out IMPERATIVELY: measure cue spans, pack comment
+  // marginalia + code chip-blocks together (they share the gutter), write styles
+  // straight to the DOM. No setState — measurement-driven state would either loop
+  // (render → measure → setState → render) or trip the repo's
   // no-setState-in-effect rule; writing through refs does neither. Re-runs on data
-  // changes and window resize; elements start opacity-0 and are revealed once
-  // positioned so there is no flash of unpositioned chrome.
+  // changes (threads, open card, composer, selection anchor) and window resize;
+  // elements start opacity-0 and are revealed once positioned so there is no
+  // flash of unpositioned chrome.
   useEffect(() => {
     const root = transcriptRef.current;
     if (!root) return;
@@ -1765,17 +1781,10 @@ export default function SessionPlayer({
       cells.forEach((cell) => {
         const braces = cell.querySelectorAll<HTMLElement>('[data-code-brace]');
         const blocks = cell.querySelectorAll<HTMLElement>('[data-code-block]');
-        if (braces.length === 0 && blocks.length === 0) return;
+        const railCards = cell.querySelectorAll<HTMLElement>('[data-rail-card]');
+        if (braces.length === 0 && blocks.length === 0 && railCards.length === 0) return;
         if (cell.offsetParent === null) return; // hidden (mobile) — nothing to place
         const cellRect = cell.getBoundingClientRect();
-
-        // Comment cards already occupy the top of this cell; blocks pack BELOW the
-        // deepest one. Represent that occupancy as a synthetic first gutter block.
-        let cardsBottom = 0;
-        cell.querySelectorAll<HTMLElement>('[data-rail-card]').forEach((card) => {
-          const r = card.getBoundingClientRect();
-          cardsBottom = Math.max(cardsBottom, r.bottom - cellRect.top);
-        });
 
         // Braces: pinned to the coded text's true extent — they NEVER pack.
         const extents = new Map<string, { top: number; bottom: number }>();
@@ -1793,24 +1802,44 @@ export default function SessionPlayer({
           el.style.opacity = '1';
         });
 
-        // Chip blocks: desired at their brace top, packed downward (never up) so
-        // stacked/overlapping ranges stay readable. Pure policy in packGutter.
+        // ONE pack for everything that occupies the gutter: comment marginalia
+        // (desired beside their anchored SPAN — the cue row their annotation
+        // starts on, not the turn top) and code chip-blocks (desired at their
+        // brace top). Packing them together is what stops a note group and a
+        // chip block anchored to nearby spans from overdrawing each other; the
+        // pure policy (text order, pushed DOWN on collision, never up) lives in
+        // packGutter. Ids are namespaced (`card:`/`block:`) because a coded
+        // annotation with notes appears in BOTH lists under one annotation id.
         const inputs: GutterInput[] = [];
-        if (cardsBottom > 0) {
-          inputs.push({ id: '__cards__', top: 0, bottom: 0, blockHeight: cardsBottom });
-        }
+        railCards.forEach((el) => {
+          const startIdx = Number(el.dataset.startIdx);
+          const rowEl = rowRefs.current[startIdx] ?? null;
+          const top = rowEl ? rowEl.getBoundingClientRect().top - cellRect.top : 0;
+          inputs.push({
+            id: `card:${el.dataset.annId ?? ''}`,
+            top,
+            bottom: top,
+            blockHeight: el.offsetHeight || 24,
+          });
+        });
         blocks.forEach((el) => {
           const ext = extents.get(el.dataset.annId ?? '');
           inputs.push({
-            id: el.dataset.annId ?? '',
+            id: `block:${el.dataset.annId ?? ''}`,
             top: ext?.top ?? 0,
             bottom: ext?.bottom ?? 0,
             blockHeight: el.offsetHeight || 24,
           });
         });
         const packed = new Map(packGutter(inputs, 6).map((b) => [b.id, b]));
+        railCards.forEach((el) => {
+          const b = packed.get(`card:${el.dataset.annId ?? ''}`);
+          if (!b) return;
+          el.style.top = `${b.blockTop}px`;
+          el.style.opacity = '1';
+        });
         blocks.forEach((el) => {
-          const b = packed.get(el.dataset.annId ?? '');
+          const b = packed.get(`block:${el.dataset.annId ?? ''}`);
           if (!b) return;
           el.style.top = `${b.blockTop}px`;
           el.style.opacity = '1';
@@ -1832,6 +1861,7 @@ export default function SessionPlayer({
     comments,
     openCommentAnnId,
     composerOpen,
+    textSel,
     activeTab,
     editing,
     railEnabled,
@@ -2317,10 +2347,10 @@ export default function SessionPlayer({
               </button>
             </div>
           ) : (
-            /* REVIEW: flowing transcript with a Google-Docs comment GUTTER. Each
-               turn reserves a right gutter; the active card renders in the anchor
-               turn's gutter (absolutely placed so it never grows the row), so it
-               aligns to its excerpt and scrolls with the content — no measurement. */
+            /* REVIEW: flowing transcript with a MARGINALIA gutter. Each turn
+               reserves a right gutter; note groups render in the anchor turn's
+               gutter cell (absolutely placed so they never grow the row) and the
+               measurement effect aligns each beside its anchored span. */
             <>
               {codingEnabled && (
                 <p className="mb-1 text-xs text-foreground/40">
@@ -2544,193 +2574,139 @@ function TranscriptBody({
 }
 
 /**
- * The single comment card shown in the review-mode margin — a Google-Docs comment
- * card. Two faces:
- *  • COMPOSER (a fresh selection, no annotation yet): excerpt + a draft textarea +
- *    Comment/Cancel. ⌘⌥M opened it; ⌘⇧J (handled by the parent) marks an important
- *    quote. Submitting creates a quote anchor + first comment.
- *  • THREAD (an existing excerpt): excerpt + codes + the comment thread + an
- *    add-comment input + "Mark quote" + delete-excerpt.
+ * The comment surface shown in the review-mode margin — plain MARGINALIA, not a
+ * boxed card: a 2px gold left border, transparent background, no header, no
+ * excerpt quote, no timestamp, no chrome. Two faces:
+ *  • COMPOSER (a fresh selection, no annotation yet): the uncontrolled note
+ *    textarea + a minimal Add-note button. Submitting creates a quote anchor +
+ *    first note.
+ *  • THREAD (an existing excerpt): the notes, each inline-editable, each with a
+ *    hover ✕; the add-a-note line below; one tiny ✕ top-right closes the group.
  */
 function CommentCard({
   composerMode,
-  pendingQuote,
   openCommentAnn,
   openThread,
   commentError,
   commentBusy,
   commentRowBusyId,
   composerTextareaRef,
-  busyId,
-  formatTime: fmtTime,
   onClose,
-  onSeek,
   onCommentOnSelection,
   onAddNote,
   onEditComment,
   onDeleteComment,
-  onDeleteAnnotation,
 }: {
   composerMode: boolean;
-  pendingQuote: string | null;
   openCommentAnn: MyAnnotationView | null;
   openThread: AnnotationCommentView[];
   commentError: string | null;
   commentBusy: boolean;
   commentRowBusyId: string | null;
   composerTextareaRef: React.RefObject<HTMLTextAreaElement | null>;
-  busyId: string | null;
-  formatTime: (ms: number) => string;
   onClose: () => void;
-  onSeek: (ms: number) => void;
   onCommentOnSelection: () => void;
   onAddNote: (text: string) => void;
   onEditComment: (id: string, next: string, prev: string) => void;
   onDeleteComment: (id: string) => void;
-  onDeleteAnnotation: (id: string) => void;
 }) {
-  return (
-    <div className="max-h-[70vh] overflow-auto rounded-lg border border-foreground/20 bg-background shadow-lg p-2">
-      <div className="mb-1.5 flex items-start gap-2">
-        <h2 className="text-xs font-semibold">
-          {composerMode ? 'Comment' : 'Comments'}
-          <span className="ml-1 font-normal text-foreground/40">
-            on {composerMode ? 'selection' : 'excerpt'}
-          </span>
-        </h2>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="ml-auto text-foreground/40 hover:text-foreground"
-        >
-          {'✕'}
-        </button>
+  if (composerMode) {
+    return (
+      <div className="border-l-2 border-amber-400 pl-2">
+        {commentError && (
+          <p className="mb-1 text-xs text-red-700 dark:text-red-300">{commentError}</p>
+        )}
+        {/* FULLY uncontrolled: NO value AND NO onChange. Typing never touches React
+            state, so the composer never re-renders mid-edit and the caret can never
+            reset (the "Made"→"ade M" bug came from onChange→setState re-rendering on
+            the first keystroke). The text is read from the ref at submit; the button
+            is gated only on `commentBusy`, and empty submits are guarded in
+            handleCommentOnSelection. Cleared via the ref on submit. */}
+        <textarea
+          ref={composerTextareaRef}
+          onKeyDown={(e) => {
+            // Enter submits; Shift+Enter inserts a newline. Guard IME composition
+            // (a composing Enter commits the IME, not the note).
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              onCommentOnSelection();
+            }
+          }}
+          placeholder="Note… (Enter to add)"
+          rows={2}
+          className="w-full resize-none border border-foreground/10 bg-transparent px-1 py-0.5 text-sm outline-none placeholder:text-foreground/30 focus:border-foreground/25"
+          aria-label="Note on selection"
+        />
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onCommentOnSelection}
+            disabled={commentBusy}
+            className="text-xs text-foreground/50 hover:text-foreground disabled:opacity-40"
+          >
+            {commentBusy ? 'Adding…' : 'Add note'}
+          </button>
+        </div>
       </div>
+    );
+  }
+  if (!openCommentAnn) return null;
+  return (
+    <div className="relative border-l-2 border-amber-400 pl-2 pr-4">
+      {/* The ONE piece of chrome: a tiny ✕ closing the open group. */}
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Close"
+        className="absolute right-0 top-0 text-xs leading-none text-foreground/30 hover:text-foreground"
+      >
+        {'✕'}
+      </button>
 
-      {composerMode ? (
-        <>
-          {pendingQuote && (
-            <div className="mb-1.5 rounded border border-foreground/10 bg-background/40 px-2 py-1 text-xs italic text-foreground/80">
-              “{pendingQuote.length > 100 ? pendingQuote.slice(0, 100) + '…' : pendingQuote}”
-            </div>
-          )}
-          {commentError && (
-            <p className="mb-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-xs text-red-700 dark:text-red-300">
-              {commentError}
-            </p>
-          )}
-          {/* FULLY uncontrolled: NO value AND NO onChange. Typing never touches React
-              state, so the composer never re-renders mid-edit and the caret can never
-              reset (the "Made"→"ade M" bug came from onChange→setState re-rendering on
-              the first keystroke). The text is read from the ref at submit; the button
-              is gated only on `commentBusy`, and empty submits are guarded in
-              handleCommentOnSelection. Cleared via the ref on submit. */}
-          <textarea
-            ref={composerTextareaRef}
-            onKeyDown={(e) => {
-              // Enter submits; Shift+Enter inserts a newline. Guard IME composition
-              // (a composing Enter commits the IME, not the note).
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                onCommentOnSelection();
-              }
-            }}
-            placeholder="Note… (Enter to add · ⇧⏎ newline)"
-            rows={2}
-            className="mb-2 w-full resize-none rounded border border-foreground/20 bg-transparent px-2 py-1 text-sm"
-            aria-label="Note on selection"
-          />
-          <div className="flex items-center justify-end">
-            <button
-              type="button"
-              onClick={onCommentOnSelection}
-              disabled={commentBusy}
-              className="rounded bg-sky-600 px-2.5 py-1 text-xs text-white disabled:opacity-40"
-            >
-              {commentBusy ? 'Adding…' : 'Add note'}
-            </button>
-          </div>
-        </>
-      ) : openCommentAnn ? (
-        <>
-          <div className="mb-1.5 rounded border border-foreground/10 bg-background/40 px-2 py-1 text-xs">
-            <button
-              type="button"
-              onClick={() => onSeek(openCommentAnn.tStartMs)}
-              className="font-mono text-xs text-foreground/50 hover:underline"
-              title="Seek to here"
-            >
-              [{fmtTime(openCommentAnn.tStartMs)}]
-            </button>{' '}
-            <span className="italic text-foreground/80">
-              “{openCommentAnn.quoteText ?? '(whole segment)'}”
-            </span>
-            {openCommentAnn.kind === 'quote' && (
-              <span className="ml-1 text-xs text-amber-700 dark:text-amber-300">· quote</span>
-            )}
-            {openCommentAnn.codes.length > 0 && (
-              <span className="ml-1 text-xs text-emerald-700 dark:text-emerald-300">
-                · {openCommentAnn.codes.map((c) => c.mnemonic).join(', ')}
-              </span>
-            )}
-          </div>
+      {commentError && (
+        <p className="mb-1 text-xs text-red-700 dark:text-red-300">{commentError}</p>
+      )}
 
-          {commentError && (
-            <p className="mb-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-xs text-red-700 dark:text-red-300">
-              {commentError}
-            </p>
-          )}
-
-          {/* Notes: each a slim gold-border line, click the text to edit inline
-              (uncontrolled → caret-safe), ⌘/Ctrl+Delete to remove. No resolve, no
-              timestamps, no thread chrome. Keyed on id+body so a server-side edit
-              remounts with fresh text rather than React rewriting the node. */}
-          <div className="mb-1 space-y-1">
-            {openThread.map((c) => (
-              <EditableNote
-                key={`${c.id}:${c.body}`}
-                author={c.authorName}
-                initialText={c.body}
-                busy={commentRowBusyId === c.id}
-                onCommit={(text) => onEditComment(c.id, text, c.body)}
-                onDelete={() => onDeleteComment(c.id)}
-              />
-            ))}
-          </div>
-
-          {/* Add a note — the same inline editor, empty. Enter commits; it remounts
-              empty via its key when the reloaded thread grows. */}
+      {/* Notes: click the text to edit inline (uncontrolled → caret-safe), Enter
+          commits, ⇧⏎ newline, ⌘/Ctrl+⌫ (or the hover ✕) deletes. The author is the
+          title tooltip on the note text — no visible author line. Keyed on id+body
+          so a server-side edit remounts with fresh text rather than React
+          rewriting the node. */}
+      <div className="space-y-1">
+        {openThread.map((c) => (
           <EditableNote
-            key={`add:${openCommentAnn.id}:${openThread.length}`}
-            author={null}
-            initialText=""
-            placeholder="Add a note…"
-            busy={commentBusy}
-            onCommit={(text) => onAddNote(text)}
-            onDelete={() => {}}
+            key={`${c.id}:${c.body}`}
+            author={c.authorName}
+            initialText={c.body}
+            busy={commentRowBusyId === c.id}
+            onCommit={(text) => onEditComment(c.id, text, c.body)}
+            onDelete={() => onDeleteComment(c.id)}
           />
+        ))}
 
-          <div className="mt-1.5 flex justify-end">
-            <button
-              type="button"
-              onClick={() => onDeleteAnnotation(openCommentAnn.id)}
-              disabled={busyId === openCommentAnn.id}
-              className="text-[0.7rem] text-foreground/30 underline hover:text-red-500 disabled:opacity-40"
-            >
-              Delete excerpt
-            </button>
-          </div>
-        </>
-      ) : null}
+        {/* Add a note — the same inline editor, empty (no hover ✕: there is nothing
+            to delete). Enter commits; it remounts empty via its key when the
+            reloaded thread grows. */}
+        <EditableNote
+          key={`add:${openCommentAnn.id}:${openThread.length}`}
+          author={null}
+          initialText=""
+          placeholder="Add a note…"
+          busy={commentBusy}
+          onCommit={(text) => onAddNote(text)}
+        />
+      </div>
     </div>
   );
 }
 
 /**
- * A single comment rendered as a slim, inline-editable NOTE: a gold left-border
- * line showing the author and the body. Clicking the body edits it in place;
- * Enter commits, Shift+Enter is a newline, ⌘/Ctrl+Delete (or Backspace) removes it.
+ * A single comment rendered as a slim, inline-editable NOTE inside the marginalia
+ * group (the GROUP carries the gold border — a note draws none of its own).
+ * Clicking the body edits it in place; Enter commits, Shift+Enter is a newline,
+ * ⌘/Ctrl+Delete (or Backspace) — or the hover ✕ — removes it. The author is the
+ * `title` tooltip on the note text (hover shows the email); there is no visible
+ * author line.
  *
  * UNCONTROLLED on purpose — the SAME pattern as `InlineCueEditor`. The initial
  * text is set ONCE as children; the browser owns the DOM text during editing and
@@ -2756,17 +2732,18 @@ function EditableNote({
   placeholder?: string;
   busy: boolean;
   onCommit: (text: string) => void;
-  onDelete: () => void;
+  /** Delete this note (hover ✕ / ⌘⌫). Omitted for the add-a-note line. */
+  onDelete?: () => void;
 }) {
   const skipBlurRef = useRef(false);
   return (
-    <div className={`border-l-2 border-amber-400 pl-2 ${busy ? 'opacity-50' : ''}`}>
-      {author && <div className="text-[0.7rem] text-foreground/40">{author}</div>}
+    <div className={`group relative ${busy ? 'opacity-50' : ''}`}>
       <div
         contentEditable={!busy}
         suppressContentEditableWarning
         role="textbox"
         aria-label={author ? `Edit note by ${author}` : 'Add a note'}
+        title={author ?? undefined}
         data-placeholder={placeholder ?? ''}
         onBlur={(e) => {
           if (skipBlurRef.current) {
@@ -2786,56 +2763,58 @@ function EditableNote({
             (e.key === 'Backspace' || e.key === 'Delete')
           ) {
             e.preventDefault();
-            onDelete();
+            onDelete?.();
           }
         }}
         className="min-h-[1.2rem] whitespace-pre-wrap rounded-sm px-0.5 text-sm text-foreground/90 outline-none empty:before:text-foreground/30 empty:before:content-[attr(data-placeholder)] focus:bg-amber-500/5"
       >
         {initialText}
       </div>
+      {onDelete && (
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={busy}
+          aria-label="Delete note"
+          className="absolute right-0 top-0 text-xs leading-none text-foreground/30 opacity-0 hover:text-red-600 focus:opacity-100 group-hover:opacity-100"
+        >
+          {'✕'}
+        </button>
+      )}
     </div>
   );
 }
 
 /**
- * The COLLAPSED face of a rail card (issue C): a compact, unobtrusive preview for a
- * commented/quoted excerpt that is NOT the currently-open one. Shows a one-line
- * preview (the latest comment, or "Quote" for an uncommented quote) above the
- * excerpt. Clicking anywhere opens the full thread (`onOpen` → `openCommentThread`),
- * which expands this annotation's card and elevates it above the rest (issue D).
+ * The COLLAPSED face of a margin entry: the annotation's notes, IN FULL — plain
+ * marginalia text behind the same gold left border, never truncated. Hovering a
+ * note shows its author (title tooltip); clicking anywhere opens the thread
+ * (`onOpen` → `openCommentThread`), which swaps in the editable open face.
  */
-function CommentPreviewCard({
-  kind,
-  previewText,
-  quoteText,
+function MarginNotes({
+  thread,
   onOpen,
 }: {
-  kind: string;
-  previewText: string;
-  quoteText: string | null;
+  thread: AnnotationCommentView[];
   onOpen: () => void;
 }) {
-  const preview = previewText.trim() !== '' ? previewText : kind === 'quote' ? 'Quote' : 'Comment';
-  const excerpt = quoteText ?? '(whole segment)';
   return (
     <button
       type="button"
       onClick={onOpen}
-      title="Open this comment thread"
-      className="block w-full rounded-lg border border-foreground/15 bg-background/95 px-2.5 py-1.5 text-left shadow-sm hover:border-foreground/30 hover:shadow"
+      title="Open these notes"
+      className="block w-full border-l-2 border-amber-400 pl-2 text-left"
     >
-      <div className="flex items-center gap-1 text-[0.7rem] text-foreground/40">
-        {kind === 'quote' && (
-          <span className="text-amber-700 dark:text-amber-300" aria-hidden>
-            ❝
-          </span>
-        )}
-        <span className="truncate italic">
-          “{excerpt.length > 48 ? excerpt.slice(0, 48) + '…' : excerpt}”
-        </span>
-      </div>
-      <div className="mt-0.5 truncate text-xs text-foreground/80">
-        {preview.length > 64 ? preview.slice(0, 64) + '…' : preview}
+      <div className="space-y-1">
+        {thread.map((c) => (
+          <div
+            key={c.id}
+            title={c.authorName}
+            className="whitespace-pre-wrap px-0.5 text-sm text-foreground/90"
+          >
+            {c.body}
+          </div>
+        ))}
       </div>
     </button>
   );
