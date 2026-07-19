@@ -26,6 +26,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: '/codebook', label: 'Codes', hint: 'Tree, codes, scheme' },
       { href: '/codebook/view', label: 'Document', hint: 'Readable list · print to PDF' },
+      { href: '/codebook/merge', label: 'Merge', hint: 'Combine duplicate codes' },
       { href: '/labels', label: 'Labels', hint: 'Cross-cutting tags' },
       { href: '/', label: 'Scheme', hint: 'Facets and their values' },
       { href: '/citations', label: 'Citations', hint: 'BibTeX library' },

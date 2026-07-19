@@ -96,11 +96,23 @@ done < <(
 # them would instead permit a real `.rpc(` call in exactly the modules that
 # hold the service client. Add a deliberate allowlist entry here if a real
 # call site is ever needed.
+#
+# Deliberate allowlist (pair-scoped: procedure name AND file must both match,
+# so neither a new procedure in codes.ts nor cb_merge_codes from elsewhere
+# slips through): `cb_merge_codes` is a SECURITY INVOKER function over cb_
+# tables only, called on the ANON user client (mergeCodes, app/actions/codes.ts)
+# — RLS enforces editorship at the DB, so the guards it "bypasses" are
+# re-imposed by Postgres itself.
+RPC_ALLOWED_FILE_RE='^app/actions/codes\.ts$'
+RPC_ALLOWED_NAME_RE="\.rpc\('cb_merge_codes'"
 while IFS= read -r hit; do
   [ -n "$hit" ] || continue
+  file="${hit%%:*}"
   # Line content after `path:lineno:` (repo paths contain no colons).
   content="${hit#*:}"
   content="${content#*:}"
+  if printf '%s' "$file" | grep -qE "$RPC_ALLOWED_FILE_RE" \
+    && printf '%s' "$content" | grep -qE "$RPC_ALLOWED_NAME_RE"; then continue; fi
   # Stage (i): skip ONLY comment-to-EOL prefixes — `//`, or a block-comment
   # continuation `*` FOLLOWED BY whitespace/EOL. A bare `*/` or `/*` prefix
   # does NOT qualify: code may follow the delimiter on the same line

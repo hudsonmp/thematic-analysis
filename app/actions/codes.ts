@@ -13,6 +13,7 @@ import type { RowFacetWrites } from '@/lib/codebook/grid';
 import { CodeVersionInput, type CodeVersionInputT } from '@/lib/types/contracts';
 import type { Json, Tables, TablesInsert } from '@/lib/types/cb-db';
 import { requireEditor } from '@/lib/auth/roles';
+import { createUserServerClient } from '@/lib/supabase/user-server';
 
 type Code = Tables<'cb_codes'>;
 type CodeVersion = Tables<'cb_code_versions'>;
@@ -230,6 +231,59 @@ export async function saveNewVersion(
   }
 
   return versionRes.data;
+}
+
+/**
+ * Merge N codes into one SURVIVOR — a single atomic call to the Postgres
+ * function `cb_merge_codes(p_survivor, p_absorbed, p_version)`, which:
+ * inserts `p_version` as the survivor's new current version; re-points the
+ * absorbed codes' annotation links (deduped), citation/label/episode links
+ * (unioned), coder comments, and child codes to the survivor; drops the
+ * absorbed codes' facet answers; and retires them (retired_at=now(),
+ * status='merged'). One statement, so unlike the sequenced actions above
+ * there is no partially-merged state to recover from.
+ *
+ * The `version` is authored on the merge screen (survivor-anatomy draft +
+ * exemplar union — lib/codebook/merge.ts) and validated here with the same
+ * CodeVersionInput schema every other version write uses.
+ *
+ * SECURITY INVOKER: the function runs as the CALLER, so it goes through the
+ * user-bound client (NOT the service role) and RLS enforces editorship at the
+ * DB — requireEditor() is the matching app-level gate.
+ */
+export async function mergeCodes(input: {
+  survivorId: string;
+  absorbedIds: string[];
+  version: CodeVersionInputT;
+}): Promise<void> {
+  await requireEditor(); // viewers are read-only; RLS also rejects them, but gate app-side like every other action
+  const parsed = CodeVersionInput.parse(input.version);
+
+  const absorbed = [...new Set(input.absorbedIds)];
+  if (absorbed.length === 0) {
+    throw new Error('mergeCodes: nothing to absorb — pick at least one code to merge in.');
+  }
+  if (absorbed.includes(input.survivorId)) {
+    throw new Error('mergeCodes: the survivor cannot be in the absorbed set.');
+  }
+
+  const sb = await createUserServerClient();
+  // The generated Database types carry no Functions entries (cb_merge_codes is
+  // defined in a migration this app never ran typegen against), so the typed
+  // client rejects the rpc name. Call through a structurally-typed view of the
+  // client instead — same instance, so `this` binding and auth stay intact.
+  const rpcClient = sb as unknown as {
+    rpc: (
+      fn: string,
+      args: Record<string, unknown>,
+    ) => PromiseLike<{ error: { message: string } | null }>;
+  };
+  const { error } = await rpcClient.rpc('cb_merge_codes', {
+    p_survivor: input.survivorId,
+    p_absorbed: absorbed,
+    p_version: parsed,
+  });
+  if (error) throw new Error(`mergeCodes failed: ${error.message}`);
 }
 
 /**
