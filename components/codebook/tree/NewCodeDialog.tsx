@@ -15,6 +15,7 @@ import BulletListEditor from '@/components/code/BulletListEditor';
 import MentionTextarea from '@/components/codebook/MentionTextarea';
 import ValueList from './ValueList';
 import type { Tables } from '@/lib/types/cb-db';
+import { joinDefinition } from '@/lib/codebook/definition';
 
 type Code = Tables<'cb_codes'>;
 
@@ -93,6 +94,10 @@ export default function NewCodeDialog({
   // be faked as valueless open_text "facets", which meant include_if lived in two
   // places with nothing syncing them. They belong here.
   const [definition, setDefinition] = useState('');
+  // Literature description — the theoretical half of a 'Literature == Applied'
+  // definition (a-priori codes only; joined via joinDefinition on create so the
+  // stored field matches what the editors round-trip).
+  const [literature, setLiterature] = useState('');
   const [includeIf, setIncludeIf] = useState<string[]>([]);
   const [excludeIf, setExcludeIf] = useState<string[]>([]);
   const [exemplars, setExemplars] = useState<string[]>([]);
@@ -122,7 +127,7 @@ export default function NewCodeDialog({
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
-  /** The normalized slug (UPPER-KEBAB) that will actually be saved as the mnemonic.
+  /** The normalized slug (lower-kebab) that will actually be saved as the mnemonic.
    *  Shown live under the input so the researcher sees the canonical form before
    *  committing, and used to check the uniqueness of the typed slug. */
   const normalizedSlug = useMemo(() => (slug.trim() ? normalizeSlug(slug.trim()) : ''), [slug]);
@@ -246,7 +251,12 @@ export default function NewCodeDialog({
             mnemonic: resolvedMnemonic,
             origin,
             version: {
-              definition: definition.trim(),
+              // a_priori + literature text → 'Literature == Applied' in the one
+              // stored field, same as the editors write back.
+              definition:
+                origin === 'a_priori'
+                  ? joinDefinition(literature, definition)
+                  : definition.trim(),
               include_if: includeIf,
               exclude_if: excludeIf,
               // Exemplars carry an optional pid/episode; captured as plain text here
@@ -462,7 +472,30 @@ export default function NewCodeDialog({
                 />
               </Field>
 
-              <Field label="Definition" hint="@ mentions an existing code by its slug.">
+              {origin === 'a_priori' && (
+                <Field
+                  label="Literature description"
+                  hint="Codebook + LaTeX only — never shown while coding."
+                >
+                  <MentionTextarea
+                    value={literature}
+                    onChange={setLiterature}
+                    codes={codes}
+                    rows={3}
+                    className={inputCls}
+                    aria-label="Literature description"
+                  />
+                </Field>
+              )}
+
+              <Field
+                label="Definition"
+                hint={
+                  origin === 'a_priori'
+                    ? 'The applied rule coders see. @ mentions an existing code by its slug.'
+                    : '@ mentions an existing code by its slug.'
+                }
+              >
                 <MentionTextarea
                   value={definition}
                   onChange={setDefinition}
