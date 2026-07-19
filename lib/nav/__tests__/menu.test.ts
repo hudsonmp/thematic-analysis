@@ -32,6 +32,10 @@ describe('activeHref', () => {
     // …and a deeper unlisted route resolves up to its nearest listed ancestor.
     expect(activeHref('/sessions/abc-123')).toBe('/sessions');
     expect(activeHref('/sessions/abc-123/compare')).toBe('/sessions');
+    // /codebook/merge is a sibling under /codebook, like /codebook/view — it
+    // must light up its own entry, not the canvas's.
+    expect(activeHref('/codebook/merge')).toBe('/codebook/merge');
+    expect(activeGroupKey('/codebook/merge')).toBe('codebook');
   });
 
   it('resolves the LLM run screen to LLM Eval, not Progression', () => {
