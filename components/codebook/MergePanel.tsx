@@ -59,6 +59,44 @@ function appliedPreview(definition: string | null | undefined): string {
 }
 
 /**
+ * PURE draft computation for a (selection, survivor) pair — shared by the
+ * in-panel applyPrefill and the mount-time seed when the codebook tree carries
+ * a ready selection in (?ids=…). Null when the pair cannot form a merge.
+ */
+function prefillFor(
+  codes: MergeCode[],
+  selectedIds: string[],
+  survivorId: string | null,
+): {
+  literature: string;
+  applied: string;
+  includeIf: string[];
+  excludeIf: string[];
+  exemplars: DraftExemplar[];
+  counterExample: string;
+  changeNote: string;
+} | null {
+  if (survivorId === null || selectedIds.length < 2) return null;
+  const byId = new Map(codes.map((c) => [c.id, c]));
+  const surv = byId.get(survivorId);
+  if (!surv) return null;
+  const absorbed = selectedIds
+    .filter((id) => id !== survivorId)
+    .map((id) => byId.get(id))
+    .filter((c): c is MergeCode => c !== undefined);
+  const p = buildMergePrefill(surv as MergeSource, absorbed as MergeSource[]);
+  return {
+    literature: p.literature,
+    applied: p.applied,
+    includeIf: p.includeIf,
+    excludeIf: p.excludeIf,
+    exemplars: toDrafts(p.exemplars),
+    counterExample: p.counterExample,
+    changeNote: `merge: ${absorbed.map((c) => c.mnemonic).join(', ')} -> ${surv.mnemonic}`,
+  };
+}
+
+/**
  * The merge screen: pick 2+ live codes, choose the SURVIVOR, author the merged
  * version, commit. The DB function `cb_merge_codes` does the re-pointing and
  * retiring atomically (see actions/codes.ts mergeCodes); this panel owns only
@@ -75,11 +113,16 @@ function appliedPreview(definition: string | null | undefined): string {
 export default function MergePanel({
   codes,
   allCodes,
+  initialSelectedIds = [],
 }: {
   /** Every LIVE code (retired_at null), with current-version anatomy. */
   codes: MergeCode[];
   /** Every live code as {id, mnemonic} — the @-mention candidate pool. */
   allCodes: MentionCode[];
+  /** Pre-selection carried in from the codebook tree's merge mode
+   *  (/codebook/merge?ids=…), already validated against live codes by the page.
+   *  Order = the tree's click order, so the first is the default survivor. */
+  initialSelectedIds?: string[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -87,17 +130,25 @@ export default function MergePanel({
 
   // Selection, in CLICK ORDER — order matters: the first selected code is the
   // default survivor, and the exemplar union walks absorbed codes in this order.
-  const [selected, setSelected] = useState<string[]>([]);
-  const [survivorId, setSurvivorId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>(initialSelectedIds);
+  const [survivorId, setSurvivorId] = useState<string | null>(
+    initialSelectedIds.length >= 2 ? initialSelectedIds[0] : null,
+  );
 
-  // Merged-result draft (see reset semantics above).
-  const [literature, setLiterature] = useState('');
-  const [applied, setApplied] = useState('');
-  const [includeIf, setIncludeIf] = useState<string[]>([]);
-  const [excludeIf, setExcludeIf] = useState<string[]>([]);
-  const [exemplars, setExemplars] = useState<DraftExemplar[]>([]);
-  const [counterExample, setCounterExample] = useState('');
-  const [changeNote, setChangeNote] = useState('');
+  // Merged-result draft (see reset semantics above). When the tree carried in a
+  // ready selection, seed the draft from it immediately — the panel opens
+  // straight on step 2/3 instead of an empty checkbox list.
+  const initialPrefill =
+    initialSelectedIds.length >= 2
+      ? prefillFor(codes, initialSelectedIds, initialSelectedIds[0])
+      : null;
+  const [literature, setLiterature] = useState(initialPrefill?.literature ?? '');
+  const [applied, setApplied] = useState(initialPrefill?.applied ?? '');
+  const [includeIf, setIncludeIf] = useState<string[]>(initialPrefill?.includeIf ?? []);
+  const [excludeIf, setExcludeIf] = useState<string[]>(initialPrefill?.excludeIf ?? []);
+  const [exemplars, setExemplars] = useState<DraftExemplar[]>(initialPrefill?.exemplars ?? []);
+  const [counterExample, setCounterExample] = useState(initialPrefill?.counterExample ?? '');
+  const [changeNote, setChangeNote] = useState(initialPrefill?.changeNote ?? '');
 
   // Two-click commit: first click arms, second fires. Esc / click-away disarms.
   const [armed, setArmed] = useState(false);
@@ -131,33 +182,14 @@ export default function MergePanel({
   /** Rebuild the draft for a (selection, survivor) pair — the single place the
    *  editor state is written outside the field handlers themselves. */
   function applyPrefill(nextSelected: string[], nextSurvivor: string | null) {
-    const surv = nextSurvivor !== null ? byId.get(nextSurvivor) : undefined;
-    const absorbed = nextSelected
-      .filter((id) => id !== nextSurvivor)
-      .map((id) => byId.get(id))
-      .filter((c): c is MergeCode => c !== undefined);
-
-    if (!surv || nextSelected.length < 2) {
-      setLiterature('');
-      setApplied('');
-      setIncludeIf([]);
-      setExcludeIf([]);
-      setExemplars([]);
-      setCounterExample('');
-      setChangeNote('');
-      return;
-    }
-
-    const p = buildMergePrefill(surv as MergeSource, absorbed as MergeSource[]);
-    setLiterature(p.literature);
-    setApplied(p.applied);
-    setIncludeIf(p.includeIf);
-    setExcludeIf(p.excludeIf);
-    setExemplars(toDrafts(p.exemplars));
-    setCounterExample(p.counterExample);
-    setChangeNote(
-      `merge: ${absorbed.map((c) => c.mnemonic).join(', ')} -> ${surv.mnemonic}`,
-    );
+    const p = prefillFor(codes, nextSelected, nextSurvivor);
+    setLiterature(p?.literature ?? '');
+    setApplied(p?.applied ?? '');
+    setIncludeIf(p?.includeIf ?? []);
+    setExcludeIf(p?.excludeIf ?? []);
+    setExemplars(p?.exemplars ?? []);
+    setCounterExample(p?.counterExample ?? '');
+    setChangeNote(p?.changeNote ?? '');
   }
 
   function toggle(id: string) {

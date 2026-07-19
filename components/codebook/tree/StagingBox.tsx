@@ -111,6 +111,7 @@ export default function StagingBox({
   unfiled,
   onDragCode,
   onSelectCode,
+  mergeSelectedIds = [],
 }: {
   facetId: string;
   facetLabel: string;
@@ -122,6 +123,8 @@ export default function StagingBox({
   /** Clicking a chip inspects it in the right rail. Dragging FILES it; clicking READS
    *  it — and you often need to reread the definition before you know where it goes. */
   onSelectCode: (codeId: string) => void;
+  /** Merge-mode selection (click order) — chips in it show an amber badge. */
+  mergeSelectedIds?: string[];
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -258,6 +261,7 @@ export default function StagingBox({
                     onDragEnd={() => onDragCode(null)}
                     onDropCode={(dragged) => onDropOnCode(id, dragged)}
                     onSelect={() => onSelectCode(id)}
+                    mergeIndex={mergeSelectedIds.indexOf(id)}
                   />
                 );
               })}
@@ -284,6 +288,7 @@ export default function StagingBox({
               onDragEnd={() => onDragCode(null)}
               onDropCode={(dragged) => onDropOnCode(c.id, dragged)}
               onSelect={() => onSelectCode(c.id)}
+              mergeIndex={mergeSelectedIds.indexOf(c.id)}
             />
           ))}
           {loose.length === 0 && groups.length > 0 && (
@@ -303,12 +308,15 @@ function CodeChip({
   onDragEnd,
   onDropCode,
   onSelect,
+  mergeIndex = -1,
 }: {
   code: CodeWithRefs;
   onDragStart: () => void;
   onDragEnd: () => void;
   onDropCode: (draggedId: string) => void;
   onSelect: () => void;
+  /** >= 0 when merge mode holds this chip: its 1-based order shows as a badge. */
+  mergeIndex?: number;
 }) {
   const [over, setOver] = useState(false);
   return (
@@ -346,11 +354,18 @@ function CodeChip({
       }}
       title={code.mnemonic}
       className={`cursor-grab truncate border px-1.5 py-1 text-[11px] transition active:cursor-grabbing ${
-        over
-          ? 'border-foreground bg-foreground/[0.06]'
-          : 'border-foreground/20 text-foreground/70 hover:border-foreground/50'
+        mergeIndex >= 0
+          ? 'border-amber-600 bg-amber-600/15'
+          : over
+            ? 'border-foreground bg-foreground/[0.06]'
+            : 'border-foreground/20 text-foreground/70 hover:border-foreground/50'
       }`}
     >
+      {mergeIndex >= 0 && (
+        <span className="mr-0.5 font-semibold text-amber-800 dark:text-amber-300">
+          {mergeIndex + 1}·
+        </span>
+      )}
       <span className="font-mono text-foreground/70">{code.mnemonic}</span>
     </div>
   );

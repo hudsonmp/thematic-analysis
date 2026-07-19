@@ -200,7 +200,42 @@ export default function FacetCanvas({
 
   /** Selecting anything opens the overlay on it. Triage closes: they occupy the same
    *  window, and a click whose result is hidden behind another panel reads as broken. */
+  // ---- MERGE MODE ---------------------------------------------------------
+  // Armed from the toolbar: clicking a code chip SELECTS it for merging (click
+  // order preserved — the first pick is the merge screen's default survivor)
+  // instead of opening the inspector. The bottom bar carries the selection to
+  // /codebook/merge?ids=… where the existing panel takes over. Esc exits.
+  const [mergeMode, setMergeMode] = useState(false);
+  const [mergeIds, setMergeIds] = useState<string[]>([]);
+
+  function toggleMergeMode() {
+    setMergeMode((m) => !m);
+    setMergeIds([]);
+    setSelected(null); // the inspector and merge selection must not coexist
+  }
+
+  useEffect(() => {
+    if (!mergeMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMergeMode(false);
+        setMergeIds([]);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [mergeMode]);
+
   function inspect(next: Selection) {
+    // Merge mode reroutes CODE clicks into the merge selection (values keep
+    // their normal inspect behavior — only codes merge).
+    if (mergeMode && next?.kind === 'code') {
+      const id = next.id;
+      setMergeIds((ids) =>
+        ids.includes(id) ? ids.filter((i) => i !== id) : [...ids, id],
+      );
+      return;
+    }
     setSelected(next);
     setTriageOpen(false);
     setArmedDelete(null); // an arm must never survive the thing it was aimed at
@@ -368,8 +403,25 @@ export default function FacetCanvas({
             )}
           </button>
 
+          <button
+            type="button"
+            onClick={toggleMergeMode}
+            aria-pressed={mergeMode}
+            title="Select codes on the canvas to merge them"
+            className={`border px-2.5 py-1 text-xs transition ${
+              mergeMode
+                ? 'border-amber-600 bg-amber-600 text-white'
+                : 'border-foreground/20 hover:border-foreground'
+            }`}
+          >
+            Merge
+            {mergeMode && mergeIds.length > 0 && <span className="ml-1">{mergeIds.length}</span>}
+          </button>
+
           <span className="ml-auto text-xs text-foreground/40">
-            click = inspect · ⌘-click = zoom · ⌘D duplicate
+            {mergeMode
+              ? 'click a code = add/remove from the merge · Esc exits'
+              : 'click = inspect · ⌘-click = zoom · ⌘D duplicate'}
           </span>
         </div>
 
@@ -661,28 +713,42 @@ export default function FacetCanvas({
                         screen). */}
                     {(bucket.direct.length > 0 || bucket.inherited.length > 0) && (
                       <div className="mt-1 flex flex-wrap justify-center gap-1">
-                        {bucket.direct.map((c) => (
-                          <button
-                            key={c.id}
-                            type="button"
-                            draggable
-                            onDragStart={(e) => {
-                              e.dataTransfer.setData('text/code-id', c.id);
-                              e.dataTransfer.effectAllowed = 'move';
-                              setDragging({ kind: 'code', id: c.id });
-                            }}
-                            onDragEnd={() => setDragging(null)}
-                            onClick={() => inspect({ kind: 'code', id: c.id })}
-                            className={`max-w-full cursor-grab truncate border px-1.5 py-0.5 text-[10px] transition active:cursor-grabbing ${
-                              selected?.kind === 'code' && selected.id === c.id
-                                ? 'border-foreground bg-foreground text-background'
-                                : 'border-foreground/25 text-foreground/70 hover:border-foreground'
-                            }`}
-                            title={`${c.mnemonic} — answers this value directly`}
-                          >
-                            {c.mnemonic}
-                          </button>
-                        ))}
+                        {bucket.direct.map((c) => {
+                          const mergeIdx = mergeMode ? mergeIds.indexOf(c.id) : -1;
+                          return (
+                            <button
+                              key={c.id}
+                              type="button"
+                              draggable={!mergeMode}
+                              onDragStart={(e) => {
+                                e.dataTransfer.setData('text/code-id', c.id);
+                                e.dataTransfer.effectAllowed = 'move';
+                                setDragging({ kind: 'code', id: c.id });
+                              }}
+                              onDragEnd={() => setDragging(null)}
+                              onClick={() => inspect({ kind: 'code', id: c.id })}
+                              className={`max-w-full truncate border px-1.5 py-0.5 text-[10px] transition ${
+                                mergeMode ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'
+                              } ${
+                                mergeIdx >= 0
+                                  ? 'border-amber-600 bg-amber-600/15 text-amber-800 dark:text-amber-300'
+                                  : selected?.kind === 'code' && selected.id === c.id
+                                    ? 'border-foreground bg-foreground text-background'
+                                    : 'border-foreground/25 text-foreground/70 hover:border-foreground'
+                              }`}
+                              title={
+                                mergeMode
+                                  ? `${c.mnemonic} — click to ${mergeIdx >= 0 ? 'remove from' : 'add to'} the merge`
+                                  : `${c.mnemonic} — answers this value directly`
+                              }
+                            >
+                              {mergeIdx >= 0 && (
+                                <span className="mr-0.5 font-semibold">{mergeIdx + 1}·</span>
+                              )}
+                              {c.mnemonic}
+                            </button>
+                          );
+                        })}
                         {bucket.inherited.length > 0 && (
                           <button
                             type="button"
@@ -709,7 +775,36 @@ export default function FacetCanvas({
             unfiled={unansweredHere}
             onDragCode={(id) => setDragging(id === null ? null : { kind: 'code', id })}
             onSelectCode={(id) => inspect({ kind: 'code', id })}
+            mergeSelectedIds={mergeMode ? mergeIds : []}
           />
+        )}
+
+        {/* Merge-mode action bar: carries the click-ordered selection to the merge
+            screen (first pick = default survivor there). Anchored to the SECTION
+            like the new-code button, for the same right-rail reason. */}
+        {mergeMode && (
+          <div className="absolute bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-3 border border-amber-600/60 bg-background px-4 py-2 shadow-lg">
+            <span className="text-xs text-foreground/60">
+              {mergeIds.length} selected
+              {mergeIds.length === 1 && ' — pick at least one more'}
+              {mergeIds.length >= 2 && ' — first pick is the default survivor'}
+            </span>
+            <button
+              type="button"
+              disabled={mergeIds.length < 2}
+              onClick={() => router.push(`/codebook/merge?ids=${mergeIds.join(',')}`)}
+              className="border border-amber-600 bg-amber-600 px-2.5 py-1 text-xs text-white transition enabled:hover:opacity-90 disabled:opacity-40"
+            >
+              Merge {mergeIds.length >= 2 ? mergeIds.length : ''} →
+            </button>
+            <button
+              type="button"
+              onClick={toggleMergeMode}
+              className="text-xs text-foreground/50 underline hover:text-foreground"
+            >
+              Cancel
+            </button>
+          </div>
         )}
 
         {/* Capture an uncategorized code. Anchored to the SECTION, not the viewport,

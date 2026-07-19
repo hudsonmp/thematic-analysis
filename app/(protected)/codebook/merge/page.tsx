@@ -17,13 +17,28 @@ import MergePanel, { type MergeCode } from '@/components/codebook/MergePanel';
  * document); the mergeCodes action re-checks requireEditor, and the DB
  * function is SECURITY INVOKER so RLS enforces it a third time.
  */
-export default async function CodeMergePage() {
+export default async function CodeMergePage({
+  searchParams,
+}: {
+  /** Next 16: searchParams is a Promise. `ids` carries the codebook tree's
+   *  merge-mode selection (comma-separated, click order). */
+  searchParams: Promise<{ ids?: string }>;
+}) {
   const role = await getMyRole();
   if (role === 'viewer') redirect('/codebook/view');
 
   const cb = await getOrCreateCodebook();
   const tree = await listCodebookTree(cb.id);
   const live = tree.codes.filter((c) => c.retired_at === null);
+
+  // Pre-selection from the tree's merge mode, validated against LIVE codes so a
+  // stale/forged id can never seed the panel; order (= click order) preserved.
+  const { ids } = await searchParams;
+  const liveIds = new Set(live.map((c) => c.id));
+  const initialSelectedIds = (ids ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '' && liveIds.has(s));
 
   // The panel's projection: identity + origin + the current version's anatomy.
   // The jsonb columns pass through as-is; the pure merge lib coerces them.
@@ -45,5 +60,7 @@ export default async function CodeMergePage() {
   // The @-mention candidate pool (the panel excludes the codes being merged).
   const allCodes = live.map((c) => ({ id: c.id, mnemonic: c.mnemonic }));
 
-  return <MergePanel codes={codes} allCodes={allCodes} />;
+  return (
+    <MergePanel codes={codes} allCodes={allCodes} initialSelectedIds={initialSelectedIds} />
+  );
 }
