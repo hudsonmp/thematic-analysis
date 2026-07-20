@@ -2124,20 +2124,27 @@ export default function SessionPlayer({
                 aria-label="Selection mode"
                 className="flex rounded border border-foreground/20 text-xs"
               >
-                {(['comment', 'code'] as const).map((m) => (
+                {/* Internal values stay 'comment' | 'code'; only the DISPLAY
+                    labels differ ('Comment' / 'Coding'). */}
+                {(
+                  [
+                    ['comment', 'Comment'],
+                    ['code', 'Coding'],
+                  ] as const
+                ).map(([m, label]) => (
                   <button
                     key={m}
                     type="button"
                     role="tab"
                     aria-selected={mode === m}
                     onClick={() => setMode(m)}
-                    className={`px-3 py-1 capitalize first:rounded-l last:rounded-r ${
+                    className={`px-3 py-1 first:rounded-l last:rounded-r ${
                       mode === m
                         ? 'bg-foreground text-background'
                         : 'text-foreground/70 hover:text-foreground'
                     }`}
                   >
-                    {m}
+                    {label}
                   </button>
                 ))}
               </div>
