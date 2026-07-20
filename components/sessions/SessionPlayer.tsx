@@ -264,7 +264,7 @@ export default function SessionPlayer({
 }: {
   id: string;
   pidLabel: string;
-  /** The ORIGINAL version's segments (the default tab the page renders). */
+  /** The ORIGINAL version's segments (the default variant the page renders). */
   segments: CloudSegment[];
   durationMs: number;
   /** Editor-only affordances: coding mode + the code popup + code assignment. */
@@ -274,7 +274,7 @@ export default function SessionPlayer({
   canComment?: boolean;
   /** The original transcript version id annotations anchor to (version_id). */
   versionId?: string | null;
-  /** All of the session's transcript versions (the Original/Cleaned tab set). */
+  /** All of the session's transcript versions (the Original/Cleaned variants). */
   versions?: SessionVersion[];
   codes?: PopupCode[];
   /** The signed-in coder's OWN annotations for the ORIGINAL version (initial). */
@@ -323,12 +323,22 @@ export default function SessionPlayer({
 
   // --- Transcript layers (feature #20): original (verbatim) vs cleaned --------
   const cleanedVersionFromList = versions.find((v) => v.kind === 'cleaned') ?? null;
-  // Three transcript-pane modes: the two transcript versions (original/cleaned),
-  // plus the segment-LESS "specification" replay (spec-mode). The first two load
-  // segments via the version mechanism; 'specification' reconstructs from
-  // `specTimeline` independently and never touches `versionId`/`segments`.
-  const [activeTab, setActiveTab] = useState<
-    'original' | 'cleaned' | 'specification'
+  // Three pane SURFACES: the transcript (which internally offers the two
+  // transcript VERSIONS via the Original/Cleaned variant sub-toggle), the
+  // segment-LESS "specification" replay (spec-mode), and the "llm-help" chat
+  // replay. The transcript variants load segments via the version mechanism;
+  // 'specification' reconstructs from `specTimeline` and 'llm-help' renders the
+  // aligned chat — NEITHER touches `versionId`/`segments`, so switching back to
+  // the Transcript surface restores the loaded text without a refetch.
+  const [surface, setSurface] = useState<
+    'transcript' | 'specification' | 'llm-help'
+  >('transcript');
+  // WHICH transcript version the Transcript surface shows. Split from `surface`
+  // so the variant stays sticky across surface switches; version loads and
+  // annotation/comment reloads key off VARIANT switches exactly as they keyed
+  // off tab switches before the surface/variant split.
+  const [transcriptVariant, setTranscriptVariant] = useState<
+    'original' | 'cleaned'
   >('original');
   const [versionId, setVersionId] = useState<string | null>(originalVersionId);
   const [cleanedVersionId, setCleanedVersionId] = useState<string | null>(
@@ -347,8 +357,10 @@ export default function SessionPlayer({
   const [versionError, setVersionError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
 
-  const isCleanedActive = activeTab === 'cleaned';
-  const isVerbatim = activeTab === 'original';
+  const isCleanedActive =
+    surface === 'transcript' && transcriptVariant === 'cleaned';
+  const isVerbatim =
+    surface === 'transcript' && transcriptVariant === 'original';
 
   const reloadComments = useCallback(async (annotationIds: string[]) => {
     if (annotationIds.length === 0) {
@@ -400,11 +412,6 @@ export default function SessionPlayer({
   const posSaveAtRef = useRef(0);
 
   const [synced, setSynced] = useState(true);
-  // Whether the time-aligned AI-chat replay pane is open (chat-replay feature).
-  // Default hidden — the split shrinks the transcript, so opt-in. When on, the
-  // transcript container goes h-[80vh] → h-[40vh] and ChatReplayPane fills the
-  // other 40vh below it, in BOTH the review and coding branches.
-  const [showChat, setShowChat] = useState(false);
   const syncedRef = useRef(true);
   useEffect(() => {
     syncedRef.current = synced;
@@ -589,7 +596,7 @@ export default function SessionPlayer({
     };
   }, [id]);
 
-  // --- Version switching (Original / Cleaned tabs) ------------------------
+  // --- Version switching (Original / Cleaned variant sub-toggle) ----------
 
   const loadVersion = useCallback(
     async (targetVersionId: string) => {
@@ -619,9 +626,14 @@ export default function SessionPlayer({
     [id, reloadComments],
   );
 
+  // The Original/Cleaned handlers are VARIANT switches: they are reachable only
+  // from the sub-toggle shown while the Transcript surface is active, so they
+  // guard on `transcriptVariant` alone — and the version load + annotation/
+  // comment reloads fire on every variant switch, exactly as they fired on tab
+  // switches before the surface/variant split.
   const handleSelectOriginal = useCallback(async () => {
-    if (activeTab === 'original') return;
-    setActiveTab('original');
+    if (transcriptVariant === 'original') return;
+    setTranscriptVariant('original');
     setEditing(false);
     setVersionId(originalVersionId);
     setSegments(originalSegmentsRef.current);
@@ -647,11 +659,11 @@ export default function SessionPlayer({
       setMyAnnotations([]);
       setComments({});
     }
-  }, [activeTab, id, originalVersionId, reloadComments]);
+  }, [transcriptVariant, id, originalVersionId, reloadComments]);
 
   const handleSelectCleaned = useCallback(async () => {
-    if (activeTab === 'cleaned') return;
-    setActiveTab('cleaned');
+    if (transcriptVariant === 'cleaned') return;
+    setTranscriptVariant('cleaned');
     setEditing(false);
     if (cleanedVersionId) {
       await loadVersion(cleanedVersionId);
@@ -665,24 +677,47 @@ export default function SessionPlayer({
       setTextSel(null);
       setActiveIdx(-1);
     }
-  }, [activeTab, cleanedVersionId, loadVersion]);
+  }, [transcriptVariant, cleanedVersionId, loadVersion]);
+
+  // Return to the Transcript surface. The spec/llm-help surfaces never touched
+  // `versionId`/`segments`/annotations, so the current variant's loaded state is
+  // intact — just flip the surface back; no refetch, nothing to clear.
+  const handleSelectTranscript = useCallback(() => {
+    if (surface === 'transcript') return;
+    setSurface('transcript');
+  }, [surface]);
 
   // Switch to the segment-LESS "Specification" replay. Unlike the transcript
-  // tabs, this does NOT load a version: the spec view reconstructs from
+  // variants, this does NOT load a version: the spec view reconstructs from
   // `specTimeline` independently (specState memo), so `versionId`/`segments` stay
-  // EXACTLY as they were — switching back to a transcript tab restores the same
-  // loaded text without a refetch. We DO clear the transcript-bound interaction
-  // state (text selection, composer, open comment, edit mode) so none of it
-  // bleeds into the read-only spec surface.
+  // EXACTLY as they were — switching back to the Transcript surface restores the
+  // same loaded text without a refetch. We DO clear the transcript-bound
+  // interaction state (text selection, composer, open comment, edit mode) so
+  // none of it bleeds into the read-only spec surface.
   const handleSelectSpecification = useCallback(() => {
-    if (activeTab === 'specification') return;
-    setActiveTab('specification');
+    if (surface === 'specification') return;
+    setSurface('specification');
     setEditing(false);
     setTextSel(null);
     setComposerOpen(false);
     setActiveIdx(-1);
     setOpenCommentAnnId(null);
-  }, [activeTab]);
+  }, [surface]);
+
+  // Switch to the "LLM Help" chat replay — the participant's assistant chat as
+  // the pane's MAIN content, full height. Like the spec surface it loads
+  // nothing (chatTurns is aligned client-side off the shared clock) and clears
+  // the transcript-bound interaction state, so no selection/coding/edit bleeds
+  // into the read-only chat surface.
+  const handleSelectLlmHelp = useCallback(() => {
+    if (surface === 'llm-help') return;
+    setSurface('llm-help');
+    setEditing(false);
+    setTextSel(null);
+    setComposerOpen(false);
+    setActiveIdx(-1);
+    setOpenCommentAnnId(null);
+  }, [surface]);
 
   const handleCreateCleaned = useCallback(async () => {
     setVersionBusy(true);
@@ -2009,7 +2044,8 @@ export default function SessionPlayer({
     openCommentAnnId,
     composerOpen,
     textSel,
-    activeTab,
+    surface,
+    transcriptVariant,
     editing,
     railEnabled,
     searchMatches,
@@ -2036,11 +2072,6 @@ export default function SessionPlayer({
     onSegmentTextCommit: handleSegmentTextCommit,
   };
 
-  // Hoisted once so the 50/50 split is defined in ONE place and rendered
-  // identically in both the review and coding transcript branches: the
-  // transcript's height (full vs. half when the chat pane is open) and the
-  // chat-replay pane element itself.
-  const transcriptHeightClass = showChat ? 'h-[40vh]' : 'h-[80vh]';
   // The spec-replay pane, hoisted so BOTH the review and coding branches render
   // an identical surface (they only differ in the transcript's gutter). Its
   // CONTENT is time-derived (specState = specStateAt(anchorMs + currentMs)) — but
@@ -2049,9 +2080,9 @@ export default function SessionPlayer({
   // `specState` is identical across server/first-client render (exactly the
   // property the un-gated chatPane below relies on — one shared clock, same
   // cadence). No `mounted` flag is needed (and the repo bans set-state-in-effect,
-  // so adding one would introduce a lint error). Placed in the SAME scroll
-  // container as the transcript, so the chat 50/50 split (transcriptHeightClass)
-  // applies unchanged whether the user is viewing the transcript or the spec.
+  // so adding one would introduce a lint error). Placed in the SAME h-[80vh]
+  // scroll container as the transcript (the surfaces swap content, never the
+  // container).
   const specPane = (
     <>
       {/* Dynamic retrospective questions asked BY the playhead (spec-mode), beside
@@ -2097,7 +2128,12 @@ export default function SessionPlayer({
       />
     </>
   );
-  const chatPane = showChat ? (
+  // The LLM-Help chat replay, hoisted like specPane: the pane's MAIN content
+  // when the 'llm-help' surface is active, rendered INSIDE the same h-[80vh]
+  // scroll container the transcript uses (full height — no more 50/50 split
+  // under the transcript). Alignment is unchanged: same chatTurns /
+  // chatActiveIndex / seekTo plumbing off the one shared clock.
+  const chatPane = (
     <ChatReplayPane
       turns={chatTurns}
       activeIndex={chatActiveIndex}
@@ -2105,9 +2141,9 @@ export default function SessionPlayer({
       fmtTime={formatTime}
       hasMessages={chatMessages.length > 0}
       anchorResolved={anchorMs != null}
-      className="mt-2 h-[40vh] overflow-y-auto pr-3"
+      className="py-2"
     />
-  ) : null;
+  );
 
   return (
     <main className="px-6 py-6">
@@ -2124,20 +2160,27 @@ export default function SessionPlayer({
                 aria-label="Selection mode"
                 className="flex rounded border border-foreground/20 text-xs"
               >
-                {(['comment', 'code'] as const).map((m) => (
+                {/* Internal values stay 'comment' | 'code'; only the DISPLAY
+                    labels differ ('Comment' / 'Coding'). */}
+                {(
+                  [
+                    ['comment', 'Comment'],
+                    ['code', 'Coding'],
+                  ] as const
+                ).map(([m, label]) => (
                   <button
                     key={m}
                     type="button"
                     role="tab"
                     aria-selected={mode === m}
                     onClick={() => setMode(m)}
-                    className={`px-3 py-1 capitalize first:rounded-l last:rounded-r ${
+                    className={`px-3 py-1 first:rounded-l last:rounded-r ${
                       mode === m
                         ? 'bg-foreground text-background'
                         : 'text-foreground/70 hover:text-foreground'
                     }`}
                   >
-                    {m}
+                    {label}
                   </button>
                 ))}
               </div>
@@ -2331,63 +2374,110 @@ export default function SessionPlayer({
 
         {/* RIGHT: transcript (2/3) with the comment margin + code-brace gutter. */}
         <div className="lg:col-span-2">
-          {/* Version tabs + edit/sync toggles. */}
-          <div
-            role="tablist"
-            aria-label="Transcript version"
-            className="mb-2 flex gap-1 text-xs"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'original'}
-              onClick={handleSelectOriginal}
-              disabled={versionBusy}
-              title="The verbatim ASR transcript (read-only — disfluencies are data)"
-              className={`rounded px-2 py-1 disabled:opacity-50 ${
-                activeTab === 'original'
-                  ? 'bg-foreground text-background'
-                  : 'border border-foreground/30 text-foreground/70 hover:text-foreground'
-              }`}
+          {/* Surface tabs (Transcript · Specification · LLM Help) + the
+              Transcript surface's compact Original/Cleaned variant toggle
+              (visible only while Transcript is active — it sits where the old
+              Original/Cleaned tabs sat). */}
+          <div className="mb-2 flex flex-wrap items-center gap-3 text-xs">
+            <div
+              role="tablist"
+              aria-label="Player surface"
+              className="flex gap-1"
             >
-              Original (verbatim)
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'cleaned'}
-              onClick={handleSelectCleaned}
-              disabled={versionBusy}
-              title="A readable copy you can edit for navigation and quoting"
-              className={`rounded px-2 py-1 disabled:opacity-50 ${
-                activeTab === 'cleaned'
-                  ? 'bg-foreground text-background'
-                  : 'border border-foreground/30 text-foreground/70 hover:text-foreground'
-              }`}
-            >
-              Cleaned
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'specification'}
-              onClick={handleSelectSpecification}
-              disabled={versionBusy}
-              title="The participant’s evolving specification, replayed in sync with the video"
-              className={`rounded px-2 py-1 disabled:opacity-50 ${
-                activeTab === 'specification'
-                  ? 'bg-foreground text-background'
-                  : 'border border-foreground/30 text-foreground/70 hover:text-foreground'
-              }`}
-            >
-              Specification
-            </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={surface === 'transcript'}
+                onClick={handleSelectTranscript}
+                disabled={versionBusy}
+                title="The session transcript (select to comment and code)"
+                className={`rounded px-2 py-1 disabled:opacity-50 ${
+                  surface === 'transcript'
+                    ? 'bg-foreground text-background'
+                    : 'border border-foreground/30 text-foreground/70 hover:text-foreground'
+                }`}
+              >
+                Transcript
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={surface === 'specification'}
+                onClick={handleSelectSpecification}
+                disabled={versionBusy}
+                title="The participant’s evolving specification, replayed in sync with the video"
+                className={`rounded px-2 py-1 disabled:opacity-50 ${
+                  surface === 'specification'
+                    ? 'bg-foreground text-background'
+                    : 'border border-foreground/30 text-foreground/70 hover:text-foreground'
+                }`}
+              >
+                Specification
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={surface === 'llm-help'}
+                onClick={handleSelectLlmHelp}
+                disabled={versionBusy}
+                title="The participant’s AI chat aligned to the timeline"
+                className={`rounded px-2 py-1 disabled:opacity-50 ${
+                  surface === 'llm-help'
+                    ? 'bg-foreground text-background'
+                    : 'border border-foreground/30 text-foreground/70 hover:text-foreground'
+                }`}
+              >
+                LLM Help
+              </button>
+            </div>
+            {surface === 'transcript' && (
+              <div
+                role="group"
+                aria-label="Transcript variant"
+                className="flex rounded border border-foreground/20"
+              >
+                <button
+                  type="button"
+                  aria-pressed={transcriptVariant === 'original'}
+                  onClick={handleSelectOriginal}
+                  disabled={versionBusy}
+                  title="The verbatim ASR transcript (read-only — disfluencies are data)"
+                  className={`px-2 py-1 first:rounded-l last:rounded-r disabled:opacity-50 ${
+                    transcriptVariant === 'original'
+                      ? 'bg-foreground text-background'
+                      : 'text-foreground/70 hover:text-foreground'
+                  }`}
+                >
+                  Original
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={transcriptVariant === 'cleaned'}
+                  onClick={handleSelectCleaned}
+                  disabled={versionBusy}
+                  title="A readable copy you can edit for navigation and quoting"
+                  className={`px-2 py-1 first:rounded-l last:rounded-r disabled:opacity-50 ${
+                    transcriptVariant === 'cleaned'
+                      ? 'bg-foreground text-background'
+                      : 'text-foreground/70 hover:text-foreground'
+                  }`}
+                >
+                  Cleaned
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="mb-2 flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold">
-              {activeTab === 'specification' ? 'Specification' : 'Transcript'}
-              {activeTab === 'specification' ? (
+              {surface === 'specification'
+                ? 'Specification'
+                : surface === 'llm-help'
+                  ? 'LLM Help'
+                  : 'Transcript'}
+              {surface === 'specification' ? (
+                <span className="ml-1 font-normal text-foreground/40">· replayed, read-only</span>
+              ) : surface === 'llm-help' ? (
                 <span className="ml-1 font-normal text-foreground/40">· replayed, read-only</span>
               ) : isVerbatim ? (
                 <span className="ml-1 font-normal text-foreground/40">· verbatim, read-only</span>
@@ -2424,19 +2514,6 @@ export default function SessionPlayer({
               >
                 {synced ? 'Sync: on' : 'Sync: off'}
               </button>
-              <button
-                type="button"
-                onClick={() => setShowChat((c) => !c)}
-                aria-pressed={showChat}
-                title={showChat ? 'Hide the AI-chat replay (click to hide)' : 'Show the participant’s AI chat aligned to the timeline'}
-                className={`rounded border px-2 py-1 text-xs ${
-                  showChat
-                    ? 'border-foreground bg-foreground text-background'
-                    : 'border-foreground/30 text-foreground/70 hover:text-foreground'
-                }`}
-              >
-                Chat
-              </button>
             </div>
           </div>
 
@@ -2448,8 +2525,9 @@ export default function SessionPlayer({
 
           {/* Phrase search over the transcript: paints matches orange (current one
               brighter), steps through with ↑/↓ / Enter, scrolls the match into view.
-              Hidden in spec mode — it searches transcript segments, not the spec. */}
-          {activeTab !== 'specification' && (
+              Transcript surface ONLY — it searches transcript segments, not the
+              spec or the chat, so spec/llm-help hide it alike. */}
+          {surface === 'transcript' && (
           <div className="mb-2 flex items-center gap-2">
             <input
               type="search"
@@ -2546,23 +2624,28 @@ export default function SessionPlayer({
               <div
                 ref={transcriptRef}
                 onMouseUp={
-                  (codingEnabled || canComment) && !editing && activeTab !== 'specification'
+                  // Selecting (to comment or code) happens on the Transcript
+                  // surface ONLY — no selection grammar in spec or LLM Help.
+                  (codingEnabled || canComment) && !editing && surface === 'transcript'
                     ? handleTranscriptMouseUp
                     : undefined
                 }
                 onClick={
                   // Click-to-seek works for EVERY role (it mutates nothing), on
-                  // the transcript tabs only — spec mode has no cues, and edit
-                  // mode's cue spans are contentEditable (guarded anyway).
-                  !editing && activeTab !== 'specification'
+                  // the Transcript surface only — spec/chat have no cues (the
+                  // chat rows carry their own seek), and edit mode's cue spans
+                  // are contentEditable (guarded anyway).
+                  !editing && surface === 'transcript'
                     ? handleTranscriptClick
                     : undefined
                 }
                 style={{ scrollbarGutter: 'stable' }}
-                className={`relative overflow-y-auto pr-3 ${transcriptHeightClass}`}
+                className="relative h-[80vh] overflow-y-auto pr-3"
               >
-                {activeTab === 'specification' ? (
+                {surface === 'specification' ? (
                   specPane
+                ) : surface === 'llm-help' ? (
+                  chatPane
                 ) : (
                   <TranscriptBody
                     {...commonTranscriptProps}
@@ -2570,7 +2653,6 @@ export default function SessionPlayer({
                   />
                 )}
               </div>
-              {chatPane}
             </>
           )}
         </div>
