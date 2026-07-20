@@ -61,6 +61,7 @@ export default function CodingPopup({
   onUnassign,
   onClose,
   onCodeCreated,
+  onBookmark,
 }: {
   pos: { x: number; y: number };
   quote: string;
@@ -76,9 +77,15 @@ export default function CodingPopup({
   onClose: () => void;
   /** New code persisted → parent refreshes its code list, then we auto-assign. */
   onCodeCreated: (codeId: string) => void;
+  /** Pin a BOOKMARK on the selection — "come back to this later". One-shot:
+   *  creates the anchor and closes the popup. */
+  onBookmark: () => void;
 }) {
   const [query, setQuery] = useState('');
-  const [cursor, setCursor] = useState(0);
+  // Row 0 is the pinned Bookmark option; codes occupy 1..N. The cursor STARTS on
+  // the top code (1) so the type-query-then-Enter muscle memory still assigns —
+  // Bookmark is one ArrowUp away, never the accidental default.
+  const [cursor, setCursor] = useState(1);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
@@ -145,14 +152,18 @@ export default function CodingPopup({
         .slice(0, 50),
     [query, codes, assignedIds],
   );
-  const safeCursor = Math.min(cursor, Math.max(ranked.length - 1, 0));
+  // Row space: 0 = the pinned Bookmark option, 1..N = the ranked codes. With no
+  // codes at all the clamp lands on 0, so Enter bookmarks — the only action left.
+  const rowCount = ranked.length + 1;
+  const safeCursor = Math.min(cursor, rowCount - 1);
 
   // Focus the search on open — the popup exists to be typed into.
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
-  // Keep the focused row in view as ↑/↓ move it.
+  // Keep the focused row in view as ↑/↓ move it. The Bookmark row carries
+  // data-row too, so [data-row] indexes line up with the cursor space.
   useEffect(() => {
     listRef.current
       ?.querySelectorAll('[data-row]')
@@ -160,14 +171,19 @@ export default function CodingPopup({
   }, [safeCursor]);
 
   function assignFocused() {
-    const code = ranked[safeCursor];
-    if (code && !busy) onAssign(code.id);
+    if (busy) return;
+    if (safeCursor === 0) {
+      onBookmark();
+      return;
+    }
+    const code = ranked[safeCursor - 1];
+    if (code) onAssign(code.id);
   }
 
   function onSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setCursor((c) => Math.min(c + 1, ranked.length - 1));
+      setCursor((c) => Math.min(c + 1, rowCount - 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       setCursor((c) => Math.max(c - 1, 0));
@@ -293,7 +309,9 @@ export default function CodingPopup({
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
-              setCursor(0);
+              // Back to the TOP CODE (row 1), not the Bookmark row — typing a
+              // query means hunting a code; Enter must assign the best match.
+              setCursor(1);
             }}
             onKeyDown={onSearchKeyDown}
             placeholder="Search codes… (↑/↓ · ⌘⏎ assign)"
@@ -303,13 +321,33 @@ export default function CodingPopup({
         </div>
 
         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto py-1">
+          {/* Pinned row 0: BOOKMARK — "come back to this later". One-shot: click
+              (or ↑ to it + Enter) drops a bookmark anchor on the selection and
+              closes the popup. Deliberately NOT the default cursor position. */}
+          <div data-row>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onBookmark}
+              className={`flex w-full items-center gap-2 px-3 py-1 text-left disabled:opacity-40 ${
+                safeCursor === 0 ? 'bg-foreground/[0.06]' : ''
+              }`}
+              title="Mark this selection to come back to later"
+            >
+              <span aria-hidden>🔖</span>
+              <span className="text-sm text-violet-700 dark:text-violet-300">Bookmark</span>
+              <span className="truncate text-[11px] text-foreground/40">
+                come back to this later
+              </span>
+            </button>
+          </div>
           {ranked.length === 0 && (
             <p className="px-3 py-2 text-xs italic text-foreground/40">
               No code matches — create one below.
             </p>
           )}
           {ranked.map((c, i) => {
-            const focused = i === safeCursor;
+            const focused = i + 1 === safeCursor;
             // Details reveal on HOVER as well as click: hovering is transient
             // (leave → collapse), a click PINS the expansion open. Both show the
             // same block — slug alone is recognition-hostile for terse slugs, so

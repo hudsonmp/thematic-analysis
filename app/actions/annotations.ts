@@ -104,7 +104,7 @@ export async function addAnnotation({
   suffix?: string | null;
   tStartMs: number;
   tEndMs: number;
-  kind?: 'code' | 'quote';
+  kind?: 'code' | 'quote' | 'bookmark';
   codeIds: string[];
 }): Promise<Annotation> {
   const user = await requireAuthUser();
