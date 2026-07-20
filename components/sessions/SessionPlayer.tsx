@@ -1192,6 +1192,35 @@ export default function SessionPlayer({
     }
   }, [pending, versionId, id, clearSelection, afterAnnotationMutation, openCommentThread]);
 
+  // BOOKMARK the pending selection — the coding popup's pinned first option.
+  // A "come back to this later" anchor: no codes, no comment; paints violet in
+  // the transcript and is cyclable from the header. One-shot: create + close.
+  const handleBookmarkSelection = useCallback(async () => {
+    if (!pending || !versionId) return;
+    setError(null);
+    try {
+      await addAnnotation({
+        sessionId: id,
+        versionId,
+        segmentId: pending.startSeg.id,
+        endSegmentId: pending.endSeg.id,
+        charStart: pending.startChar,
+        charEnd: pending.endChar,
+        quoteText: pending.quoteText,
+        prefix: pending.prefix,
+        suffix: pending.suffix,
+        tStartMs: pending.startSeg.startMs,
+        tEndMs: pending.endSeg.endMs,
+        kind: 'bookmark',
+        codeIds: [],
+      });
+      clearSelection();
+      await afterAnnotationMutation();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to bookmark the selection.');
+    }
+  }, [pending, versionId, id, clearSelection, afterAnnotationMutation]);
+
   const handleDeleteComment = useCallback(
     async (commentId: string) => {
       if (!openCommentAnnId) return;
@@ -1207,7 +1236,13 @@ export default function SessionPlayer({
         // last note goes and the annotation carries no codes, the anchor says
         // nothing — deleting it stops an orphan highlight from lingering in the
         // text. A CODED anchor survives (the codes are its remaining claim).
-        if (thread.length === 0 && annById.get(annId)?.codes.length === 0) {
+        const emptiedAnn = annById.get(annId);
+        // Bookmarks survive losing their notes — the anchor IS the point.
+        if (
+          thread.length === 0 &&
+          emptiedAnn?.codes.length === 0 &&
+          emptiedAnn?.kind !== 'bookmark'
+        ) {
           await deleteAnnotation(annId);
           await afterAnnotationMutation();
           closeCard();
@@ -1245,7 +1280,13 @@ export default function SessionPlayer({
         setComments((prev) => ({ ...prev, [annId]: thread }));
         // An edit that emptied the LAST note on a code-less anchor deletes the
         // anchor itself — same policy as handleDeleteComment above.
-        if (thread.length === 0 && annById.get(annId)?.codes.length === 0) {
+        const emptiedAnn = annById.get(annId);
+        // Bookmarks survive losing their notes — the anchor IS the point.
+        if (
+          thread.length === 0 &&
+          emptiedAnn?.codes.length === 0 &&
+          emptiedAnn?.kind !== 'bookmark'
+        ) {
           await deleteAnnotation(annId);
           await afterAnnotationMutation();
           closeCard();
@@ -1270,6 +1311,28 @@ export default function SessionPlayer({
     },
     [openCommentThread],
   );
+
+  // My bookmarks in playback order, plus a header chip that CYCLES through them
+  // (scroll to the span + open its card) — "come back to this later" is only
+  // real if later can find them without rereading the whole transcript.
+  const bookmarkAnns = useMemo(
+    () =>
+      myAnnotations
+        .filter((a) => a.kind === 'bookmark')
+        .sort((x, y) => x.tStartMs - y.tStartMs),
+    [myAnnotations],
+  );
+  const bookmarkCycleRef = useRef(-1);
+  const cycleBookmarks = useCallback(() => {
+    if (bookmarkAnns.length === 0) return;
+    const idx = (bookmarkCycleRef.current + 1) % bookmarkAnns.length;
+    bookmarkCycleRef.current = idx;
+    const a = bookmarkAnns[idx];
+    const si = segIndexById.get(a.segmentId);
+    if (si !== undefined) rowRefs.current[si]?.scrollIntoView({ block: 'center' });
+    openThreadForAnnotation(a);
+  }, [bookmarkAnns, segIndexById, openThreadForAnnotation]);
+
 
   // --- Phrase-search navigation -------------------------------------------
   const gotoMatch = useCallback(
@@ -1743,6 +1806,8 @@ export default function SessionPlayer({
                 onAddNote={handleAddNote}
                 onEditComment={handleEditComment}
                 onDeleteComment={handleDeleteComment}
+                onDeleteAnnotation={handleDeleteAnnotation}
+                busyId={busyId}
               />
             ) : (
               <MarginNotes thread={thread} onOpen={() => openThreadForAnnotation(ann)} />
@@ -1774,6 +1839,8 @@ export default function SessionPlayer({
               onAddNote={handleAddNote}
               onEditComment={handleEditComment}
               onDeleteComment={handleDeleteComment}
+                onDeleteAnnotation={handleDeleteAnnotation}
+                busyId={busyId}
             />
           </div>,
         );
@@ -2184,6 +2251,16 @@ export default function SessionPlayer({
                   </button>
                 ))}
               </div>
+            )}
+            {bookmarkAnns.length > 0 && surface === 'transcript' && (
+              <button
+                type="button"
+                onClick={cycleBookmarks}
+                title="Cycle through your bookmarks (come-back-later spans)"
+                className="rounded border border-violet-500/50 px-2 py-1 text-xs text-violet-700 hover:bg-violet-500/10 dark:text-violet-300"
+              >
+                🔖 {bookmarkAnns.length}
+              </button>
             )}
             {compareHref && (
               <Link
@@ -2679,6 +2756,7 @@ export default function SessionPlayer({
             router.refresh();
             void handleAssignCodeRef.current(cid);
           }}
+          onBookmark={() => void handleBookmarkSelection()}
         />
       )}
     </main>
@@ -2862,6 +2940,8 @@ function CommentCard({
   onAddNote,
   onEditComment,
   onDeleteComment,
+  onDeleteAnnotation,
+  busyId,
 }: {
   composerMode: boolean;
   openCommentAnn: MyAnnotationView | null;
@@ -2875,6 +2955,9 @@ function CommentCard({
   onAddNote: (text: string) => void;
   onEditComment: (id: string, next: string, prev: string) => void;
   onDeleteComment: (id: string) => void;
+  /** Delete the whole anchor — used by the bookmark's explicit Remove. */
+  onDeleteAnnotation: (id: string) => void;
+  busyId: string | null;
 }) {
   if (composerMode) {
     return (
@@ -2961,6 +3044,19 @@ function CommentCard({
           busy={commentBusy}
           onCommit={(text) => onAddNote(text)}
         />
+
+        {/* A BOOKMARK is a waypoint, so it needs an explicit removal (a bare
+            bookmark has no notes whose deletion would auto-clean the anchor). */}
+        {openCommentAnn.kind === 'bookmark' && (
+          <button
+            type="button"
+            onClick={() => onDeleteAnnotation(openCommentAnn.id)}
+            disabled={busyId === openCommentAnn.id}
+            className="text-[0.7rem] text-violet-700/70 underline hover:text-red-500 disabled:opacity-40 dark:text-violet-300/70"
+          >
+            Remove bookmark
+          </button>
+        )}
       </div>
     </div>
   );
@@ -3217,6 +3313,7 @@ function renderHighlightedText(
     }
 
     const hasQuote = piece.kinds.includes('quote');
+    const hasBookmark = piece.kinds.includes('bookmark');
     const firstId = realIds[0];
     const ann = annById.get(firstId);
     const hasComment = realIds.some((hid) => commentedAnnIds.has(hid));
@@ -3230,12 +3327,19 @@ function renderHighlightedText(
     const codeOnly = realIds.every((hid) => (annById.get(hid)?.kind ?? 'code') === 'code');
     const title = hasComment
       ? 'Has comments — click to open the thread'
-      : hasQuote
-        ? 'Flagged quote — click to comment'
-        : 'Coded — click to comment';
+      : hasBookmark
+        ? 'Bookmarked — come back to this later · click to open'
+        : hasQuote
+          ? 'Flagged quote — click to comment'
+          : 'Coded — click to comment';
+    // Precedence: comments/quotes (yellow) > bookmark (violet) > code (emerald).
+    // A bookmarked span that later earns comments reads as a comment span — the
+    // bookmark was a waypoint, the notes are the destination.
     const bg = isYellow
       ? `bg-yellow-300/55 text-foreground dark:bg-yellow-400/30${codeOnly ? ' lg:bg-transparent' : ''}`
-      : `bg-emerald-300/50 text-foreground dark:bg-emerald-400/30${codeOnly ? ' lg:bg-transparent' : ''}`;
+      : hasBookmark
+        ? `bg-violet-300/50 text-foreground dark:bg-violet-400/30${codeOnly ? ' lg:bg-transparent' : ''}`
+        : `bg-emerald-300/50 text-foreground dark:bg-emerald-400/30${codeOnly ? ' lg:bg-transparent' : ''}`;
     const underline = hasComment
       ? `underline decoration-sky-500 decoration-dotted decoration-2 underline-offset-2${codeOnly ? ' lg:no-underline' : ''}`
       : '';
