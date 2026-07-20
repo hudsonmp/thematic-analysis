@@ -1,8 +1,11 @@
 'use server';
 
+import { cookies } from 'next/headers';
 import { createServiceRoleClient } from '@/lib/supabase/service';
 import { studyFrom } from '@/lib/supabase/study-guard';
 import { cbFrom } from '@/lib/supabase/guard';
+import { requireAuthUser } from '@/lib/auth/supabase-auth';
+import { requireEditor } from '@/lib/auth/roles';
 import type { Json } from '@/lib/types/cb-db';
 import type { Tables } from '@/lib/types/cb-db';
 
@@ -76,11 +79,48 @@ export async function getShownStudy(): Promise<ShownStudy | null> {
   return { id: data.id, name: data.name, authored_data: data.authored_data };
 }
 
+// ---------------------------------------------------------------------------
+// Active codebook — a study may now bind SEVERAL codebooks (the old
+// UNIQUE(study_id) constraint is dropped). Which one the app shows is a
+// PER-BROWSER choice carried in a cookie, not a per-user DB column: switching
+// is a view preference, so it needs no table, no RLS, and no migration, and
+// two browsers signed into the same account can look at different codebooks.
+// Every server-side consumer resolves the codebook through
+// `getOrCreateCodebook()`, so honoring the cookie there switches the WHOLE app
+// (pages, session player, merge, reliability, export) with zero call-site
+// changes.
+// ---------------------------------------------------------------------------
+const ACTIVE_CODEBOOK_COOKIE = 'cb-active-codebook';
+
+/** Point this browser at `codebookId`. Cookie writes are legal only in Server
+ *  Actions / Route Handlers (never during Server Component render), so this is
+ *  called from `createCodebook` / `setActiveCodebook` — NOT from
+ *  `getOrCreateCodebook`, whose fallback path deliberately leaves a stale
+ *  cookie in place rather than trying (and failing) to heal it mid-render. */
+async function writeActiveCodebookCookie(codebookId: string): Promise<void> {
+  const cookieStore = await cookies();
+  cookieStore.set(ACTIVE_CODEBOOK_COOKIE, codebookId, {
+    httpOnly: true,
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 60 * 60 * 24 * 365, // 1 year
+  });
+}
+
 /**
- * Idempotently return the codebook bound to the shown study. Finds the
- * `cb_codebooks` row whose `study_id` matches the shown study; if none exists,
- * inserts one (name = "<study name> codebook", method = schema default).
- * Throws if there is no shown study (nothing to bind to).
+ * Resolve the ACTIVE codebook for the shown study. Resolution order:
+ *
+ *   1. The `cb-active-codebook` cookie, iff it names a codebook that exists
+ *      AND belongs to the shown study (a stale/foreign cookie is ignored).
+ *   2. The OLDEST codebook bound to the study (`created_at` asc) — the stable
+ *      default, and the pre-multi-codebook row for existing deployments.
+ *   3. If the study has NO codebook yet, insert one
+ *      (name = "<study name> codebook", method = schema default) and return it.
+ *
+ * Reading the cookie is legal here even when called from Server Components;
+ * SETTING one is not, so a stale cookie is merely bypassed (the switcher UI
+ * rewrites it on the next explicit switch). Throws if there is no shown study
+ * (nothing to bind to).
  */
 export async function getOrCreateCodebook(): Promise<Codebook> {
   const study = await getShownStudy();
@@ -88,50 +128,149 @@ export async function getOrCreateCodebook(): Promise<Codebook> {
     throw new Error('No shown study to bind a codebook to (visibility=shown not found).');
   }
 
-  // Look for an existing codebook bound to this study. Reads through the
-  // service-role client are fine; only writes must route through cbFrom.
-  const existing = await createServiceRoleClient()
+  const service = createServiceRoleClient();
+
+  // 1. Follow the per-browser cookie when it points at a codebook of THIS
+  // study. Scoping the read by study_id makes a cookie forged/stale from
+  // another study fall through to the default instead of leaking it.
+  const cookieStore = await cookies();
+  const activeId = cookieStore.get(ACTIVE_CODEBOOK_COOKIE)?.value;
+  if (activeId) {
+    const active = await service
+      .from('cb_codebooks')
+      .select('*')
+      .eq('id', activeId)
+      .eq('study_id', study.id)
+      .maybeSingle();
+    if (active.error) {
+      throw new Error(`getOrCreateCodebook read failed: ${active.error.message}`);
+    }
+    if (active.data) return active.data;
+  }
+
+  // 2. No (valid) cookie — fall back to the study's oldest codebook. Reads
+  // through the service-role client are fine; only writes must route through
+  // cbFrom.
+  const oldest = await service
     .from('cb_codebooks')
     .select('*')
     .eq('study_id', study.id)
     .order('created_at', { ascending: true })
     .limit(1)
     .maybeSingle();
-  if (existing.error) {
-    throw new Error(`getOrCreateCodebook read failed: ${existing.error.message}`);
+  if (oldest.error) {
+    throw new Error(`getOrCreateCodebook read failed: ${oldest.error.message}`);
   }
-  if (existing.data) return existing.data;
+  if (oldest.data) return oldest.data;
 
-  // Conflict-safe bind. The read-first path above handles the common case; this
-  // upsert closes the check-then-insert race. The DB now enforces one codebook
-  // per non-null study_id (constraint cb_codebooks_study_id_unique, migration
-  // 06), so a concurrent caller that inserts between our read and write would
-  // otherwise violate the constraint. `onConflict: 'study_id'` turns that
-  // collision into a no-op update on the existing row, which we then re-select
-  // and return — both callers converge on the same bound row.
-  const upserted = await cbFrom('cb_codebooks')
-    .upsert(
-      { study_id: study.id, name: `${study.name} codebook` },
-      { onConflict: 'study_id' },
-    )
+  // 3. First visit ever: bind the study's first codebook. Plain insert — the
+  // old `onConflict: 'study_id'` upsert is gone WITH its unique constraint
+  // (multiple codebooks per study are now legal, so there is nothing to
+  // conflict on). If two first visits race, both inserts succeed and the
+  // oldest-first fallback above makes every later resolution converge on one
+  // row; the stray twin is visible in the switcher and deletable by hand.
+  const inserted = await cbFrom('cb_codebooks')
+    .insert({ study_id: study.id, name: `${study.name} codebook` })
     .select('*')
     .single();
-  if (!upserted.error && upserted.data) return upserted.data;
+  if (inserted.error || !inserted.data) {
+    throw new Error(
+      `getOrCreateCodebook insert failed: ${inserted.error?.message ?? 'no row returned'}`,
+    );
+  }
+  return inserted.data;
+}
 
-  // Defense in depth: if the upsert itself raced (or the driver surfaced the
-  // unique violation rather than resolving it), the row now exists — re-read it.
-  const reread = await createServiceRoleClient()
+/**
+ * All codebooks bound to the shown study, oldest first (`created_at` asc — the
+ * same order that makes `getOrCreateCodebook`'s fallback deterministic).
+ * Returns [] when there is no shown study so the nav shell can render instead
+ * of 500-ing. Read-only via the service client.
+ */
+export async function listCodebooks(): Promise<Codebook[]> {
+  await requireAuthUser();
+  const study = await getShownStudy();
+  if (!study) return [];
+  const { data, error } = await createServiceRoleClient()
     .from('cb_codebooks')
     .select('*')
     .eq('study_id', study.id)
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  if (reread.data) return reread.data;
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`listCodebooks failed: ${error.message}`);
+  return data ?? [];
+}
 
-  throw new Error(
-    `getOrCreateCodebook insert failed: ${upserted.error?.message ?? 'no row returned'}`,
-  );
+/**
+ * Create a NEW codebook under the shown study and make it this browser's
+ * active codebook (cookie), so the creating editor lands in the empty book
+ * ready to populate it. Editor-gated: the write goes through the service-role
+ * `cbFrom`, which bypasses RLS, so the app-level gate is mandatory.
+ */
+export async function createCodebook(name: string): Promise<Codebook> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const trimmed = (name ?? '').trim();
+  if (!trimmed) throw new Error('createCodebook: name is required.');
+
+  const study = await getShownStudy();
+  if (!study) {
+    throw new Error('No shown study to bind a codebook to (visibility=shown not found).');
+  }
+
+  const { data, error } = await cbFrom('cb_codebooks')
+    .insert({ study_id: study.id, name: trimmed })
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(`createCodebook failed: ${error?.message ?? 'no row returned'}`);
+  }
+
+  await writeActiveCodebookCookie(data.id);
+  return data;
+}
+
+/**
+ * Rename a codebook. Editor-gated for the same reason as `createCodebook`.
+ */
+export async function renameCodebook(id: string, name: string): Promise<Codebook> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const trimmed = (name ?? '').trim();
+  if (!trimmed) throw new Error('renameCodebook: name cannot be empty.');
+
+  const { data, error } = await cbFrom('cb_codebooks')
+    .update({ name: trimmed })
+    .eq('id', id)
+    .select('*')
+    .single();
+  if (error || !data) {
+    throw new Error(`renameCodebook failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
+/**
+ * Point THIS browser at another of the shown study's codebooks. Any signed-in
+ * role may switch — the cookie only changes what this browser looks at, never
+ * the data — but the target must belong to the shown study (a foreign or
+ * unknown id throws rather than planting a cookie `getOrCreateCodebook` would
+ * silently discard).
+ */
+export async function setActiveCodebook(id: string): Promise<void> {
+  await requireAuthUser();
+  const study = await getShownStudy();
+  if (!study) {
+    throw new Error('setActiveCodebook: no shown study.');
+  }
+  const { data, error } = await createServiceRoleClient()
+    .from('cb_codebooks')
+    .select('id')
+    .eq('id', id)
+    .eq('study_id', study.id)
+    .maybeSingle();
+  if (error) throw new Error(`setActiveCodebook read failed: ${error.message}`);
+  if (!data) {
+    throw new Error('setActiveCodebook: codebook not found for the shown study.');
+  }
+  await writeActiveCodebookCookie(id);
 }
 
 /**

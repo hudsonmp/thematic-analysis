@@ -5,12 +5,14 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { logoutAction } from '@/app/actions/auth';
 import { NAV_GROUPS, activeGroupKey, activeHref } from '@/lib/nav/menu';
+import CodebookSwitcher, { type CodebookOption } from '@/components/CodebookSwitcher';
 
 /**
  * Shared chrome for every protected page. The session is already gated by the
- * route-group layout, so this is presentation-only; the study + codebook names
- * are fetched server-side in the layout and passed as props (a Client Component
- * must never call server actions during render).
+ * route-group layout, so this is presentation-only; the study name + codebook
+ * list are fetched server-side in the layout and passed as props (a Client
+ * Component must never call server actions during render). The codebook name
+ * line is now the CodebookSwitcher — a per-browser active-codebook select.
  *
  * Thirteen flat links became three menus — Codebook / Recording / Eval. The
  * grouping and the active-link resolution live in `lib/nav/menu.ts` as pure
@@ -19,12 +21,16 @@ import { NAV_GROUPS, activeGroupKey, activeHref } from '@/lib/nav/menu';
  */
 export default function CodebookNav({
   studyName,
-  codebookName,
+  codebooks,
+  activeCodebookId,
+  canEditCodebooks = false,
   displayName,
   isAdmin = false,
 }: {
   studyName: string | null;
-  codebookName: string | null;
+  codebooks: CodebookOption[];
+  activeCodebookId: string | null;
+  canEditCodebooks?: boolean;
   displayName: string;
   isAdmin?: boolean;
 }) {
@@ -142,10 +148,16 @@ export default function CodebookNav({
           </ul>
         </div>
         <div className="flex items-center gap-6">
-          <div className="text-right text-xs text-foreground/60 leading-tight">
-            {codebookName && (
-              <div className="text-foreground/80">{codebookName}</div>
-            )}
+          {/* Active-codebook switcher: the select shows the active codebook's
+              name (replacing the old static name line); switching/creating/
+              renaming lives in the client component, which refreshes the
+              router so the whole Server Component tree re-resolves. */}
+          <div className="flex flex-col items-end gap-0.5 text-right text-xs text-foreground/60 leading-tight">
+            <CodebookSwitcher
+              codebooks={codebooks}
+              activeId={activeCodebookId}
+              canEdit={canEditCodebooks}
+            />
             {studyName && <div>study: {studyName}</div>}
           </div>
           <div className="flex items-center gap-3 border-l border-foreground/15 pl-6">

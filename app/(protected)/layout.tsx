@@ -1,6 +1,7 @@
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
-import { getOrCreateCodebook, getShownStudy } from '@/app/actions/codebook';
+import { getOrCreateCodebook, getShownStudy, listCodebooks } from '@/app/actions/codebook';
+import type { CodebookOption } from '@/components/CodebookSwitcher';
 import CodebookNav from './CodebookNav';
 import GuidePrompt from './GuidePrompt';
 
@@ -20,29 +21,39 @@ export default async function ProtectedLayout({ children }: { children: React.Re
     .maybeSingle();
   const displayName = profile?.display_name ?? user.email ?? 'Researcher';
   const isAdmin = profile?.role === 'admin';
+  // Editor-ness for the switcher's create/rename affordances, derived from the
+  // profile row ALREADY fetched above — same fail-closed reading as getMyRole
+  // (missing row ⇒ viewer ⇒ no edit affordances). The server actions re-gate
+  // via requireEditor regardless; this only controls what the nav renders.
+  const canEditCodebooks = profile?.role === 'admin' || profile?.role === 'full';
 
-  // Names for the nav chrome. Fetched here (a Server Component) and passed as
+  // Data for the nav chrome. Fetched here (a Server Component) and passed as
   // props into the Client nav. Tolerant of a missing/unbound study so the shell
   // still renders rather than 500-ing the whole protected tree — the page-level
   // empty states handle the "no study/codebook" case in detail.
   let studyName: string | null = null;
-  let codebookName: string | null = null;
+  let codebooks: CodebookOption[] = [];
+  let activeCodebookId: string | null = null;
   try {
     const [study, codebook] = await Promise.all([
       getShownStudy(),
       getOrCreateCodebook(),
     ]);
     studyName = study?.name ?? null;
-    codebookName = codebook?.name ?? null;
+    activeCodebookId = codebook?.id ?? null;
+    // After getOrCreateCodebook, so a first-visit bind shows up in the list.
+    codebooks = (await listCodebooks()).map(({ id, name }) => ({ id, name }));
   } catch {
-    // No shown study to bind to; leave names null.
+    // No shown study to bind to; leave the nav data empty.
   }
 
   return (
     <div className="min-h-full flex flex-col">
       <CodebookNav
         studyName={studyName}
-        codebookName={codebookName}
+        codebooks={codebooks}
+        activeCodebookId={activeCodebookId}
+        canEditCodebooks={canEditCodebooks}
         displayName={displayName}
         isAdmin={isAdmin}
       />
