@@ -287,9 +287,9 @@ export default function CodingPopup({
               {assigned.map((c) => (
                 <span
                   key={c.id}
-                  className="inline-flex items-center gap-1 border border-emerald-600/40 bg-emerald-500/10 px-1.5 py-0.5 text-[11px]"
+                  className="inline-flex items-center gap-1 border border-emerald-600/40 bg-emerald-500/10 px-1.5 py-0.5 text-xs"
                 >
-                  <span className="font-mono">{c.mnemonic}</span>
+                  <span className="font-mono font-medium text-foreground">{c.mnemonic}</span>
                   <button
                     type="button"
                     disabled={busy}
@@ -375,7 +375,7 @@ export default function CodingPopup({
                   >
                     {/* Collapsed = the SLUG only (the code's identity). Click to
                         expand definition + exemplars before committing. */}
-                    <span className="font-mono text-sm">{c.mnemonic}</span>
+                    <span className="font-mono text-[15px] font-medium text-foreground">{c.mnemonic}</span>
                   </button>
                   <button
                     type="button"
@@ -389,13 +389,13 @@ export default function CodingPopup({
                   </button>
                 </div>
                 {expanded && (
-                  <div className="mx-3 mb-1 border-l-2 border-foreground/15 py-0.5 pl-2 text-xs text-foreground/60">
+                  <div className="mx-3 mb-1 border-l-2 border-foreground/15 py-0.5 pl-2 text-[13px] text-foreground/80">
                     {/* APPLIED definition only. The literature half of a
                         'Literature == Applied' definition is provenance, and the
                         popup is a coding surface — the codebook views show both. */}
                     <p>{splitDefinition(c.definition).applied || <em>No definition yet.</em>}</p>
                     {c.exemplars.length > 0 && (
-                      <ul className="mt-1 list-disc space-y-0.5 pl-4 text-foreground/55">
+                      <ul className="mt-1 list-disc space-y-0.5 pl-4 text-foreground/70">
                         {c.exemplars.map((ex, i) => (
                           <li key={i} className="italic">
                             “{ex}”
@@ -404,7 +404,7 @@ export default function CodingPopup({
                       </ul>
                     )}
                     {c.counterExample && (
-                      <p className="mt-1 text-foreground/55">
+                      <p className="mt-1 text-foreground/70">
                         <span className="text-[11px] uppercase tracking-wide text-red-700/60 dark:text-red-400/60">
                           not:{' '}
                         </span>
