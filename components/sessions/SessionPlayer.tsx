@@ -1009,9 +1009,15 @@ export default function SessionPlayer({
       try {
         // A stale assignedAnnId (its last code was removed and the anchor deleted
         // server-side) must not receive junction rows — verify it still exists.
+        // Bookmarks qualify too: assigning onto a bookmark anchor is how it
+        // RESOLVES (addCodeToAnnotation promotes kind → 'code' server-side);
+        // excluding them would stack a duplicate coded span on the same text.
         const live =
           assignedAnnId !== null &&
-          myAnnotations.some((a) => a.id === assignedAnnId && a.kind === 'code')
+          myAnnotations.some(
+            (a) =>
+              a.id === assignedAnnId && (a.kind === 'code' || a.kind === 'bookmark'),
+          )
             ? assignedAnnId
             : null;
         let added = false;
@@ -1066,10 +1072,12 @@ export default function SessionPlayer({
     [afterAnnotationMutation],
   );
 
-  // Reopen the coding popup ON an existing bracket (gutter block click): its span
-  // becomes the pending selection (painted), its id receives further assigns.
-  const openPopupForAnnotation = useCallback(
-    (ann: MyAnnotationView, e: React.MouseEvent) => {
+  // Reopen the coding popup ON an existing annotation (gutter block click, a
+  // bookmark span click, the 🔖 cycler): its span becomes the pending selection
+  // (painted), its id receives further assigns. Closes any open comment card —
+  // the popup and the card are rival focus surfaces, never both.
+  const openPopupForAnnotationAt = useCallback(
+    (ann: MyAnnotationView, pos: { x: number; y: number }) => {
       const startIdx = segIndexById.get(ann.segmentId);
       if (startIdx === undefined) return;
       const endIdx = ann.endSegmentId
@@ -1085,9 +1093,15 @@ export default function SessionPlayer({
         suffix: '',
       });
       setAssignedAnnId(ann.id);
-      setPopupPos({ x: e.clientX, y: e.clientY });
+      setOpenCommentAnnId(null);
+      setPopupPos(pos);
     },
     [segIndexById],
+  );
+  const openPopupForAnnotation = useCallback(
+    (ann: MyAnnotationView, e: React.MouseEvent) =>
+      openPopupForAnnotationAt(ann, { x: e.clientX, y: e.clientY }),
+    [openPopupForAnnotationAt],
   );
 
   // Remove ONE code from the selection's annotation. The action's last-code policy
@@ -1329,9 +1343,21 @@ export default function SessionPlayer({
     bookmarkCycleRef.current = idx;
     const a = bookmarkAnns[idx];
     const si = segIndexById.get(a.segmentId);
-    if (si !== undefined) rowRefs.current[si]?.scrollIntoView({ block: 'center' });
+    const el = si !== undefined ? rowRefs.current[si] : null;
+    el?.scrollIntoView({ block: 'center' });
+    if (codingEnabled) {
+      // Landing on a bookmark IS the "later" the bookmark promised — open the
+      // CODING popup on it (scrollIntoView above is instant, so the rect is
+      // post-scroll). Viewers fall through to the thread below.
+      const r = el?.getBoundingClientRect();
+      openPopupForAnnotationAt(
+        a,
+        r ? { x: r.left + 24, y: r.top + 8 } : { x: 120, y: 120 },
+      );
+      return;
+    }
     openThreadForAnnotation(a);
-  }, [bookmarkAnns, segIndexById, openThreadForAnnotation]);
+  }, [bookmarkAnns, segIndexById, codingEnabled, openPopupForAnnotationAt, openThreadForAnnotation]);
 
 
   // --- Phrase-search navigation -------------------------------------------
@@ -1644,6 +1670,22 @@ export default function SessionPlayer({
     }
     return s;
   }, [myAnnotations, comments]);
+
+  // Clicking a highlighted span routes by what the span IS. A pure bookmark is a
+  // deferred CODING decision, so its click opens the CODING popup (assign = resolve,
+  // row 0 = remove) — not the comment card. Everything else (comments, quotes,
+  // coded spans, and bookmarks that grew comments — those paint yellow and read as
+  // comment spans) opens the thread. Viewers can't code, so they get the thread.
+  const focusAnnotation = useCallback(
+    (ann: MyAnnotationView, e: React.MouseEvent) => {
+      if (ann.kind === 'bookmark' && codingEnabled && !commentedAnnIds.has(ann.id)) {
+        openPopupForAnnotation(ann, e);
+        return;
+      }
+      openThreadForAnnotation(ann);
+    },
+    [codingEnabled, commentedAnnIds, openPopupForAnnotation, openThreadForAnnotation],
+  );
 
   // --- Speaker-turn grouping ----------------------------------------------
   const turns = useMemo(() => groupIntoTurns(segments), [segments]);
@@ -2135,7 +2177,7 @@ export default function SessionPlayer({
     pendingAnnId: PENDING_ANN_ID,
     rowRefs,
     onSeek: seekTo,
-    onFocusAnnotation: openThreadForAnnotation,
+    onFocusAnnotation: focusAnnotation,
     onSegmentTextCommit: handleSegmentTextCommit,
   };
 
@@ -2756,7 +2798,16 @@ export default function SessionPlayer({
             router.refresh();
             void handleAssignCodeRef.current(cid);
           }}
-          onBookmark={() => void handleBookmarkSelection()}
+          onBookmark={() => {
+            // On an EXISTING bookmark the row is "Remove bookmark" — delete the
+            // anchor and close. On a fresh selection it pins a new bookmark.
+            if (assignedAnn?.kind === 'bookmark') {
+              void handleDeleteAnnotation(assignedAnn.id).then(clearSelection);
+            } else {
+              void handleBookmarkSelection();
+            }
+          }}
+          bookmarked={assignedAnn?.kind === 'bookmark'}
         />
       )}
     </main>
@@ -3328,7 +3379,7 @@ function renderHighlightedText(
     const title = hasComment
       ? 'Has comments — click to open the thread'
       : hasBookmark
-        ? 'Bookmarked — come back to this later · click to open'
+        ? 'Bookmarked — click to code it (assigning resolves the bookmark)'
         : hasQuote
           ? 'Flagged quote — click to comment'
           : 'Coded — click to comment';
