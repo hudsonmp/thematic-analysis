@@ -62,6 +62,7 @@ export default function CodingPopup({
   onClose,
   onCodeCreated,
   onBookmark,
+  bookmarked = false,
 }: {
   pos: { x: number; y: number };
   quote: string;
@@ -78,8 +79,13 @@ export default function CodingPopup({
   /** New code persisted → parent refreshes its code list, then we auto-assign. */
   onCodeCreated: (codeId: string) => void;
   /** Pin a BOOKMARK on the selection — "come back to this later". One-shot:
-   *  creates the anchor and closes the popup. */
+   *  creates the anchor and closes the popup. When `bookmarked`, the same row
+   *  REMOVES the existing bookmark instead (the parent flips the callback). */
   onBookmark: () => void;
+  /** True when the popup was reopened ON an existing bookmark annotation — the
+   *  bookmark's "later" is now: row 0 becomes Remove, and any assign resolves
+   *  the bookmark into a coded span (server-side kind promotion). */
+  bookmarked?: boolean;
 }) {
   const [query, setQuery] = useState('');
   // Row 0 is the pinned Bookmark option; codes occupy 1..N. The cursor STARTS on
@@ -332,13 +338,30 @@ export default function CodingPopup({
               className={`flex w-full items-center gap-2 px-3 py-1 text-left disabled:opacity-40 ${
                 safeCursor === 0 ? 'bg-foreground/[0.06]' : ''
               }`}
-              title="Mark this selection to come back to later"
+              title={
+                bookmarked
+                  ? 'Remove this bookmark (assigning a code below also resolves it)'
+                  : 'Mark this selection to come back to later'
+              }
             >
               <span aria-hidden>🔖</span>
-              <span className="text-sm text-violet-700 dark:text-violet-300">Bookmark</span>
-              <span className="truncate text-[11px] text-foreground/40">
-                come back to this later
-              </span>
+              {bookmarked ? (
+                <>
+                  <span className="text-sm text-red-700 dark:text-red-400">
+                    Remove bookmark
+                  </span>
+                  <span className="truncate text-[11px] text-foreground/40">
+                    or assign a code to resolve it
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="text-sm text-violet-700 dark:text-violet-300">Bookmark</span>
+                  <span className="truncate text-[11px] text-foreground/40">
+                    come back to this later
+                  </span>
+                </>
+              )}
             </button>
           </div>
           {ranked.length === 0 && (
