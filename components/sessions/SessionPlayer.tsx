@@ -31,7 +31,12 @@ import {
   markSessionEpisode,
   type SessionEpisodeView,
 } from '@/app/actions/episodes';
-import type { ObservationView } from '@/app/actions/observations';
+import {
+  addObservation,
+  deleteObservation,
+  type ObservationView,
+} from '@/app/actions/observations';
+import { listFlagTypes } from '@/app/actions/flag-types';
 import type { ChatMessage } from '@/app/actions/chat';
 import { alignChat, activeChatIndex } from '@/lib/chat/align';
 import type { SpecTimelineResult } from '@/app/actions/spec';
@@ -1847,6 +1852,75 @@ export default function SessionPlayer({
     [router],
   );
 
+  // --- Retroactive flag marking -------------------------------------------
+  // The flag twin of the event repair above: sessions observed with sparse live
+  // flags get them added in playback. A retro flag is an ordinary observation
+  // stamped with the wall-clock time the playhead corresponds to
+  // (anchor + currentMs) — see addObservation's createdAtIso — so the existing
+  // offset math places it correctly with zero player changes.
+  const [flagPickerOpen, setFlagPickerOpen] = useState(false);
+  const [flagTypes, setFlagTypes] = useState<
+    { id: string; label: string; color: string | null }[] | null
+  >(null);
+  const [flagBusy, setFlagBusy] = useState(false);
+  const [flagAddError, setFlagAddError] = useState<string | null>(null);
+  const flagNoteRef = useRef<HTMLInputElement | null>(null);
+
+  const toggleFlagPicker = useCallback(() => {
+    setFlagPickerOpen((open) => {
+      if (!open && flagTypes === null) {
+        void listFlagTypes(codebookId)
+          .then((rows) =>
+            setFlagTypes(rows.map((r) => ({ id: r.id, label: r.label, color: r.color }))),
+          )
+          .catch((e) =>
+            setFlagAddError(e instanceof Error ? e.message : 'Failed to load flag types.'),
+          );
+      }
+      return !open;
+    });
+  }, [codebookId, flagTypes]);
+
+  const handleAddFlag = useCallback(
+    async (flagTypeId: string) => {
+      if (anchorMs === null) return; // no anchor → no offset math → nowhere to land
+      setFlagBusy(true);
+      setFlagAddError(null);
+      try {
+        await addObservation({
+          pid: pidLabel,
+          flagTypeId,
+          body: flagNoteRef.current?.value.trim() || null,
+          createdAtIso: new Date(anchorMs + currentMs).toISOString(),
+        });
+        if (flagNoteRef.current) flagNoteRef.current.value = '';
+        setFlagPickerOpen(false);
+        router.refresh();
+      } catch (e) {
+        setFlagAddError(e instanceof Error ? e.message : 'Failed to add the flag.');
+      } finally {
+        setFlagBusy(false);
+      }
+    },
+    [anchorMs, pidLabel, currentMs, router],
+  );
+
+  const handleDeleteFlag = useCallback(
+    async (obsId: string) => {
+      setFlagBusy(true);
+      setFlagAddError(null);
+      try {
+        await deleteObservation(obsId);
+        router.refresh();
+      } catch (e) {
+        setFlagAddError(e instanceof Error ? e.message : 'Failed to remove the flag.');
+      } finally {
+        setFlagBusy(false);
+      }
+    },
+    [router],
+  );
+
   // --- Code-brace gutter (measured imperatively, no setState-in-effect) ----
   // kind:'code' annotations render as BRACE-GROUPED blocks in the gutter: a bracket
   // spanning the coded text's vertical extent + a chip block listing the codes.
@@ -2626,18 +2700,83 @@ export default function SessionPlayer({
           )}
 
           {/* Flags on timeline (R1 collapse + R3 filter). The marker bar stays;
-              the list scrolls at ~8 rows so the code panel below is reachable. */}
-          {flagMarkers.length > 0 && (
+              the list scrolls at ~8 rows so the code panel below is reachable.
+              Shown while coding even with ZERO flags — a sparsely-flagged session
+              is exactly the one that needs the retro "+ Flag" repair. */}
+          {(flagMarkers.length > 0 || codingEnabled) && (
             <section
               aria-label="Live flags on the timeline"
               className="rounded border border-foreground/15 p-3"
             >
-              <h2 className="mb-2 text-sm font-semibold">
+              <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
                 Flags on timeline
-                <span className="ml-1 font-normal text-foreground/40">
+                <span className="font-normal text-foreground/40">
                   · {flagMarkers.length} flag{flagMarkers.length === 1 ? '' : 's'}
                 </span>
+                {codingEnabled && (
+                  <button
+                    type="button"
+                    onClick={toggleFlagPicker}
+                    aria-expanded={flagPickerOpen}
+                    disabled={anchorMs === null}
+                    title={
+                      anchorMs === null
+                        ? 'No recording anchor — retro flags have nowhere to land'
+                        : 'Add a flag at the current playback time'
+                    }
+                    className="border border-foreground/25 px-1.5 py-0.5 text-xs font-normal text-foreground/70 transition hover:border-foreground hover:text-foreground disabled:opacity-40"
+                  >
+                    + Flag
+                  </button>
+                )}
               </h2>
+              {flagPickerOpen && (
+                <div className="mb-2 border-b border-foreground/15 pb-2">
+                  <p className="mb-1.5 text-xs text-foreground/60">
+                    Flag at{' '}
+                    <span className="font-mono text-foreground">{formatTime(currentMs)}</span>{' '}
+                    — pick a type:
+                  </p>
+                  {flagTypes === null ? (
+                    <p className="text-xs italic text-foreground/40">Loading flag types…</p>
+                  ) : flagTypes.length === 0 ? (
+                    <p className="text-xs italic text-foreground/40">
+                      No flag types in this codebook — define them on the live page first.
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {flagTypes.map((f) => (
+                        <button
+                          key={f.id}
+                          type="button"
+                          disabled={flagBusy}
+                          onClick={() => void handleAddFlag(f.id)}
+                          className="inline-flex items-center gap-1.5 border border-foreground/25 px-2 py-0.5 text-xs transition hover:border-foreground disabled:opacity-40"
+                        >
+                          <span
+                            aria-hidden
+                            style={{ backgroundColor: f.color ?? undefined }}
+                            className="inline-block h-2.5 w-2.5 rounded-sm border border-foreground/20"
+                          />
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <input
+                    ref={flagNoteRef}
+                    placeholder="Optional note (attached to the flag you pick)…"
+                    aria-label="Optional flag note"
+                    className="mt-1.5 w-full border border-foreground/20 bg-background px-2 py-1 text-xs focus:border-foreground focus:outline-none"
+                  />
+                  {flagAddError && <p className="mt-1 text-xs text-red-600">{flagAddError}</p>}
+                </div>
+              )}
+              {flagMarkers.length === 0 && !flagPickerOpen && (
+                <p className="py-1 text-xs italic text-foreground/40">
+                  No flags in this session — scrub to the moment and hit + Flag.
+                </p>
+              )}
               <div
                 className="relative h-7 w-full rounded bg-foreground/[0.06]"
                 role="group"
@@ -2692,6 +2831,17 @@ export default function SessionPlayer({
                           [{formatTime(offsetMs)}]
                         </span>
                       </button>
+                      {codingEnabled && (
+                        <button
+                          type="button"
+                          disabled={flagBusy}
+                          onClick={() => void handleDeleteFlag(obs.id)}
+                          title="Remove this flag (own flags only)"
+                          className="shrink-0 px-1 text-xs text-foreground/30 hover:text-red-600 disabled:opacity-40"
+                        >
+                          ×
+                        </button>
+                      )}
                     </li>
                   );
                 })}
