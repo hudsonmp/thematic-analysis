@@ -91,17 +91,28 @@ export async function addObservation({
   episodeId,
   body,
   isQuote,
+  createdAtIso,
 }: {
   pid: string;
   flagTypeId?: string | null;
   episodeId?: string | null;
   body?: string | null;
   isQuote?: boolean;
+  /** RETROACTIVE flags: an explicit `created_at` (ISO). The player computes a
+   *  flag's timeline offset as `createdAt − recordingStartedAt`, so a flag added
+   *  during PLAYBACK must be stamped with the wall-clock time the playhead
+   *  corresponds to (anchor + currentMs), not the insert time — otherwise it
+   *  would land at "now", far past the end of the recording. Omit for live
+   *  flags (server default now()). */
+  createdAtIso?: string | null;
 }): Promise<Observation> {
   const user = await requireAuthUser();
 
   const trimmedPid = (pid ?? '').trim();
   if (!trimmedPid) throw new Error('addObservation: pid is required.');
+  if (createdAtIso != null && Number.isNaN(Date.parse(createdAtIso))) {
+    throw new Error('addObservation: createdAtIso is not a valid timestamp.');
+  }
 
   const flag = flagTypeId ?? null;
   const episode = episodeId ?? null;
@@ -129,6 +140,7 @@ export async function addObservation({
       // Set explicitly to the caller's uid: RLS `with check (created_by =
       // auth.uid())` admits only the signed-in user's own id.
       created_by: user.id,
+      ...(createdAtIso != null ? { created_at: new Date(createdAtIso).toISOString() } : {}),
     })
     .select('*')
     .single();
