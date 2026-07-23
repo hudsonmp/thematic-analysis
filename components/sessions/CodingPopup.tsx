@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createCode, type CodeOrigin } from '@/app/actions/codes';
+import { createCodebookMemo } from '@/app/actions/codebook-memos';
 import { splitDefinition } from '@/lib/codebook/definition';
 import { normalizeSlug } from '@/lib/codebook/mnemonic';
 import { fuzzyRank } from '@/lib/transcript/fuzzy';
@@ -106,6 +107,28 @@ export default function CodingPopup({
   const [newOrigin, setNewOrigin] = useState<CodeOrigin>('emergent');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+
+  // Missing-code memo capture (see the footer). Uncontrolled textarea — same
+  // caret-safety reasoning as the comment composer.
+  const [showMemo, setShowMemo] = useState(false);
+  const [savingMemo, setSavingMemo] = useState(false);
+  const [memoError, setMemoError] = useState<string | null>(null);
+  const memoRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const saveMemo = async () => {
+    const body = memoRef.current?.value.trim() ?? '';
+    if (body === '') return;
+    setSavingMemo(true);
+    setMemoError(null);
+    try {
+      await createCodebookMemo(codebookId, body);
+      setShowMemo(false);
+    } catch (e) {
+      setMemoError(e instanceof Error ? e.message : 'Failed to save the memo.');
+    } finally {
+      setSavingMemo(false);
+    }
+  };
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -460,14 +483,65 @@ export default function CodingPopup({
         </div>
 
         <div className="border-t border-foreground/15 px-3 py-2">
-          {!showNew ? (
-            <button
-              type="button"
-              onClick={() => setShowNew(true)}
-              className="w-full border border-dashed border-foreground/30 px-2 py-1 text-xs text-foreground/60 transition hover:border-foreground hover:text-foreground"
-            >
-              + New code (lands in the triage queue)
-            </button>
+          {!showNew && !showMemo ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setShowNew(true)}
+                className="min-w-0 flex-1 border border-dashed border-foreground/30 px-2 py-1 text-xs text-foreground/60 transition hover:border-foreground hover:text-foreground"
+              >
+                + New code (lands in the triage queue)
+              </button>
+              {/* The half-commitment path: "a code like X belongs here" without
+                  minting a slug mid-flow. Saves a codebook MEMO (canvas → Memos)
+                  and leaves the picker exactly as it was. */}
+              <button
+                type="button"
+                onClick={() => setShowMemo(true)}
+                title="Note a code you know is missing — without creating it now"
+                className="shrink-0 border border-dashed border-amber-600/40 px-2 py-1 text-xs text-amber-800/80 transition hover:border-amber-600 hover:text-amber-700 dark:text-amber-400/80"
+              >
+                ✎ memo
+              </button>
+            </div>
+          ) : showMemo ? (
+            <div className="space-y-1.5">
+              <textarea
+                autoFocus
+                rows={2}
+                ref={memoRef}
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    void saveMemo();
+                  }
+                  if (e.key === 'Escape') setShowMemo(false);
+                }}
+                placeholder="Missing-code lead — e.g. epistemic vigilance (Sperber); shows in this span"
+                className="w-full border border-foreground/20 bg-background px-2 py-1 text-xs focus:border-foreground focus:outline-none"
+              />
+              <div className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate text-[11px] text-foreground/40">
+                  Lands in the codebook&rsquo;s Memos panel.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowMemo(false)}
+                  className="shrink-0 px-1 text-xs text-foreground/50 hover:text-foreground"
+                >
+                  cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={savingMemo}
+                  onClick={() => void saveMemo()}
+                  className="shrink-0 border border-foreground bg-foreground px-2 py-1 text-xs text-background transition hover:opacity-90 disabled:opacity-40"
+                >
+                  {savingMemo ? 'Saving…' : 'Save memo'}
+                </button>
+              </div>
+              {memoError && <p className="text-xs text-red-600">{memoError}</p>}
+            </div>
           ) : (
             <div className="space-y-1.5">
               <input

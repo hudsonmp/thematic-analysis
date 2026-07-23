@@ -24,6 +24,8 @@ import CodeEditor from './CodeEditor';
 import NewCodeDialog, { type DialogTarget } from './NewCodeDialog';
 import StagingBox from './StagingBox';
 import TriageQueue from './TriageQueue';
+import MemoPanel from './MemoPanel';
+import { listCodebookMemos, type CodebookMemo } from '@/app/actions/codebook-memos';
 
 type FacetValue = Tables<'cb_facet_values'>;
 type Citation = Tables<'cb_citations'>;
@@ -91,6 +93,10 @@ export default function FacetCanvas({
   // is a permanent rail, because the canvas is the thinking surface and a panel you
   // cannot dismiss permanently taxes the width you think in.
   const [triageOpen, setTriageOpen] = useState(false);
+  // Memos ("codes I know I'm missing") share the same right panel. The list is
+  // fetched in the TOGGLE click (not an effect — repo rule), null = in flight.
+  const [memosOpen, setMemosOpen] = useState(false);
+  const [memos, setMemos] = useState<CodebookMemo[] | null>(null);
   // ⌘⌫ ARMS a delete; a second ⌘⌫ (or the inspector button) commits it. Deleting a value
   // destroys every code's answer on it — cb_code_facet_values cascades — and no keystroke
   // should do that silently. Arming is cheaper than a modal and still makes the second
@@ -305,6 +311,7 @@ export default function FacetCanvas({
       if (e.key === 'Escape') {
         setSelected(null);
         setTriageOpen(false);
+        setMemosOpen(false);
         setArmedDelete(null);
         setFloatingCode(null);
       }
@@ -385,6 +392,7 @@ export default function FacetCanvas({
             type="button"
             onClick={() => {
               setTriageOpen((o) => !o);
+              setMemosOpen(false);
               setSelected(null);
             }}
             className={`border px-2.5 py-1 text-xs transition ${
@@ -399,6 +407,33 @@ export default function FacetCanvas({
                 className={`ml-1 ${triageOpen ? '' : 'text-amber-700 dark:text-amber-500'}`}
               >
                 {unansweredHere.length}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setMemosOpen((o) => {
+                if (!o && memos === null) {
+                  void listCodebookMemos(codebookId).then(setMemos).catch(() => setMemos([]));
+                }
+                return !o;
+              });
+              setTriageOpen(false);
+              setSelected(null);
+            }}
+            title="Notes about codes you know you're missing"
+            className={`border px-2.5 py-1 text-xs transition ${
+              memosOpen
+                ? 'border-foreground bg-foreground text-background'
+                : 'border-foreground/20 hover:border-foreground'
+            }`}
+          >
+            Memos
+            {memos !== null && memos.filter((m) => m.resolved_at === null).length > 0 && (
+              <span className={`ml-1 ${memosOpen ? '' : 'text-amber-700 dark:text-amber-500'}`}>
+                {memos.filter((m) => m.resolved_at === null).length}
               </span>
             )}
           </button>
@@ -828,19 +863,21 @@ export default function FacetCanvas({
           when you click something and gets out of the way when you are done. It is
           non-modal (no backdrop): it floats over the canvas so you can still see the tree
           you are editing against, which a centred modal would hide behind itself. */}
-      {(selected !== null || triageOpen) && (
+      {(selected !== null || triageOpen || memosOpen) && (
         <div
           role="dialog"
-          aria-label={triageOpen ? 'Triage' : 'Inspect'}
+          aria-label={triageOpen ? 'Triage' : memosOpen ? 'Memos' : 'Inspect'}
           className="absolute right-6 top-6 bottom-6 z-40 flex w-[26rem] flex-col border border-foreground/20 bg-background shadow-2xl"
         >
           <div className="flex items-center gap-2 border-b border-foreground/15 px-3 py-2">
             <span className="text-xs font-medium tracking-tight">
               {triageOpen
                 ? `Triage · ${unansweredHere.length} unclassified`
-                : selected?.kind === 'value'
-                  ? 'Value'
-                  : 'Code'}
+                : memosOpen
+                  ? 'Memos — missing-code leads'
+                  : selected?.kind === 'value'
+                    ? 'Value'
+                    : 'Code'}
             </span>
             {/* ⌘⌫ on a CODE arms silently otherwise: CodeEditor, unlike ValueInspector, has
                 no armed banner of its own, so the first press would look like nothing
@@ -854,6 +891,7 @@ export default function FacetCanvas({
               type="button"
               onClick={() => {
                 setTriageOpen(false);
+                setMemosOpen(false);
                 setSelected(null);
                 setArmedDelete(null);
               }}
@@ -867,6 +905,8 @@ export default function FacetCanvas({
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
             {triageOpen ? (
               <TriageQueue codes={codes} facets={dimensions} citations={citations} />
+            ) : memosOpen ? (
+              <MemoPanel codebookId={codebookId} memos={memos} onChanged={setMemos} />
             ) : selectedValue !== null && selected !== null ? (
               <ValueInspector
                 key={selected.id}
