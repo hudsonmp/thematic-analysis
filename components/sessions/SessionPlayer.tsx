@@ -24,7 +24,13 @@ import {
   type MyAnnotationView,
   type AnnotationCommentView,
 } from '@/app/actions/annotations';
-import { type SessionEpisodeView } from '@/app/actions/episodes';
+import {
+  createEpisode,
+  deleteSessionEpisode,
+  listEpisodes,
+  markSessionEpisode,
+  type SessionEpisodeView,
+} from '@/app/actions/episodes';
 import type { ObservationView } from '@/app/actions/observations';
 import type { ChatMessage } from '@/app/actions/chat';
 import { alignChat, activeChatIndex } from '@/lib/chat/align';
@@ -1733,6 +1739,94 @@ export default function SessionPlayer({
     currentEventRef.current?.scrollIntoView({ block: 'nearest' });
   }, [currentEpisodeIdx]);
 
+  // --- Retroactive event marking -----------------------------------------
+  // Some sessions were recorded with sparse/absent live event marks; the player
+  // is where they get repaired. "+ Event" opens a picker of the codebook's
+  // preset events (fetched lazily — most playbacks never open it) and marks the
+  // chosen one at the CURRENT playback time; a preset can be created inline.
+  // router.refresh() re-runs the server page, which re-passes sessionEpisodes —
+  // orderedEpisodes derives from the prop, so no state sync is needed.
+  const [eventPickerOpen, setEventPickerOpen] = useState(false);
+  const [eventPresets, setEventPresets] = useState<
+    { id: string; name: string; description: string | null }[] | null
+  >(null);
+  const [eventBusy, setEventBusy] = useState(false);
+  const [eventError, setEventError] = useState<string | null>(null);
+  const newEventNameRef = useRef<HTMLInputElement | null>(null);
+
+  const toggleEventPicker = useCallback(() => {
+    setEventPickerOpen((open) => {
+      if (!open && eventPresets === null) {
+        void listEpisodes(codebookId)
+          .then((rows) =>
+            setEventPresets(
+              rows.map((r) => ({ id: r.id, name: r.name, description: r.description })),
+            ),
+          )
+          .catch((e) =>
+            setEventError(e instanceof Error ? e.message : 'Failed to load events.'),
+          );
+      }
+      return !open;
+    });
+  }, [codebookId, eventPresets]);
+
+  const handleMarkEvent = useCallback(
+    async (episodeId: string) => {
+      setEventBusy(true);
+      setEventError(null);
+      try {
+        await markSessionEpisode({ sessionId: id, episodeId, tStartMs: currentMs });
+        setEventPickerOpen(false);
+        router.refresh();
+      } catch (e) {
+        setEventError(e instanceof Error ? e.message : 'Failed to mark the event.');
+      } finally {
+        setEventBusy(false);
+      }
+    },
+    [id, currentMs, router],
+  );
+
+  const handleCreateAndMarkEvent = useCallback(async () => {
+    const name = newEventNameRef.current?.value.trim() ?? '';
+    if (name === '') return;
+    setEventBusy(true);
+    setEventError(null);
+    try {
+      const preset = await createEpisode(codebookId, { name });
+      setEventPresets((prev) =>
+        prev
+          ? [...prev, { id: preset.id, name: preset.name, description: preset.description }]
+          : prev,
+      );
+      if (newEventNameRef.current) newEventNameRef.current.value = '';
+      await markSessionEpisode({ sessionId: id, episodeId: preset.id, tStartMs: currentMs });
+      setEventPickerOpen(false);
+      router.refresh();
+    } catch (e) {
+      setEventError(e instanceof Error ? e.message : 'Failed to create the event.');
+    } finally {
+      setEventBusy(false);
+    }
+  }, [codebookId, id, currentMs, router]);
+
+  const handleDeleteEventMark = useCallback(
+    async (markId: string) => {
+      setEventBusy(true);
+      setEventError(null);
+      try {
+        await deleteSessionEpisode(markId);
+        router.refresh();
+      } catch (e) {
+        setEventError(e instanceof Error ? e.message : 'Failed to remove the mark.');
+      } finally {
+        setEventBusy(false);
+      }
+    },
+    [router],
+  );
+
   // --- Code-brace gutter (measured imperatively, no setState-in-effect) ----
   // kind:'code' annotations render as BRACE-GROUPED blocks in the gutter: a bracket
   // spanning the coded text's vertical extent + a chip block listing the codes.
@@ -2402,11 +2496,23 @@ export default function SessionPlayer({
           </div>
 
           {/* Current event (R2): the auto-derived episode now playing, in a small
-              scrollable box (current + next visible, scroll for the rest). */}
-          {codingEnabled && orderedEpisodes.length > 0 && (
+              scrollable box (current + next visible, scroll for the rest).
+              ALWAYS shown while coding — a session with zero marks is exactly the
+              one that needs the "+ Event" repair affordance, so hiding the empty
+              panel would hide the fix where it's most needed. */}
+          {codingEnabled && (
             <section className="rounded border border-foreground/15 p-3">
               <div className="mb-2 flex items-center gap-2">
                 <h2 className="text-sm font-semibold">Current event</h2>
+                <button
+                  type="button"
+                  onClick={toggleEventPicker}
+                  aria-expanded={eventPickerOpen}
+                  title="Mark an event at the current playback time"
+                  className="border border-foreground/25 px-1.5 py-0.5 text-xs text-foreground/70 transition hover:border-foreground hover:text-foreground"
+                >
+                  + Event
+                </button>
                 <Link
                   href="/episodes"
                   className="ml-auto text-xs text-foreground/50 underline hover:text-foreground"
@@ -2415,6 +2521,11 @@ export default function SessionPlayer({
                   Manage presets
                 </Link>
               </div>
+              {orderedEpisodes.length === 0 && !eventPickerOpen && (
+                <p className="py-1 text-xs italic text-foreground/40">
+                  No events marked in this session — scrub to a boundary and hit + Event.
+                </p>
+              )}
               <ul className="max-h-[4.5rem] divide-y divide-foreground/10 overflow-y-auto">
                 {orderedEpisodes.map((m, i) => {
                   const isCurrent = i === currentEpisodeIdx;
@@ -2438,10 +2549,74 @@ export default function SessionPlayer({
                           [{formatTime(m.tStartMs)}]
                         </span>
                       </button>
+                      <button
+                        type="button"
+                        disabled={eventBusy}
+                        onClick={() => void handleDeleteEventMark(m.id)}
+                        title="Remove this mark (the preset event survives)"
+                        className="shrink-0 px-1 text-xs text-foreground/30 hover:text-red-600 disabled:opacity-40"
+                      >
+                        ×
+                      </button>
                     </li>
                   );
                 })}
               </ul>
+              {eventPickerOpen && (
+                <div className="mt-2 border-t border-foreground/15 pt-2">
+                  <p className="mb-1.5 text-xs text-foreground/60">
+                    Mark at{' '}
+                    <span className="font-mono text-foreground">{formatTime(currentMs)}</span> —
+                    pick an event:
+                  </p>
+                  {eventPresets === null ? (
+                    <p className="text-xs italic text-foreground/40">Loading events…</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {eventPresets.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          disabled={eventBusy}
+                          onClick={() => void handleMarkEvent(p.id)}
+                          title={p.description ?? undefined}
+                          className="border border-foreground/25 px-2 py-0.5 text-xs transition hover:border-foreground hover:bg-foreground hover:text-background disabled:opacity-40"
+                        >
+                          {p.name}
+                        </button>
+                      ))}
+                      {eventPresets.length === 0 && (
+                        <p className="text-xs italic text-foreground/40">
+                          No preset events yet — create one below.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <input
+                      ref={newEventNameRef}
+                      placeholder="New event name…"
+                      aria-label="New event name"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleCreateAndMarkEvent();
+                        }
+                      }}
+                      className="min-w-0 flex-1 border border-foreground/20 bg-background px-2 py-1 text-xs focus:border-foreground focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      disabled={eventBusy}
+                      onClick={() => void handleCreateAndMarkEvent()}
+                      className="shrink-0 border border-foreground px-2 py-1 text-xs transition hover:bg-foreground hover:text-background disabled:opacity-40"
+                    >
+                      Create + mark
+                    </button>
+                  </div>
+                  {eventError && <p className="mt-1 text-xs text-red-600">{eventError}</p>}
+                </div>
+              )}
             </section>
           )}
 
