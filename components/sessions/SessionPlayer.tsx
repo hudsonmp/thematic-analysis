@@ -2838,6 +2838,18 @@ export default function SessionPlayer({
             }
           }}
           bookmarked={assignedAnn?.kind === 'bookmark'}
+          onOpenNotes={
+            assignedAnn
+              ? () => {
+                  // Hand off from the code UI to the anchor's margin thread —
+                  // "add a note to this bookmark/bracket". Clear first (kills
+                  // the popup + synthetic selection), then open the thread.
+                  const ann = assignedAnn;
+                  clearSelection();
+                  openThreadForAnnotation(ann);
+                }
+              : null
+          }
         />
       )}
     </main>
