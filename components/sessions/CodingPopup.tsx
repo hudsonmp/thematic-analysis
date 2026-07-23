@@ -112,6 +112,7 @@ export default function CodingPopup({
   // caret-safety reasoning as the comment composer.
   const [showMemo, setShowMemo] = useState(false);
   const [savingMemo, setSavingMemo] = useState(false);
+  const [memoSaved, setMemoSaved] = useState(false);
   const [memoError, setMemoError] = useState<string | null>(null);
   const memoRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -123,6 +124,10 @@ export default function CodingPopup({
     try {
       await createCodebookMemo(codebookId, body);
       setShowMemo(false);
+      // The save is otherwise invisible from here (memos live with the
+      // codebook, not this transcript) — without an acknowledgment it reads
+      // as "my note vanished".
+      setMemoSaved(true);
     } catch (e) {
       setMemoError(e instanceof Error ? e.message : 'Failed to save the memo.');
     } finally {
@@ -497,11 +502,14 @@ export default function CodingPopup({
                   and leaves the picker exactly as it was. */}
               <button
                 type="button"
-                onClick={() => setShowMemo(true)}
+                onClick={() => {
+                  setMemoSaved(false);
+                  setShowMemo(true);
+                }}
                 title="Note a code you know is missing — without creating it now"
                 className="shrink-0 border border-dashed border-amber-600/40 px-2 py-1 text-xs text-amber-800/80 transition hover:border-amber-600 hover:text-amber-700 dark:text-amber-400/80"
               >
-                ✎ memo
+                {memoSaved ? 'memo saved ✓' : '✎ memo'}
               </button>
             </div>
           ) : showMemo ? (
