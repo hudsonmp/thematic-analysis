@@ -37,6 +37,12 @@ import {
   type ObservationView,
 } from '@/app/actions/observations';
 import { listFlagTypes } from '@/app/actions/flag-types';
+import {
+  createCodebookMemo,
+  listCodebookMemos,
+  setCodebookMemoResolved,
+  type CodebookMemo,
+} from '@/app/actions/codebook-memos';
 import type { ChatMessage } from '@/app/actions/chat';
 import { alignChat, activeChatIndex } from '@/lib/chat/align';
 import type { SpecTimelineResult } from '@/app/actions/spec';
@@ -1921,6 +1927,63 @@ export default function SessionPlayer({
     [router],
   );
 
+  // --- Codebook memos, in the player --------------------------------------
+  // "I should always be able to leave a memo and it should STAY": the popup's
+  // ✎ memo capture saves into the codebook, but from the player that looked
+  // like the note vanished. This box is the always-there capture + the visible
+  // list (open memos only — resolving/history lives on the codebook canvas).
+  // Same lazy pattern as the pickers above: fetched in the toggle click.
+  const [memosOpen, setMemosOpen] = useState(false);
+  const [memoList, setMemoList] = useState<CodebookMemo[] | null>(null);
+  const [memoBusy, setMemoBusy] = useState(false);
+  const [memoErr, setMemoErr] = useState<string | null>(null);
+  const memoBodyRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const toggleMemos = useCallback(() => {
+    setMemosOpen((open) => {
+      if (!open && memoList === null) {
+        void listCodebookMemos(codebookId)
+          .then(setMemoList)
+          .catch((e) =>
+            setMemoErr(e instanceof Error ? e.message : 'Failed to load memos.'),
+          );
+      }
+      return !open;
+    });
+  }, [codebookId, memoList]);
+
+  const handleAddPlayerMemo = useCallback(async () => {
+    const body = memoBodyRef.current?.value.trim() ?? '';
+    if (body === '') return;
+    setMemoBusy(true);
+    setMemoErr(null);
+    try {
+      await createCodebookMemo(codebookId, body);
+      if (memoBodyRef.current) memoBodyRef.current.value = '';
+      setMemoList(await listCodebookMemos(codebookId));
+    } catch (e) {
+      setMemoErr(e instanceof Error ? e.message : 'Failed to save the memo.');
+    } finally {
+      setMemoBusy(false);
+    }
+  }, [codebookId]);
+
+  const handleResolvePlayerMemo = useCallback(
+    async (memoId: string) => {
+      setMemoBusy(true);
+      setMemoErr(null);
+      try {
+        await setCodebookMemoResolved(memoId, true);
+        setMemoList(await listCodebookMemos(codebookId));
+      } catch (e) {
+        setMemoErr(e instanceof Error ? e.message : 'Failed to resolve the memo.');
+      } finally {
+        setMemoBusy(false);
+      }
+    },
+    [codebookId],
+  );
+
   // --- Code-brace gutter (measured imperatively, no setState-in-effect) ----
   // kind:'code' annotations render as BRACE-GROUPED blocks in the gutter: a bracket
   // spanning the coded text's vertical extent + a chip block listing the codes.
@@ -2846,6 +2909,87 @@ export default function SessionPlayer({
                   );
                 })}
               </ul>
+            </section>
+          )}
+
+          {/* Codebook memos: always-available capture for "a code like X should
+              exist" + the visible list, so a memo saved mid-coding never looks
+              like it vanished. Full manage (resolve history, delete) lives in
+              the codebook canvas's Memos panel. */}
+          {codingEnabled && (
+            <section className="rounded border border-foreground/15 p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <h2 className="text-sm font-semibold">Memos</h2>
+                {memoList !== null && (
+                  <span className="text-xs text-foreground/40">
+                    {memoList.filter((m) => m.resolved_at === null).length} open
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={toggleMemos}
+                  aria-expanded={memosOpen}
+                  className="ml-auto text-xs text-foreground/50 underline hover:text-foreground"
+                >
+                  {memosOpen ? 'hide' : 'show'}
+                </button>
+              </div>
+              {memosOpen && (
+                <>
+                  <textarea
+                    ref={memoBodyRef}
+                    rows={2}
+                    placeholder="Missing-code lead — stays with the codebook, not this session…"
+                    aria-label="New codebook memo"
+                    onKeyDown={(e) => {
+                      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleAddPlayerMemo();
+                      }
+                    }}
+                    className="w-full border border-foreground/20 bg-background px-2 py-1 text-xs focus:border-foreground focus:outline-none"
+                  />
+                  <div className="mt-1 flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={memoBusy}
+                      onClick={() => void handleAddPlayerMemo()}
+                      className="border border-foreground px-2 py-0.5 text-xs transition hover:bg-foreground hover:text-background disabled:opacity-40"
+                    >
+                      Add memo
+                    </button>
+                    <span className="text-[10px] text-foreground/40">⌘⏎ saves</span>
+                  </div>
+                  {memoErr && <p className="mt-1 text-xs text-red-600">{memoErr}</p>}
+                  <ul className="mt-2 max-h-40 space-y-2 overflow-y-auto">
+                    {memoList === null && (
+                      <li className="text-xs italic text-foreground/40">Loading…</li>
+                    )}
+                    {memoList !== null &&
+                      memoList.filter((m) => m.resolved_at === null).length === 0 && (
+                        <li className="text-xs italic text-foreground/40">No open memos.</li>
+                      )}
+                    {(memoList ?? [])
+                      .filter((m) => m.resolved_at === null)
+                      .map((m) => (
+                        <li key={m.id} className="border-l-2 border-amber-500/60 pl-2">
+                          <p className="whitespace-pre-wrap text-xs leading-relaxed">{m.body}</p>
+                          <div className="mt-0.5 flex items-center gap-2 text-[10px] text-foreground/40">
+                            {new Date(m.created_at).toLocaleDateString()}
+                            <button
+                              type="button"
+                              disabled={memoBusy}
+                              onClick={() => void handleResolvePlayerMemo(m.id)}
+                              className="underline-offset-2 hover:text-foreground hover:underline disabled:opacity-40"
+                            >
+                              resolve
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                  </ul>
+                </>
+              )}
             </section>
           )}
         </div>
