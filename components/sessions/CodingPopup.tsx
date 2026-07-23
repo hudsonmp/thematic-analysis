@@ -63,6 +63,7 @@ export default function CodingPopup({
   onCodeCreated,
   onBookmark,
   bookmarked = false,
+  onOpenNotes = null,
 }: {
   pos: { x: number; y: number };
   quote: string;
@@ -86,6 +87,10 @@ export default function CodingPopup({
    *  bookmark's "later" is now: row 0 becomes Remove, and any assign resolves
    *  the bookmark into a coded span (server-side kind promotion). */
   bookmarked?: boolean;
+  /** Present when the popup sits on an EXISTING anchor: hands off to that
+   *  anchor's margin thread (the popup closes). This is how a bookmark takes a
+   *  note — "why I flagged this" — without re-growing a composer in here. */
+  onOpenNotes?: (() => void) | null;
 }) {
   const [query, setQuery] = useState('');
   // Row 0 is the pinned Bookmark option; codes occupy 1..N. The cursor STARTS on
@@ -277,6 +282,16 @@ export default function CodingPopup({
             <p className="min-w-0 flex-1 truncate text-xs italic text-foreground/50">
               &ldquo;{quote}&rdquo;
             </p>
+            {onOpenNotes && (
+              <button
+                type="button"
+                onClick={onOpenNotes}
+                title="Open this anchor's margin thread to add a note"
+                className="shrink-0 text-xs text-foreground/50 underline-offset-2 hover:text-foreground hover:underline"
+              >
+                🗨 notes
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}
