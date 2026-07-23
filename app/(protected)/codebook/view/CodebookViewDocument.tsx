@@ -8,6 +8,11 @@ import {
   docNodesInOrder,
   type DocNode,
 } from '@/lib/codebook/document';
+import {
+  computeSheetColumns,
+  SHEET_COL_HEADERS,
+  type SheetColKey,
+} from '@/lib/codebook/sheet';
 import type { Tables } from '@/lib/types/cb-db';
 
 type Citation = Tables<'cb_citations'>;
@@ -15,9 +20,16 @@ type Citation = Tables<'cb_citations'>;
 /**
  * The codebook document renderer: a COVER PAGE (the organizing dimension's tree,
  * for orientation) followed by a SPREADSHEET — one bordered row per code, grouped
- * under full-width value rows. Landscape by construction (`@page` below): seven
- * columns of code anatomy don't fit portrait, and a codebook consulted mid-coding
- * is a lookup table, not prose — row/column scanning beats reading.
+ * under full-width value rows. Landscape by construction (`@page` below): the
+ * column set doesn't fit portrait, and a codebook consulted mid-coding is a
+ * lookup table, not prose — row/column scanning beats reading.
+ *
+ * COLUMNS SIZE THEMSELVES TO THE DATA. A fixed colgroup starves whichever field
+ * this particular codebook actually leans on (one instrument is exemplar-heavy,
+ * another lives in include/exclude rules), so widths are computed per render:
+ * columns empty across every code are DROPPED, and the rest share the width
+ * proportional to sqrt(mean content length) — sqrt so one verbose outlier can't
+ * flatten its neighbors (see `computeSheetColumns` in lib/codebook/sheet).
  *
  * "Export as PDF" is `window.print()` against this same HTML — NOT a server PDF
  * library. The browser already lays out this table (and repeats <thead> on every
@@ -25,6 +37,32 @@ type Citation = Tables<'cb_citations'>;
  * engine to keep in sync, and a worse result. The `print:` utilities strip the
  * chrome so the printed artifact is cover + table alone.
  */
+
+type ColKey = SheetColKey;
+
+/** Per-code cell text, flattened to plain strings for both width estimation and
+ *  emptiness checks. `showLit` folds the literature half into the definition's
+ *  measure only when it will actually render. */
+function cellText(
+  code: CodeWithRefs,
+  showLit: boolean,
+  answersFor: (c: CodeWithRefs) => string[],
+  citesFor: (c: CodeWithRefs) => string[],
+): Record<ColKey, string> {
+  const v = code.current;
+  const def = splitDefinition(v?.definition);
+  return {
+    code: code.mnemonic,
+    definition:
+      (showLit && def.literature !== null ? `${def.literature} ` : '') + def.applied,
+    includeIf: asStrings(v?.include_if).join(' '),
+    excludeIf: asStrings(v?.exclude_if).join(' '),
+    exemplars: asExemplarText(v?.exemplars).join(' '),
+    counter: v?.disconfirming_pattern ?? '',
+    meta: [...answersFor(code), ...citesFor(code)].join(' '),
+  };
+}
+
 export default function CodebookViewDocument({
   codebookName,
   facets,
@@ -38,6 +76,11 @@ export default function CodebookViewDocument({
 }) {
   const enumFacets = useMemo(() => facets.filter((f) => f.type === 'enum'), [facets]);
   const [organizingId, setOrganizingId] = useState<string | undefined>(undefined);
+  // Literature halves of 'Literature == Applied' definitions are provenance —
+  // useful when reviewing the instrument, noise when printing a working lookup
+  // sheet. OFF by default; the toggle is a print decision, so it lives with
+  // Export PDF in the toolbar.
+  const [showLit, setShowLit] = useState(false);
 
   const doc = useMemo(
     () => buildCodebookDocument(facets, codes, organizingId),
@@ -67,15 +110,47 @@ export default function CodebookViewDocument({
 
   const nodes = docNodesInOrder(doc.roots);
 
+  const answersFor = (code: CodeWithRefs) =>
+    enumFacets
+      .map((f) => {
+        const vals = f.values
+          .filter((x) => code.facetValueIds.includes(x.id))
+          .map((x) => valueLabel.get(x.id) ?? x.label);
+        return vals.length ? `${f.label}: ${vals.join(', ')}` : null;
+      })
+      .filter((x): x is string => x !== null);
+  const citesFor = (code: CodeWithRefs) =>
+    code.citationIds.map((cid) => citationLabel.get(cid) ?? cid).filter(Boolean);
+
+  // Distinct codes (cross-listed ones once) drive the width estimate; the same
+  // extractor drives the cells, so measure and render can't drift.
+  const distinct = new Map<string, CodeWithRefs>();
+  for (const n of nodes) for (const c of n.codes) distinct.set(c.id, c);
+  for (const c of doc.unfiled) distinct.set(c.id, c);
+  const measureRows = [...distinct.values()].map((c) =>
+    cellText(c, showLit, answersFor, citesFor),
+  );
+  const cols = computeSheetColumns(measureRows);
+  const colKeys = cols.map((c) => c.key);
+
   return (
-    <main className="mx-auto max-w-[1400px] px-6 py-8 print:max-w-none print:px-0 print:py-0">
-      {/* The printed artifact is landscape — a seven-column table is unreadable in
-          portrait. Scoped to this route by mounting: the rule exists only while
-          this document is on screen, so other pages' print output is untouched. */}
-      <style>{`@page { size: letter landscape; margin: 0.5in; }`}</style>
+    <main className="cb-sheet mx-auto max-w-[1400px] px-6 py-8 print:max-w-none print:px-0 print:py-0">
+      {/* The printed artifact is landscape — the column set is unreadable in
+          portrait. Scoped to this route by mounting: the rules exist only while
+          this document is on screen, so other pages' print output is untouched.
+          The tr rules are the "no code on two pages" guarantee: both the modern
+          and legacy property, on the ROW, because Chrome's print pipeline has
+          historically honored one or the other depending on version. */}
+      <style>{`
+        @page { size: letter landscape; margin: 0.5in; }
+        @media print {
+          .cb-sheet tbody tr { break-inside: avoid; page-break-inside: avoid; }
+          .cb-sheet section { break-inside: avoid; page-break-inside: avoid; }
+        }
+      `}</style>
 
       {/* Toolbar — stripped from the printed page. */}
-      <div className="mb-6 flex items-center gap-3 print:hidden">
+      <div className="mb-6 flex items-center gap-4 print:hidden">
         <label className="flex items-center gap-2 text-xs">
           <span className="text-foreground/60">Organize by</span>
           <select
@@ -89,6 +164,15 @@ export default function CodebookViewDocument({
               </option>
             ))}
           </select>
+        </label>
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-foreground/60">
+          <input
+            type="checkbox"
+            checked={showLit}
+            onChange={(e) => setShowLit(e.target.checked)}
+            className="accent-foreground"
+          />
+          Literature definitions
         </label>
         <button
           type="button"
@@ -134,36 +218,29 @@ export default function CodebookViewDocument({
           groups as full-width rows, <thead> repeats per printed page natively. */}
       <table className="w-full table-fixed border-collapse text-[11px] leading-snug">
         <colgroup>
-          <col className="w-[13%]" />
-          <col className="w-[24%]" />
-          <col className="w-[13%]" />
-          <col className="w-[13%]" />
-          <col className="w-[18%]" />
-          <col className="w-[11%]" />
-          <col className="w-[8%]" />
+          {cols.map((c) => (
+            <col key={c.key} style={{ width: `${c.width}%` }} />
+          ))}
         </colgroup>
         <thead>
           <tr className="border-b-2 border-foreground/40 text-left text-[10px] uppercase tracking-wide text-foreground/60">
-            <Th>Code</Th>
-            <Th>Definition</Th>
-            <Th>Include if</Th>
-            <Th>Exclude if</Th>
-            <Th>Exemplars</Th>
-            <Th>Counter-example</Th>
-            <Th>Answers · Sources</Th>
+            {cols.map((c) => (
+              <Th key={c.key}>{SHEET_COL_HEADERS[c.key]}</Th>
+            ))}
           </tr>
         </thead>
         <tbody>
           {nodes.map((node) => (
             <Fragment key={node.value.id}>
-              <GroupRow node={node} />
+              <GroupRow node={node} span={cols.length} />
               {node.codes.map((c) => (
                 <CodeRow
                   key={`${node.value.id}:${c.id}`}
                   code={c}
-                  valueLabel={valueLabel}
-                  citationLabel={citationLabel}
-                  enumFacets={enumFacets}
+                  colKeys={colKeys}
+                  showLit={showLit}
+                  answersFor={answersFor}
+                  citesFor={citesFor}
                 />
               ))}
             </Fragment>
@@ -171,7 +248,7 @@ export default function CodebookViewDocument({
           {doc.unfiled.length > 0 && (
             <>
               <tr className="break-inside-avoid border border-foreground/15 bg-foreground/[0.05]">
-                <td colSpan={7} className="px-2 py-1 text-xs font-semibold">
+                <td colSpan={cols.length} className="px-2 py-1 text-xs font-semibold">
                   Unfiled
                   <span className="ml-2 font-normal text-foreground/40">
                     no answer on {doc.organizingFacet.label}
@@ -182,9 +259,10 @@ export default function CodebookViewDocument({
                 <CodeRow
                   key={c.id}
                   code={c}
-                  valueLabel={valueLabel}
-                  citationLabel={citationLabel}
-                  enumFacets={enumFacets}
+                  colKeys={colKeys}
+                  showLit={showLit}
+                  answersFor={answersFor}
+                  citesFor={citesFor}
                 />
               ))}
             </>
@@ -224,10 +302,10 @@ function Th({ children }: { children: React.ReactNode }) {
 }
 
 /** Full-width value row — the section header inside the grid, indented by depth. */
-function GroupRow({ node }: { node: DocNode }) {
+function GroupRow({ node, span }: { node: DocNode; span: number }) {
   return (
     <tr className="break-inside-avoid border border-foreground/15 bg-foreground/[0.05]">
-      <td colSpan={7} className="px-2 py-1">
+      <td colSpan={span} className="px-2 py-1">
         <span
           style={{ paddingLeft: node.depth * 16 }}
           className="text-xs font-semibold tracking-tight"
@@ -249,59 +327,56 @@ function GroupRow({ node }: { node: DocNode }) {
 
 function CodeRow({
   code,
-  valueLabel,
-  citationLabel,
-  enumFacets,
+  colKeys,
+  showLit,
+  answersFor,
+  citesFor,
 }: {
   code: CodeWithRefs;
-  valueLabel: Map<string, string>;
-  citationLabel: Map<string, string>;
-  enumFacets: FacetWithValues[];
+  colKeys: ColKey[];
+  showLit: boolean;
+  answersFor: (c: CodeWithRefs) => string[];
+  citesFor: (c: CodeWithRefs) => string[];
 }) {
   const v = code.current;
-  // The codebook document shows BOTH halves of a 'Literature == Applied'
-  // definition, labeled — this is the surface where provenance matters.
   const def = splitDefinition(v?.definition);
   const includeIf = asStrings(v?.include_if);
   const excludeIf = asStrings(v?.exclude_if);
   const exemplars = asExemplarText(v?.exemplars);
-  const answers = enumFacets
-    .map((f) => {
-      const vals = f.values
-        .filter((x) => code.facetValueIds.includes(x.id))
-        .map((x) => valueLabel.get(x.id) ?? x.label);
-      return vals.length ? `${f.label}: ${vals.join(', ')}` : null;
-    })
-    .filter((x): x is string => x !== null);
-  const cites = code.citationIds.map((id) => citationLabel.get(id) ?? id).filter(Boolean);
 
-  return (
-    <tr className="break-inside-avoid border border-foreground/15 align-top">
-      <Td>
-        <span className="break-words font-mono text-xs font-medium">{code.mnemonic}</span>
-        <span className="mt-0.5 block text-[9px] uppercase tracking-wide text-foreground/40">
-          {code.origin.replace('_', ' ')}
-        </span>
-      </Td>
-      <Td>
-        {def.literature !== null && (
-          <p className="mb-1 italic text-foreground/60">
-            <span className="mr-1 not-italic text-[9px] uppercase tracking-wide text-foreground/40">
-              Lit
+  const cell = (key: ColKey): React.ReactNode => {
+    switch (key) {
+      case 'code':
+        return (
+          <>
+            <span className="break-words font-mono text-xs font-medium">
+              {code.mnemonic}
             </span>
-            {def.literature}
-          </p>
-        )}
-        {def.applied !== '' && <p>{def.applied}</p>}
-      </Td>
-      <Td>
-        <CellList items={includeIf} />
-      </Td>
-      <Td>
-        <CellList items={excludeIf} />
-      </Td>
-      <Td>
-        {exemplars.length > 0 && (
+            <span className="mt-0.5 block text-[9px] uppercase tracking-wide text-foreground/40">
+              {code.origin.replace('_', ' ')}
+            </span>
+          </>
+        );
+      case 'definition':
+        return (
+          <>
+            {showLit && def.literature !== null && (
+              <p className="mb-1 italic text-foreground/60">
+                <span className="mr-1 not-italic text-[9px] uppercase tracking-wide text-foreground/40">
+                  Lit
+                </span>
+                {def.literature}
+              </p>
+            )}
+            {def.applied !== '' && <p>{def.applied}</p>}
+          </>
+        );
+      case 'includeIf':
+        return <CellList items={includeIf} />;
+      case 'excludeIf':
+        return <CellList items={excludeIf} />;
+      case 'exemplars':
+        return exemplars.length > 0 ? (
           <ul className="space-y-1">
             {exemplars.map((ex, i) => (
               <li key={i} className="italic text-foreground/75">
@@ -309,15 +384,31 @@ function CodeRow({
               </li>
             ))}
           </ul>
-        )}
-      </Td>
-      <Td>{v?.disconfirming_pattern ?? null}</Td>
-      <Td>
-        {answers.length > 0 && <p className="text-foreground/70">{answers.join(' · ')}</p>}
-        {cites.length > 0 && (
-          <p className="mt-0.5 text-foreground/50">{cites.join(', ')}</p>
-        )}
-      </Td>
+        ) : null;
+      case 'counter':
+        return v?.disconfirming_pattern ?? null;
+      case 'meta': {
+        const answers = answersFor(code);
+        const cites = citesFor(code);
+        return (
+          <>
+            {answers.length > 0 && (
+              <p className="text-foreground/70">{answers.join(' · ')}</p>
+            )}
+            {cites.length > 0 && (
+              <p className="mt-0.5 text-foreground/50">{cites.join(', ')}</p>
+            )}
+          </>
+        );
+      }
+    }
+  };
+
+  return (
+    <tr className="break-inside-avoid border border-foreground/15 align-top">
+      {colKeys.map((k) => (
+        <Td key={k}>{cell(k)}</Td>
+      ))}
     </tr>
   );
 }
