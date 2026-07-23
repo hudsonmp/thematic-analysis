@@ -74,3 +74,38 @@ input, textarea, select, button {
 [data-scrolling] .chip-meta {
   display: none !important;
 }
+
+/* The NOW-PLAYING cue. Two signals nothing else in the transcript uses:
+   (1) a solid sky underline (flags/codes/comments are all background washes —
+       none of them underline), and
+   (2) an entrance pulse: the wash starts markedly darker and decays to the
+       resting tint. The class MOVES to the next cue as playback advances, so
+       the animation re-runs on each new element with no JS timers. The decay is
+       fast (1.4s) and single-shot on purpose — cues advance every few seconds,
+       and a repeating blink at that cadence would strobe. */
+@keyframes cue-now-pulse {
+  0% { background-color: rgb(56 189 248 / 0.6); }
+  100% { background-color: rgb(186 230 253 / 0.7); }
+}
+@keyframes cue-now-pulse-dark {
+  0% { background-color: rgb(56 189 248 / 0.5); }
+  100% { background-color: rgb(56 189 248 / 0.25); }
+}
+.cue-now {
+  border-radius: 2px;
+  background-color: rgb(186 230 253 / 0.7);
+  box-shadow: inset 0 -2px 0 0 rgb(14 165 233 / 0.85);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  animation: cue-now-pulse 1.4s ease-out 1;
+}
+@media (prefers-color-scheme: dark) {
+  .cue-now {
+    background-color: rgb(56 189 248 / 0.25);
+    box-shadow: inset 0 -2px 0 0 rgb(56 189 248 / 0.75);
+    animation-name: cue-now-pulse-dark;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cue-now { animation: none; }
+}
