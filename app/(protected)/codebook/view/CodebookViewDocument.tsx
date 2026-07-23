@@ -1,5 +1,6 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import { Fragment, useMemo, useState } from 'react';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { splitDefinition } from '@/lib/codebook/definition';
@@ -65,15 +66,23 @@ function cellText(
 
 export default function CodebookViewDocument({
   codebookName,
+  codebookId,
+  codebooks,
   facets,
   codes,
   citations,
 }: {
   codebookName: string;
+  codebookId: string;
+  /** All of the study's codebooks — the view-only picker. Selecting one swaps
+   *  the URL's ?codebook= (this page reloads with that instrument), NOT the
+   *  active-codebook cookie: printing B must not redirect future coding to B. */
+  codebooks: { id: string; name: string }[];
   facets: FacetWithValues[];
   codes: CodeWithRefs[];
   citations: Citation[];
 }) {
+  const router = useRouter();
   const enumFacets = useMemo(() => facets.filter((f) => f.type === 'enum'), [facets]);
   const [organizingId, setOrganizingId] = useState<string | undefined>(undefined);
   // Literature halves of 'Literature == Applied' definitions are provenance —
@@ -151,6 +160,22 @@ export default function CodebookViewDocument({
 
       {/* Toolbar — stripped from the printed page. */}
       <div className="mb-6 flex items-center gap-4 print:hidden">
+        {codebooks.length > 1 && (
+          <label className="flex items-center gap-2 text-xs">
+            <span className="text-foreground/60">Codebook</span>
+            <select
+              value={codebookId}
+              onChange={(e) => router.replace(`/codebook/view?codebook=${e.target.value}`)}
+              className="border border-foreground/20 bg-background px-2 py-1 text-xs focus:border-foreground focus:outline-none"
+            >
+              {codebooks.map((cb) => (
+                <option key={cb.id} value={cb.id}>
+                  {cb.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="flex items-center gap-2 text-xs">
           <span className="text-foreground/60">Organize by</span>
           <select
