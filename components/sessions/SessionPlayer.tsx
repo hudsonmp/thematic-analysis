@@ -892,7 +892,7 @@ export default function SessionPlayer({
       if (target.isContentEditable) return;
       if (
         target.closest(
-          'mark, button, a, [role="button"], [data-rail-card], [data-comment-card], [data-code-block], [data-code-brace]',
+          'mark, button, a, [role="button"], [data-rail-card], [data-comment-card], [data-code-block]',
         )
       ) {
         return;
@@ -1419,6 +1419,26 @@ export default function SessionPlayer({
         setReanchoringId(null); // an armed re-anchor dies with Esc, like everything
         clearSelection(); // also closes the coding popup (popupPos lives in it)
         return;
+      }
+      // SPACE = play/pause, for every role, ALWAYS — never page scroll. Only
+      // real text surfaces keep the keystroke (inputs, textareas, selects, the
+      // contentEditable notes); a focused button loses its space-activation on
+      // purpose (Enter still works), because "space scrolled the transcript" /
+      // "space clicked +5s" both cost more than they save. This also wins over
+      // the comment-composer seeding below — no note starts with a space.
+      if (e.code === 'Space' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const t = e.target as HTMLElement | null;
+        const inField =
+          t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
+        if (!inField) {
+          e.preventDefault();
+          const v = videoRef.current;
+          if (v) {
+            if (v.paused) v.play().catch(() => {});
+            else v.pause();
+          }
+          return;
+        }
       }
       if (!codingEnabled && !canComment) return;
 
@@ -1964,7 +1984,6 @@ export default function SessionPlayer({
                 commentBusy={commentBusy}
                 commentRowBusyId={commentRowBusyId}
                 composerTextareaRef={composerTextareaRef}
-                onClose={closeCard}
                 onCommentOnSelection={handleCommentOnSelection}
                 onAddNote={handleAddNote}
                 onEditComment={handleEditComment}
@@ -1997,7 +2016,6 @@ export default function SessionPlayer({
               commentBusy={commentBusy}
               commentRowBusyId={commentRowBusyId}
               composerTextareaRef={composerTextareaRef}
-              onClose={closeCard}
               onCommentOnSelection={handleCommentOnSelection}
               onAddNote={handleAddNote}
               onEditComment={handleEditComment}
@@ -2009,36 +2027,20 @@ export default function SessionPlayer({
         );
       }
 
-      // CODE blocks: a brace spanning the coded text + a chip block beside it. Both
-      // render position-less (opacity-0) and are laid out IMPERATIVELY by the
-      // measurement effect below — writing styles through the DOM, never setState,
-      // so the repo's no-setState-in-effect rule holds and there is no re-render
-      // loop. data-* attributes carry the anchor indices the effect needs.
+      // CODE blocks: a chip row per coded annotation. (No brace glyph — the span's
+      // inline emerald highlight shows extent on the text itself; a bracket beside
+      // it read as unaligned decoration.) Blocks render position-less (opacity-0)
+      // and are laid out IMPERATIVELY by the measurement effect below — writing
+      // styles through the DOM, never setState, so the repo's
+      // no-setState-in-effect rule holds. data-* carries the anchor indices.
       codeBlocks.forEach((b) => {
-        nodes.push(
-          <div
-            key={`brace:${b.ann.id}`}
-            data-code-brace
-            data-ann-id={b.ann.id}
-            data-start-idx={b.startIdx}
-            data-end-idx={b.endIdx}
-            aria-hidden
-            // Spine on the RIGHT (away from the text), serifs curling LEFT toward
-            // the span it groups — a closing `⟩` hugging the text's edge. (The first
-            // cut had the spine text-side, which read as a rule between text and
-            // gutter rather than a grouping bracket.)
-            className={`pointer-events-none absolute w-2 rounded-r border-r-2 border-t-2 border-emerald-600/70 opacity-0 ${
-              b.continues ? '' : 'border-b-2'
-            }`}
-            style={{ left: -14 }}
-          />,
-        );
         nodes.push(
           <div
             key={`chips:${b.ann.id}`}
             data-code-block
             data-ann-id={b.ann.id}
             data-start-idx={b.startIdx}
+            data-end-idx={b.endIdx}
             // z via class (not inline style) so hover can OUTRANK the comment
             // cards (z 10+): a chip's metadata card must never peek out from
             // under a neighboring marginalia card. The OUTER div is a fixed-width
@@ -2089,7 +2091,7 @@ export default function SessionPlayer({
                   </span>
                 ))}
               </button>
-              <span className="ml-auto flex shrink-0 items-center gap-0.5">
+              <span className="flex shrink-0 items-center gap-0.5">
                 <button
                   type="button"
                   onClick={(e) => {
@@ -2194,27 +2196,26 @@ export default function SessionPlayer({
     const layout = () => {
       const cells = root.querySelectorAll<HTMLElement>('[data-comment-card]');
       cells.forEach((cell) => {
-        const braces = cell.querySelectorAll<HTMLElement>('[data-code-brace]');
         const blocks = cell.querySelectorAll<HTMLElement>('[data-code-block]');
         const railCards = cell.querySelectorAll<HTMLElement>('[data-rail-card]');
-        if (braces.length === 0 && blocks.length === 0 && railCards.length === 0) return;
+        if (blocks.length === 0 && railCards.length === 0) return;
         if (cell.offsetParent === null) return; // hidden (mobile) — nothing to place
         const cellRect = cell.getBoundingClientRect();
 
-        // Braces: pinned to the coded text's true extent — they NEVER pack.
+        // Each chip block anchors to its coded text's true extent (computed from
+        // its OWN start/end cue indices — the extent used to ride on the brace
+        // glyph, which is gone: the inline emerald highlight shows extent now).
         const extents = new Map<string, { top: number; bottom: number }>();
-        braces.forEach((el) => {
+        blocks.forEach((el) => {
           const startIdx = Number(el.dataset.startIdx);
           const endIdx = Number(el.dataset.endIdx);
           const startEl = rowRefs.current[startIdx];
           const endEl = rowRefs.current[endIdx] ?? startEl;
           if (!startEl || !endEl) return;
-          const top = startEl.getBoundingClientRect().top - cellRect.top;
-          const bottom = endEl.getBoundingClientRect().bottom - cellRect.top;
-          extents.set(el.dataset.annId ?? '', { top, bottom });
-          el.style.top = `${top}px`;
-          el.style.height = `${Math.max(bottom - top, 8)}px`;
-          el.style.opacity = '1';
+          extents.set(el.dataset.annId ?? '', {
+            top: startEl.getBoundingClientRect().top - cellRect.top,
+            bottom: endEl.getBoundingClientRect().bottom - cellRect.top,
+          });
         });
 
         // ONE pack for everything that occupies the gutter: comment marginalia
@@ -2460,9 +2461,13 @@ export default function SessionPlayer({
         </p>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        {/* LEFT (1/3, shared across modes): video + current-event + flags. */}
-        <div className="space-y-4 lg:col-span-1">
+      {/* Video takes ALL leftover width; the transcript column is capped at its
+          real content width (42rem text + 1rem gap + 16rem gutter). The old
+          1/3 : 2/3 split left dead space between the gutter and the video on
+          wide screens — space the video can actually use. */}
+      <div className="grid gap-6 lg:grid-cols-[minmax(20rem,1fr)_minmax(0,59rem)]">
+        {/* LEFT (shared across modes): video + current-event + flags. */}
+        <div className="space-y-4">
           <video
             ref={videoRef}
             controls
@@ -2696,8 +2701,8 @@ export default function SessionPlayer({
         </div>
 
 
-        {/* RIGHT: transcript (2/3) with the comment margin + code-brace gutter. */}
-        <div className="lg:col-span-2">
+        {/* RIGHT: transcript with the comment margin + code-chip gutter. */}
+        <div>
           {/* Surface tabs (Transcript · Specification · LLM Help) + the
               Transcript surface's compact Original/Cleaned variant toggle
               (visible only while Transcript is active — it sits where the old
@@ -3203,7 +3208,6 @@ function CommentCard({
   commentBusy,
   commentRowBusyId,
   composerTextareaRef,
-  onClose,
   onCommentOnSelection,
   onAddNote,
   onEditComment,
@@ -3218,7 +3222,6 @@ function CommentCard({
   commentBusy: boolean;
   commentRowBusyId: string | null;
   composerTextareaRef: React.RefObject<HTMLTextAreaElement | null>;
-  onClose: () => void;
   onCommentOnSelection: () => void;
   onAddNote: (text: string) => void;
   onEditComment: (id: string, next: string, prev: string) => void;
@@ -3269,17 +3272,11 @@ function CommentCard({
   }
   if (!openCommentAnn) return null;
   return (
-    <div className="relative border-l-2 border-amber-400 pl-2 pr-4">
-      {/* The ONE piece of chrome: a tiny ✕ closing the open group. */}
-      <button
-        type="button"
-        onClick={onClose}
-        aria-label="Close"
-        className="absolute right-0 top-0 text-xs leading-none text-foreground/30 hover:text-foreground"
-      >
-        {'✕'}
-      </button>
-
+    <div className="relative border-l-2 border-amber-400 pl-2 pr-2">
+      {/* No close chrome: Esc closes, clicking any other span switches. The card's
+          old permanent ✕ sat beside the first note's hover-delete ✕ — two adjacent
+          ×'s with different meanings read as a bug (and were reported as one). The
+          only ✕ that remains is the per-note delete, and it only exists on hover. */}
       {commentError && (
         <p className="mb-1 text-xs text-red-700 dark:text-red-300">{commentError}</p>
       )}
@@ -3587,12 +3584,11 @@ function renderHighlightedText(
     const hasComment = realIds.some((hid) => commentedAnnIds.has(hid));
     const isOpen = openCommentAnnId !== null && realIds.includes(openCommentAnnId);
     const isYellow = hasQuote || hasComment;
-    // Pieces covered ONLY by kind:'code' annotations are the gutter's territory at
-    // lg+ (brace + chips), so their inline chrome is suppressed there — painting
-    // both would say "highlight" (the comment grammar) about a coded span. Below lg
-    // the gutter cell is hidden and this inline mark is the ONLY representation, so
-    // it paints fully. The click works at every size (it opens the thread).
-    const codeOnly = realIds.every((hid) => (annById.get(hid)?.kind ?? 'code') === 'code');
+    // Coded spans keep their inline emerald at EVERY size: the highlight is what
+    // says which words the codes cover (the gutter chips only say which codes).
+    // The old lg+ suppression traded that for a brace glyph, which read as
+    // decoration, not extent.
+
     const title = hasComment
       ? 'Has comments — click to open the thread'
       : hasBookmark
@@ -3604,14 +3600,14 @@ function renderHighlightedText(
     // A bookmarked span that later earns comments reads as a comment span — the
     // bookmark was a waypoint, the notes are the destination.
     const bg = isYellow
-      ? `bg-yellow-300/55 text-foreground dark:bg-yellow-400/30${codeOnly ? ' lg:bg-transparent' : ''}`
+      ? 'bg-yellow-300/55 text-foreground dark:bg-yellow-400/30'
       : hasBookmark
-        ? `bg-violet-300/50 text-foreground dark:bg-violet-400/30${codeOnly ? ' lg:bg-transparent' : ''}`
-        : `bg-emerald-300/50 text-foreground dark:bg-emerald-400/30${codeOnly ? ' lg:bg-transparent' : ''}`;
+        ? 'bg-violet-300/50 text-foreground dark:bg-violet-400/30'
+        : 'bg-emerald-300/50 text-foreground dark:bg-emerald-400/30';
     const underline = hasComment
-      ? `underline decoration-sky-500 decoration-dotted decoration-2 underline-offset-2${codeOnly ? ' lg:no-underline' : ''}`
+      ? 'underline decoration-sky-500 decoration-dotted decoration-2 underline-offset-2'
       : '';
-    const ring = isOpen ? `ring-2 ring-sky-500${codeOnly ? ' lg:ring-0' : ''}` : '';
+    const ring = isOpen ? 'ring-2 ring-sky-500' : '';
     return (
       <mark
         key={idx}
