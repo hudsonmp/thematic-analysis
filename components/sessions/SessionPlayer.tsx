@@ -917,6 +917,27 @@ export default function SessionPlayer({
     [segments, seekTo],
   );
 
+  // While the transcript scrolls, chip hover cards are suppressed (CSS rule on
+  // [data-scrolling] in globals.css): scrolling drags fresh chips under a
+  // stationary cursor, so cards would flash open uninvited. Attribute written
+  // straight to the DOM — a per-scroll-frame setState would re-render the whole
+  // player for a purely cosmetic gate.
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    let t: number | null = null;
+    const onScroll = () => {
+      el.setAttribute('data-scrolling', '');
+      if (t !== null) window.clearTimeout(t);
+      t = window.setTimeout(() => el.removeAttribute('data-scrolling'), 180);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (t !== null) window.clearTimeout(t);
+    };
+  }, []);
+
   const clearSelection = useCallback(() => {
     setTextSel(null);
     setComposerOpen(false);
@@ -1926,14 +1947,17 @@ export default function SessionPlayer({
             data-start-idx={b.startIdx}
             // z via class (not inline style) so hover can OUTRANK the comment
             // cards (z 10+): a chip's metadata card must never peek out from
-            // under a neighboring marginalia card.
-            className="absolute left-0 z-[5] w-56 opacity-0 hover:z-[60]"
+            // under a neighboring marginalia card. The OUTER div is a fixed-width
+            // positioning slot — pointer-events-none so its empty right margin is
+            // hover-inert; the inner box (w-fit) restores pointer-events, and
+            // :hover still matches this ancestor for the z raise.
+            className="pointer-events-none absolute left-0 z-[5] w-56 opacity-0 hover:z-[60]"
           >
             {/* The block manages CODES — it is not a comment affordance. Click →
                 reopen the coding popup on this bracket (add more codes); × on a chip
                 removes THAT code (the bracket survives, even empty); ✎ re-anchors
                 (next selection replaces the span); 🗑 deletes the bracket itself. */}
-            <div className="flex flex-wrap items-center gap-1 border border-foreground/10 bg-background/95 p-1">
+            <div className="pointer-events-auto flex w-fit max-w-full flex-wrap items-center gap-1 border border-foreground/10 bg-background/95 p-1">
               <button
                 type="button"
                 onClick={(e) => openPopupForAnnotation(b.ann, e)}
@@ -3441,7 +3465,7 @@ function ChipMetaCard({ meta }: { meta: PopupCode | null }) {
   const shown = meta.exemplars.slice(0, 3);
   const more = meta.exemplars.length - shown.length;
   return (
-    <span className="pointer-events-none absolute right-0 top-full z-[70] mt-1 hidden w-64 flex-col gap-1 border border-foreground/25 bg-background p-2 text-left font-sans normal-case shadow-xl group-hover/chip:flex">
+    <span className="chip-meta pointer-events-none absolute right-0 top-full z-[70] mt-1 hidden w-64 flex-col gap-1 border border-foreground/25 bg-background p-2 text-left font-sans normal-case shadow-xl group-hover/chip:flex">
       <span className="text-[13px] leading-snug text-foreground/85">
         {applied !== '' ? applied : <em>No definition yet.</em>}
       </span>
