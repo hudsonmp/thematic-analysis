@@ -498,10 +498,26 @@ export default function SessionPlayer({
     }
   }, [segments, id]);
 
+  // Follow-along scrolling PAGES like a teleprompter instead of creeping.
+  // scrollIntoView({block:'nearest'}) moved one line per cue advance — a
+  // constant micro-scroll that makes the text you're reading drift under your
+  // eyes. Now: while the active cue is comfortably in view, the transcript
+  // does not move AT ALL; only when the cue reaches the last line (or leaves
+  // the viewport entirely, e.g. a seek) does it jump once, putting that cue at
+  // the top so a full fresh page is readable before the next jump.
   useEffect(() => {
     if (activeIdx < 0) return;
     if (!syncedRef.current) return;
-    rowRefs.current[activeIdx]?.scrollIntoView({ block: 'nearest' });
+    const el = rowRefs.current[activeIdx];
+    const container = transcriptRef.current;
+    if (!el || !container) return;
+    const c = container.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    const lineH = parseFloat(getComputedStyle(el).lineHeight) || 24;
+    const inViewTop = r.top >= c.top;
+    const clearOfBottom = r.bottom <= c.bottom - lineH;
+    if (inViewTop && clearOfBottom) return; // mid-page: hold still
+    container.scrollTop += r.top - c.top - 8;
   }, [activeIdx]);
 
   const seekTo = useCallback((targetMs: number) => {
