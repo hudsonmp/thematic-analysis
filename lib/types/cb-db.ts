@@ -531,6 +531,41 @@ export type Database = {
           },
         ]
       }
+      cb_codebook_memos: {
+        Row: {
+          author_id: string
+          body: string
+          codebook_id: string
+          created_at: string
+          id: string
+          resolved_at: string | null
+        }
+        Insert: {
+          author_id: string
+          body: string
+          codebook_id: string
+          created_at?: string
+          id?: string
+          resolved_at?: string | null
+        }
+        Update: {
+          author_id?: string
+          body?: string
+          codebook_id?: string
+          created_at?: string
+          id?: string
+          resolved_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_codebook_memos_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_coder_comments: {
         Row: {
           author: string
