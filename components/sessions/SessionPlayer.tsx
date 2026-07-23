@@ -32,6 +32,7 @@ import type { SpecTimelineResult } from '@/app/actions/spec';
 import { specStateAt } from '@/lib/spec/reconstruct';
 import { retroQuestionsAt } from '@/lib/live/retro';
 import CodingPopup, { type PopupCode } from './CodingPopup';
+import { splitDefinition } from '@/lib/codebook/definition';
 import ChatReplayPane from './ChatReplayPane';
 import SpecReplay from './SpecReplay';
 import {
@@ -1805,6 +1806,11 @@ export default function SessionPlayer({
   // measurement effect below aligns each beside its anchored SPAN (not the turn
   // top) and packs it against the gutter's other tenants. The OPEN group (composer
   // or open thread) keeps the top z-index so it sits above collapsed neighbors.
+  // code id → full PopupCode (definition/exemplars/counter-example). Shared by the
+  // popup's assigned chips AND the gutter chips' hover cards — declared above
+  // renderGutter because that callback's deps reference it.
+  const popupCodeById = useMemo(() => new Map(codes.map((c) => [c.id, c])), [codes]);
+
   const renderGutter = useCallback(
     (turnIdx: number): React.ReactNode => {
       if (!railEnabled) return null;
@@ -1918,8 +1924,10 @@ export default function SessionPlayer({
             data-code-block
             data-ann-id={b.ann.id}
             data-start-idx={b.startIdx}
-            className="absolute left-0 w-56 opacity-0"
-            style={{ zIndex: 5 }}
+            // z via class (not inline style) so hover can OUTRANK the comment
+            // cards (z 10+): a chip's metadata card must never peek out from
+            // under a neighboring marginalia card.
+            className="absolute left-0 z-[5] w-56 opacity-0 hover:z-[60]"
           >
             {/* The block manages CODES — it is not a comment affordance. Click →
                 reopen the coding popup on this bracket (add more codes); × on a chip
@@ -1938,9 +1946,10 @@ export default function SessionPlayer({
                 {b.ann.codes.map((c) => (
                   <span
                     key={c.id}
-                    className="inline-flex items-center gap-0.5 border border-emerald-600/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px]"
+                    className="group/chip relative inline-flex items-center gap-0.5 border border-emerald-600/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px]"
                   >
                     {c.mnemonic}
+                    <ChipMetaCard meta={popupCodeById.get(c.id) ?? null} />
                     <span
                       role="button"
                       tabIndex={0}
@@ -2002,6 +2011,7 @@ export default function SessionPlayer({
       codeBlocksByTurn,
       openPopupForAnnotation,
       handleRemoveCodeFromBracket,
+      popupCodeById,
       composerOpenForRail,
       composerAnchorTurnIdx,
       annById,
@@ -2032,10 +2042,6 @@ export default function SessionPlayer({
     handleAssignCodeRef.current = handleAssignCode;
   }, [handleAssignCode]);
 
-  // The popup's chips: the codes already on the selection's annotation, resolved to
-  // full PopupCode shapes (metadata expansion needs origin/definition). A stale id
-  // (annotation deleted server-side by last-code removal) resolves to null → empty.
-  const popupCodeById = useMemo(() => new Map(codes.map((c) => [c.id, c])), [codes]);
   const assignedAnn = assignedAnnId
     ? myAnnotations.find((a) => a.id === assignedAnnId) ?? null
     : null;
@@ -3417,6 +3423,57 @@ function renderHighlightedText(
  * unchanged (it can't be alpha-composited here, but flag swatches are hex in
  * practice). Used only for the data-driven FLAG highlight color.
  */
+/**
+ * Hover metadata for a gutter code chip — the SAME anatomy the picker's expanded
+ * rows show (applied definition, exemplars, counter-example, origin), because
+ * judging whether an assigned code still fits re-reads the same evidence as
+ * assigning one. Pure CSS reveal (named group-hover on the chip): the gutter is
+ * imperative-layout territory, so no state and nothing for the measurement
+ * effect to fight. Anchored right-0 so the card grows INTO the page, not off the
+ * viewport edge. Exemplars cap at 3 — a hover card can't scroll, so the tail
+ * compresses to a count. Spans throughout (it lives inside the block's button,
+ * whose content model is phrasing-only); pointer-events-none so the card never
+ * steals the clicks it is documenting.
+ */
+function ChipMetaCard({ meta }: { meta: PopupCode | null }) {
+  if (!meta) return null;
+  const applied = splitDefinition(meta.definition).applied;
+  const shown = meta.exemplars.slice(0, 3);
+  const more = meta.exemplars.length - shown.length;
+  return (
+    <span className="pointer-events-none absolute right-0 top-full z-[70] mt-1 hidden w-64 flex-col gap-1 border border-foreground/25 bg-background p-2 text-left font-sans normal-case shadow-xl group-hover/chip:flex">
+      <span className="text-[13px] leading-snug text-foreground/85">
+        {applied !== '' ? applied : <em>No definition yet.</em>}
+      </span>
+      {shown.length > 0 && (
+        <span className="flex flex-col gap-0.5">
+          {shown.map((ex, i) => (
+            <span key={i} className="text-xs italic leading-snug text-foreground/70">
+              &ldquo;{ex}&rdquo;
+            </span>
+          ))}
+          {more > 0 && (
+            <span className="text-[10px] text-foreground/40">
+              +{more} more exemplar{more === 1 ? '' : 's'}
+            </span>
+          )}
+        </span>
+      )}
+      {meta.counterExample && (
+        <span className="text-xs leading-snug text-foreground/70">
+          <span className="mr-1 text-[10px] uppercase tracking-wide text-red-700/60 dark:text-red-400/60">
+            not:
+          </span>
+          {meta.counterExample}
+        </span>
+      )}
+      <span className="text-[10px] uppercase tracking-wide text-foreground/35">
+        {meta.origin.replace('_', ' ')}
+      </span>
+    </span>
+  );
+}
+
 function hexWithAlpha(color: string, alpha: number): string {
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
   if (!m) return color;
