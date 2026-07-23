@@ -1053,9 +1053,14 @@ export default function SessionPlayer({
   // Assign a code to the CURRENT SELECTION (the popup's one job). First assign
   // creates the annotation (kind:'code', multi-cue anchor) and remembers its id;
   // every further assign ADDS to that same annotation — multiple codes, one anchor,
-  // which is what lets the gutter render them as one brace-grouped block. The
-  // selection is deliberately NOT cleared on assign: the popup stays open so more
-  // codes can join, and closes only on Done/Esc/outside click.
+  // which is what lets the gutter render them as one grouped block.
+  //
+  // A successful assign CLOSES the popup — one selection, one code is the
+  // dominant gesture, and leaving the window up made every assign cost an extra
+  // dismissal. Two exceptions keep it open: (a) the popup sits on a BOOKMARK
+  // (resolving it usually continues into more codes / a note / Remove), and
+  // (b) the assign failed (the error must stay visible). Multi-code on a fresh
+  // span: assign, then click the span's gutter block to reopen with the chips.
   const handleAssignCode = useCallback(
     async (codeId: string) => {
       if (!versionId || !codeId || !pending) return;
@@ -1075,6 +1080,8 @@ export default function SessionPlayer({
           )
             ? assignedAnnId
             : null;
+        const wasBookmark =
+          live !== null && myAnnotations.some((a) => a.id === live && a.kind === 'bookmark');
         let added = false;
         if (live !== null) {
           // The id can still be stale (deleted server-side after our snapshot): the
@@ -1102,13 +1109,14 @@ export default function SessionPlayer({
           setAssignedAnnId(ann.id);
         }
         await afterAnnotationMutation();
+        if (!wasBookmark) clearSelection();
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to assign the code.');
       } finally {
         setApplying(false);
       }
     },
-    [versionId, pending, id, assignedAnnId, myAnnotations, afterAnnotationMutation],
+    [versionId, pending, id, assignedAnnId, myAnnotations, afterAnnotationMutation, clearSelection],
   );
 
   // Remove one code from a BRACKET (gutter ×). The bracket survives — even empty —

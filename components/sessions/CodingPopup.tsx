@@ -385,15 +385,16 @@ export default function CodingPopup({
         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto py-1">
           {/* Pinned row 0: BOOKMARK — "come back to this later". One-shot: click
               (or ↑ to it + Enter) drops a bookmark anchor on the selection and
-              closes the popup. Deliberately NOT the default cursor position. */}
-          <div data-row>
+              closes the popup. Deliberately NOT the default cursor position.
+              ✎ memo rides at the row's right edge: bookmark and memo are the two
+              DEFER gestures (span-level / codebook-level), so they live together
+              at the top rather than memo hiding in the footer. */}
+          <div data-row className={`flex items-center ${safeCursor === 0 ? 'bg-foreground/[0.06]' : ''}`}>
             <button
               type="button"
               disabled={busy}
               onClick={onBookmark}
-              className={`flex w-full items-center gap-2 px-3 py-1 text-left disabled:opacity-40 ${
-                safeCursor === 0 ? 'bg-foreground/[0.06]' : ''
-              }`}
+              className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1 text-left disabled:opacity-40"
               title={
                 bookmarked
                   ? 'Remove this bookmark (assigning a code below also resolves it)'
@@ -419,7 +420,57 @@ export default function CodingPopup({
                 </>
               )}
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSavedFlash(null);
+                setComposerKind((k) => (k === 'memo' ? null : 'memo'));
+              }}
+              title="Note a code you know is missing — codebook-level, not tied to this span"
+              className="mr-2 shrink-0 border border-dashed border-amber-600/40 px-2 py-0.5 text-xs text-amber-800/80 transition hover:border-amber-600 hover:text-amber-700 dark:text-amber-400/80"
+            >
+              {savedFlash === 'memo' ? 'memo saved ✓' : '✎ memo'}
+            </button>
           </div>
+          {composerKind === 'memo' && (
+            <div className="space-y-1.5 border-b border-foreground/10 px-3 py-2">
+              <textarea
+                autoFocus
+                rows={2}
+                ref={memoRef}
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    void saveComposer();
+                  }
+                  if (e.key === 'Escape') setComposerKind(null);
+                }}
+                placeholder="Missing-code lead — e.g. epistemic vigilance (Sperber)…"
+                className="w-full border border-foreground/20 bg-background px-2 py-1 text-xs focus:border-foreground focus:outline-none"
+              />
+              <div className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate text-[11px] text-foreground/40">
+                  Codebook-level — Memos box here + canvas panel.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setComposerKind(null)}
+                  className="shrink-0 px-1 text-xs text-foreground/50 hover:text-foreground"
+                >
+                  cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={savingMemo}
+                  onClick={() => void saveComposer()}
+                  className="shrink-0 border border-foreground bg-foreground px-2 py-1 text-xs text-background transition hover:opacity-90 disabled:opacity-40"
+                >
+                  {savingMemo ? 'Saving…' : 'Save memo'}
+                </button>
+              </div>
+              {memoError && <p className="text-xs text-red-600">{memoError}</p>}
+            </div>
+          )}
           {ranked.length === 0 && (
             <p className="px-3 py-2 text-xs italic text-foreground/40">
               No code matches — create one below.
@@ -501,7 +552,7 @@ export default function CodingPopup({
         </div>
 
         <div className="border-t border-foreground/15 px-3 py-2">
-          {!showNew && composerKind === null ? (
+          {!showNew && composerKind !== 'note' ? (
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
@@ -510,10 +561,9 @@ export default function CodingPopup({
               >
                 + New code (lands in the triage queue)
               </button>
-              {/* A NOTE lives on this span (margin comment); a MEMO lives with
-                  the codebook (missing-code lead). "Add a memo to a bookmark"
-                  means the former — so on existing anchors the note button
-                  comes first, gold like the marginalia it writes to. */}
+              {/* A NOTE lives on this span (margin comment) — gold like the
+                  marginalia it writes to. (✎ memo, the codebook-level defer,
+                  lives up beside Bookmark — the other defer gesture.) */}
               {onAddSpanNote && (
                 <button
                   type="button"
@@ -527,19 +577,8 @@ export default function CodingPopup({
                   {savedFlash === 'note' ? 'note saved ✓' : '✎ note'}
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => {
-                  setSavedFlash(null);
-                  setComposerKind('memo');
-                }}
-                title="Note a code you know is missing — codebook-level, not tied to this span"
-                className="shrink-0 border border-dashed border-amber-600/40 px-2 py-1 text-xs text-amber-800/80 transition hover:border-amber-600 hover:text-amber-700 dark:text-amber-400/80"
-              >
-                {savedFlash === 'memo' ? 'memo saved ✓' : '✎ memo'}
-              </button>
             </div>
-          ) : composerKind !== null ? (
+          ) : composerKind === 'note' ? (
             <div className="space-y-1.5">
               <textarea
                 autoFocus
@@ -552,18 +591,12 @@ export default function CodingPopup({
                   }
                   if (e.key === 'Escape') setComposerKind(null);
                 }}
-                placeholder={
-                  composerKind === 'note'
-                    ? 'Note on this span — appears in the margin beside it…'
-                    : 'Missing-code lead — e.g. epistemic vigilance (Sperber)…'
-                }
+                placeholder="Note on this span — appears in the margin beside it…"
                 className="w-full border border-foreground/20 bg-background px-2 py-1 text-xs focus:border-foreground focus:outline-none"
               />
               <div className="flex items-center gap-2">
                 <span className="min-w-0 flex-1 truncate text-[11px] text-foreground/40">
-                  {composerKind === 'note'
-                    ? 'Saves to this span (margin comment).'
-                    : 'Codebook-level — Memos box here + canvas panel.'}
+                  Saves to this span (margin comment).
                 </span>
                 <button
                   type="button"
@@ -578,7 +611,7 @@ export default function CodingPopup({
                   onClick={() => void saveComposer()}
                   className="shrink-0 border border-foreground bg-foreground px-2 py-1 text-xs text-background transition hover:opacity-90 disabled:opacity-40"
                 >
-                  {savingMemo ? 'Saving…' : composerKind === 'note' ? 'Save note' : 'Save memo'}
+                  {savingMemo ? 'Saving…' : 'Save note'}
                 </button>
               </div>
               {memoError && <p className="text-xs text-red-600">{memoError}</p>}
