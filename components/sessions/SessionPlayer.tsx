@@ -3324,6 +3324,20 @@ export default function SessionPlayer({
                 }
               : null
           }
+          onAddSpanNote={
+            assignedAnn
+              ? async (body: string) => {
+                  // ✎ note in the popup = a margin comment on THIS anchor,
+                  // persisted + pulled into state so it renders beside the span
+                  // immediately (the popup stays open; the flash acknowledges).
+                  const annId = assignedAnn.id;
+                  await addAnnotationComment(annId, body);
+                  const grouped = await listAnnotationComments([annId]);
+                  setComments((prev) => ({ ...prev, [annId]: grouped[annId] ?? [] }));
+                  await afterAnnotationMutation();
+                }
+              : null
+          }
         />
       )}
     </main>

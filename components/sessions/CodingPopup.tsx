@@ -65,6 +65,7 @@ export default function CodingPopup({
   onBookmark,
   bookmarked = false,
   onOpenNotes = null,
+  onAddSpanNote = null,
 }: {
   pos: { x: number; y: number };
   quote: string;
@@ -92,6 +93,12 @@ export default function CodingPopup({
    *  anchor's margin thread (the popup closes). This is how a bookmark takes a
    *  note — "why I flagged this" — without re-growing a composer in here. */
   onOpenNotes?: (() => void) | null;
+  /** Present on an EXISTING anchor: persist a margin note ON THIS SPAN without
+   *  leaving the popup (it appears beside the span like any comment). This is
+   *  what people MEAN when they "add a memo to a bookmark" — the codebook-level
+   *  ✎ memo deliberately does something else (a missing-code lead), so both
+   *  exist side by side with distinct labels. */
+  onAddSpanNote?: ((body: string) => Promise<void>) | null;
 }) {
   const [query, setQuery] = useState('');
   // Row 0 is the pinned Bookmark option; codes occupy 1..N. The cursor STARTS on
@@ -108,28 +115,34 @@ export default function CodingPopup({
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  // Missing-code memo capture (see the footer). Uncontrolled textarea — same
-  // caret-safety reasoning as the comment composer.
-  const [showMemo, setShowMemo] = useState(false);
+  // Footer composers: 'note' = a margin comment ON THIS SPAN (existing anchors
+  // only); 'memo' = a codebook-level missing-code lead. One shared uncontrolled
+  // textarea — same caret-safety reasoning as the comment composer.
+  const [composerKind, setComposerKind] = useState<'memo' | 'note' | null>(null);
   const [savingMemo, setSavingMemo] = useState(false);
-  const [memoSaved, setMemoSaved] = useState(false);
+  const [savedFlash, setSavedFlash] = useState<'memo' | 'note' | null>(null);
   const [memoError, setMemoError] = useState<string | null>(null);
   const memoRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const saveMemo = async () => {
+  const saveComposer = async () => {
+    const kind = composerKind;
     const body = memoRef.current?.value.trim() ?? '';
-    if (body === '') return;
+    if (body === '' || kind === null) return;
     setSavingMemo(true);
     setMemoError(null);
     try {
-      await createCodebookMemo(codebookId, body);
-      setShowMemo(false);
-      // The save is otherwise invisible from here (memos live with the
-      // codebook, not this transcript) — without an acknowledgment it reads
-      // as "my note vanished".
-      setMemoSaved(true);
+      if (kind === 'note' && onAddSpanNote) {
+        await onAddSpanNote(body);
+      } else {
+        await createCodebookMemo(codebookId, body);
+      }
+      setComposerKind(null);
+      // A memo save is otherwise invisible from here (memos live with the
+      // codebook); a note save shows in the margin but the eye is HERE. Flash
+      // the button label either way so the save is never in doubt.
+      setSavedFlash(kind);
     } catch (e) {
-      setMemoError(e instanceof Error ? e.message : 'Failed to save the memo.');
+      setMemoError(e instanceof Error ? e.message : 'Failed to save.');
     } finally {
       setSavingMemo(false);
     }
@@ -488,7 +501,7 @@ export default function CodingPopup({
         </div>
 
         <div className="border-t border-foreground/15 px-3 py-2">
-          {!showNew && !showMemo ? (
+          {!showNew && composerKind === null ? (
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
@@ -497,22 +510,36 @@ export default function CodingPopup({
               >
                 + New code (lands in the triage queue)
               </button>
-              {/* The half-commitment path: "a code like X belongs here" without
-                  minting a slug mid-flow. Saves a codebook MEMO (canvas → Memos)
-                  and leaves the picker exactly as it was. */}
+              {/* A NOTE lives on this span (margin comment); a MEMO lives with
+                  the codebook (missing-code lead). "Add a memo to a bookmark"
+                  means the former — so on existing anchors the note button
+                  comes first, gold like the marginalia it writes to. */}
+              {onAddSpanNote && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSavedFlash(null);
+                    setComposerKind('note');
+                  }}
+                  title="Write a margin note on this span (shows beside it, like any comment)"
+                  className="shrink-0 border border-dashed border-yellow-600/50 px-2 py-1 text-xs text-yellow-800/90 transition hover:border-yellow-600 hover:text-yellow-700 dark:text-yellow-400/90"
+                >
+                  {savedFlash === 'note' ? 'note saved ✓' : '✎ note'}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
-                  setMemoSaved(false);
-                  setShowMemo(true);
+                  setSavedFlash(null);
+                  setComposerKind('memo');
                 }}
-                title="Note a code you know is missing — without creating it now"
+                title="Note a code you know is missing — codebook-level, not tied to this span"
                 className="shrink-0 border border-dashed border-amber-600/40 px-2 py-1 text-xs text-amber-800/80 transition hover:border-amber-600 hover:text-amber-700 dark:text-amber-400/80"
               >
-                {memoSaved ? 'memo saved ✓' : '✎ memo'}
+                {savedFlash === 'memo' ? 'memo saved ✓' : '✎ memo'}
               </button>
             </div>
-          ) : showMemo ? (
+          ) : composerKind !== null ? (
             <div className="space-y-1.5">
               <textarea
                 autoFocus
@@ -521,20 +548,26 @@ export default function CodingPopup({
                 onKeyDown={(e) => {
                   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                     e.preventDefault();
-                    void saveMemo();
+                    void saveComposer();
                   }
-                  if (e.key === 'Escape') setShowMemo(false);
+                  if (e.key === 'Escape') setComposerKind(null);
                 }}
-                placeholder="Missing-code lead — e.g. epistemic vigilance (Sperber); shows in this span"
+                placeholder={
+                  composerKind === 'note'
+                    ? 'Note on this span — appears in the margin beside it…'
+                    : 'Missing-code lead — e.g. epistemic vigilance (Sperber)…'
+                }
                 className="w-full border border-foreground/20 bg-background px-2 py-1 text-xs focus:border-foreground focus:outline-none"
               />
               <div className="flex items-center gap-2">
                 <span className="min-w-0 flex-1 truncate text-[11px] text-foreground/40">
-                  Lands in the codebook&rsquo;s Memos panel.
+                  {composerKind === 'note'
+                    ? 'Saves to this span (margin comment).'
+                    : 'Codebook-level — Memos box here + canvas panel.'}
                 </span>
                 <button
                   type="button"
-                  onClick={() => setShowMemo(false)}
+                  onClick={() => setComposerKind(null)}
                   className="shrink-0 px-1 text-xs text-foreground/50 hover:text-foreground"
                 >
                   cancel
@@ -542,10 +575,10 @@ export default function CodingPopup({
                 <button
                   type="button"
                   disabled={savingMemo}
-                  onClick={() => void saveMemo()}
+                  onClick={() => void saveComposer()}
                   className="shrink-0 border border-foreground bg-foreground px-2 py-1 text-xs text-background transition hover:opacity-90 disabled:opacity-40"
                 >
-                  {savingMemo ? 'Saving…' : 'Save memo'}
+                  {savingMemo ? 'Saving…' : composerKind === 'note' ? 'Save note' : 'Save memo'}
                 </button>
               </div>
               {memoError && <p className="text-xs text-red-600">{memoError}</p>}
