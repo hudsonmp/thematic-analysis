@@ -573,6 +573,7 @@ export type Database = {
           id: string
           parent_id: string | null
           position: number
+          source_key: string | null
           text: string
         }
         Insert: {
@@ -581,6 +582,7 @@ export type Database = {
           id?: string
           parent_id?: string | null
           position?: number
+          source_key?: string | null
           text: string
         }
         Update: {
@@ -589,6 +591,7 @@ export type Database = {
           id?: string
           parent_id?: string | null
           position?: number
+          source_key?: string | null
           text?: string
         }
         Relationships: [

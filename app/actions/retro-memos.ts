@@ -4,6 +4,7 @@ import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { requireEditor } from '@/lib/auth/roles';
 import type { Tables } from '@/lib/types/cb-db';
+import { getShownStudy } from '@/app/actions/codebook';
 
 /**
  * Retrospective analysis — the question BANK and per-participant MEMOS.
@@ -84,31 +85,115 @@ export async function deleteRetroQuestion(id: string): Promise<void> {
   if (error) throw new Error(`deleteRetroQuestion failed: ${error.message}`);
 }
 
+type AuthoredQuestion = { id?: unknown; text?: unknown };
+type AuthoredModule = {
+  type?: unknown;
+  retrospective?: unknown;
+  questions?: unknown;
+};
+
 /**
- * Seed the canonical structure when the bank is empty: the participant task's
- * retrospective pages (canonical episode names from episodes-from-events) become
- * the mains. Idempotent-by-guard: no-op unless the bank has zero rows.
+ * SYNC the bank from the study's authored task: the questions each participant
+ * actually saw live in `studies.authored_data` — the task module's
+ * `retrospective` array (the per-scenario retro question) and the
+ * retrospective_report module's `questions` (the general retro questions).
+ * Read-only on study data (getShownStudy → studyFrom guard).
+ *
+ * Idempotent: a question already in the bank (by source_key or by
+ * case-insensitive text) is skipped, so re-syncing after an instrument tweak
+ * adds only what's new. `source_key` records the canonical step
+ * (scenario_retro, general_retro_N) so the panel can auto-select the question
+ * whose retrospective episode is playing. V1's placeholder rows ("General
+ * Retrospective Question I"…) are retired when they carry no subquestions and
+ * no memos — they were scaffolding, not data.
  */
-export async function seedRetroQuestions(codebookId: string): Promise<void> {
+export async function syncRetroQuestionsFromStudy(codebookId: string): Promise<void> {
   await requireEditor();
   await requireAuthUser();
+  const study = await getShownStudy();
   const sb = await createUserServerClient();
-  const { count, error: countErr } = await sb
+
+  const modules: AuthoredModule[] = Array.isArray(
+    (study?.authored_data as { modules?: unknown })?.modules,
+  )
+    ? ((study!.authored_data as { modules: unknown[] }).modules as AuthoredModule[])
+    : [];
+
+  const wanted: { text: string; sourceKey: string }[] = [];
+  for (const m of modules) {
+    if (Array.isArray(m.retrospective)) {
+      (m.retrospective as AuthoredQuestion[]).forEach((q, i) => {
+        if (typeof q?.text === 'string' && q.text.trim() !== '') {
+          wanted.push({
+            text: q.text.trim(),
+            sourceKey: i === 0 ? 'scenario_retro' : `scenario_retro_${i + 1}`,
+          });
+        }
+      });
+    }
+    if (m.type === 'retrospective_report' && Array.isArray(m.questions)) {
+      (m.questions as AuthoredQuestion[]).forEach((q, i) => {
+        if (typeof q?.text === 'string' && q.text.trim() !== '') {
+          wanted.push({ text: q.text.trim(), sourceKey: `general_retro_${i + 1}` });
+        }
+      });
+    }
+  }
+  // Two task variants (pilot/study) can repeat the same set — dedupe by text.
+  const seen = new Set<string>();
+  const unique = wanted.filter((w) => {
+    const k = w.text.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+
+  const { data: existingRows, error: exErr } = await sb
     .from('cb_retro_questions')
-    .select('id', { count: 'exact', head: true })
+    .select('id, text, source_key, parent_id')
     .eq('codebook_id', codebookId);
-  if (countErr) throw new Error(`seedRetroQuestions failed: ${countErr.message}`);
-  if ((count ?? 0) > 0) return;
-  const seeds = [
-    'Scenario Retrospective',
-    'General Retrospective Question I',
-    'General Retrospective Question II',
-    'General Retrospective Question III',
-  ];
-  const { error } = await sb
-    .from('cb_retro_questions')
-    .insert(seeds.map((text, i) => ({ codebook_id: codebookId, text, position: i })));
-  if (error) throw new Error(`seedRetroQuestions failed: ${error.message}`);
+  if (exErr) throw new Error(`syncRetroQuestionsFromStudy failed: ${exErr.message}`);
+  const rows = existingRows ?? [];
+  const haveText = new Set(rows.map((r) => r.text.trim().toLowerCase()));
+  const haveKey = new Set(rows.map((r) => r.source_key).filter(Boolean));
+
+  let pos = rows.length;
+  const inserts = unique
+    .filter((w) => !haveText.has(w.text.toLowerCase()) && !haveKey.has(w.sourceKey))
+    .map((w) => ({
+      codebook_id: codebookId,
+      text: w.text,
+      source_key: w.sourceKey,
+      position: pos++,
+    }));
+  if (inserts.length > 0) {
+    const { error } = await sb.from('cb_retro_questions').insert(inserts);
+    if (error) throw new Error(`syncRetroQuestionsFromStudy failed: ${error.message}`);
+  }
+
+  // Retire empty v1 placeholders.
+  const placeholders = rows.filter(
+    (r) =>
+      r.source_key === null &&
+      r.parent_id === null &&
+      /^(general retrospective question (i|ii|iii)|scenario retrospective)$/i.test(
+        r.text.trim(),
+      ),
+  );
+  for (const ph of placeholders) {
+    const { count: subCount } = await sb
+      .from('cb_retro_questions')
+      .select('id', { count: 'exact', head: true })
+      .eq('parent_id', ph.id);
+    const { count: memoCount } = await sb
+      .from('cb_retro_memos')
+      .select('id', { count: 'exact', head: true })
+      .eq('question_id', ph.id)
+      .neq('body', '');
+    if ((subCount ?? 0) === 0 && (memoCount ?? 0) === 0) {
+      await sb.from('cb_retro_questions').delete().eq('id', ph.id);
+    }
+  }
 }
 
 /** Every memo on this session (all authors — reading a co-coder's memo is part
