@@ -1,5 +1,7 @@
 'use server';
 
+import { after } from 'next/server';
+
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { requireEditor } from '@/lib/auth/roles';
@@ -161,7 +163,10 @@ export async function addAnnotation({
       );
     }
     // The coded span becomes an exemplar of each assigned code (deduped; non-fatal).
-    await appendSpanExemplars(sb, uniqueCodeIds, quoteText, sessionId);
+    // Off the response path (next/server after): exemplar accumulation is 2 +
+    // 2·|codes| sequential queries of derived convenience data — blocking the
+    // assign on it made every popup interaction feel seconds heavy.
+    after(() => appendSpanExemplars(sb, uniqueCodeIds, quoteText, sessionId));
   }
 
   return annotation;
@@ -443,15 +448,19 @@ export async function addCodeToAnnotation(
   }
 
   // Exemplar accumulation: the just-coded span becomes an exemplar of the code
-  // (deduped; non-fatal). Needs the anchor's quote + session for source_pid.
-  const anchor = await sb
-    .from('cb_annotations')
-    .select('quote_text, session_id')
-    .eq('id', id)
-    .maybeSingle();
-  if (anchor.data) {
-    await appendSpanExemplars(sb, [code], anchor.data.quote_text, anchor.data.session_id);
-  }
+  // (deduped; non-fatal). Runs AFTER the response (next/server after) — it needs
+  // an extra anchor read plus per-code version reads/writes, and the assign
+  // must not wait on derived convenience data.
+  after(async () => {
+    const anchor = await sb
+      .from('cb_annotations')
+      .select('quote_text, session_id')
+      .eq('id', id)
+      .maybeSingle();
+    if (anchor.data) {
+      await appendSpanExemplars(sb, [code], anchor.data.quote_text, anchor.data.session_id);
+    }
+  });
   return 'added';
 }
 
