@@ -48,6 +48,17 @@ import { alignChat, activeChatIndex } from '@/lib/chat/align';
 import type { SpecTimelineResult } from '@/app/actions/spec';
 import { specStateAt } from '@/lib/spec/reconstruct';
 import { retroQuestionsAt } from '@/lib/live/retro';
+import RetroPanel from './RetroPanel';
+import {
+  createRetroQuestion,
+  deleteRetroQuestion,
+  listRetroMemos,
+  listRetroQuestions,
+  seedRetroQuestions,
+  upsertRetroMemo,
+  type RetroMemo,
+  type RetroQuestion,
+} from '@/app/actions/retro-memos';
 import CodingPopup, { type PopupCode } from './CodingPopup';
 import { splitDefinition } from '@/lib/codebook/definition';
 import ChatReplayPane from './ChatReplayPane';
@@ -332,7 +343,14 @@ export default function SessionPlayer({
   // nothing). CODE mode: select → the coding popup spawns at the release point.
   // Defaulting to Comment makes the cheap, frequent act (reacting to the data)
   // zero-friction and the schema-bearing act (coding) deliberate.
-  const [mode, setMode] = useState<'comment' | 'code'>('comment');
+  const [mode, setMode] = useState<'comment' | 'code' | 'retro'>('comment');
+  // Auto-shift bookkeeping for RETRO mode: the mode to return to when playback
+  // leaves a retrospective episode, and the last computed in-retro boolean so
+  // the shift fires only on boundary CROSSINGS (a manual mode click inside a
+  // retrospective sticks until the next boundary).
+  const prevModeRef = useRef<'comment' | 'code'>('comment');
+  const inRetroEpisodeRef = useRef(false);
+  const episodeNamesRef = useRef<{ tStartMs: number; name: string }[]>([]);
   const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
   const [assignedAnnId, setAssignedAnnId] = useState<string | null>(null);
   // "Edit selection" on a bracket: the NEXT selection re-anchors this annotation
@@ -476,12 +494,127 @@ export default function SessionPlayer({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // --- Retrospective mode data -------------------------------------------
+  // Question bank + this session's memos, fetched ONCE per player mount, from
+  // EVENT HANDLERS only (mode click / auto-shift in handleTimeUpdate) — the
+  // repo bans setState-in-effect, and lazy-on-entry also means non-retro
+  // playbacks never pay the queries.
+  const [retroBank, setRetroBank] = useState<
+    (RetroQuestion & { subs: RetroQuestion[] })[] | null
+  >(null);
+  const [retroMemos, setRetroMemos] = useState<RetroMemo[] | null>(null);
+  const [retroBusy, setRetroBusy] = useState(false);
+  const [retroError, setRetroError] = useState<string | null>(null);
+  const retroLoadedRef = useRef(false);
+
+  const ensureRetroData = useCallback(() => {
+    if (retroLoadedRef.current) return;
+    retroLoadedRef.current = true;
+    void Promise.all([listRetroQuestions(codebookId), listRetroMemos(id)])
+      .then(([bank, memos]) => {
+        setRetroBank(bank);
+        setRetroMemos(memos);
+      })
+      .catch((e) => {
+        retroLoadedRef.current = false; // allow a retry on the next entry
+        setRetroError(e instanceof Error ? e.message : 'Failed to load retro data.');
+      });
+  }, [codebookId, id]);
+
+  const reloadRetroBank = useCallback(async () => {
+    setRetroBank(await listRetroQuestions(codebookId));
+  }, [codebookId]);
+
+  const handleRetroSeed = useCallback(() => {
+    setRetroBusy(true);
+    setRetroError(null);
+    void seedRetroQuestions(codebookId)
+      .then(reloadRetroBank)
+      .catch((e) => setRetroError(e instanceof Error ? e.message : 'Failed to seed.'))
+      .finally(() => setRetroBusy(false));
+  }, [codebookId, reloadRetroBank]);
+
+  const handleRetroCreate = useCallback(
+    (text: string, parentId: string | null) => {
+      setRetroBusy(true);
+      setRetroError(null);
+      void createRetroQuestion(codebookId, { text, parentId })
+        .then(reloadRetroBank)
+        .catch((e) =>
+          setRetroError(e instanceof Error ? e.message : 'Failed to add the question.'),
+        )
+        .finally(() => setRetroBusy(false));
+    },
+    [codebookId, reloadRetroBank],
+  );
+
+  const handleRetroDelete = useCallback(
+    (qid: string) => {
+      setRetroBusy(true);
+      setRetroError(null);
+      void deleteRetroQuestion(qid)
+        .then(reloadRetroBank)
+        .catch((e) =>
+          setRetroError(e instanceof Error ? e.message : 'Failed to delete the question.'),
+        )
+        .finally(() => setRetroBusy(false));
+    },
+    [reloadRetroBank],
+  );
+
+  const handleRetroSaveMemo = useCallback(
+    async (questionId: string, body: string) => {
+      setRetroBusy(true);
+      setRetroError(null);
+      try {
+        const saved = await upsertRetroMemo(questionId, id, body);
+        setRetroMemos((prev) => {
+          const rest = (prev ?? []).filter((m) => m.id !== saved.id);
+          return [...rest, saved];
+        });
+      } catch (e) {
+        setRetroError(e instanceof Error ? e.message : 'Failed to save the memo.');
+      } finally {
+        setRetroBusy(false);
+      }
+    },
+    [id],
+  );
+
+
   const handleTimeUpdate = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
     const tMs = video.currentTime * 1000;
     const idx = findActiveIndex(segments, tMs);
     setActiveIdx((prev) => (prev === idx ? prev : idx));
+    // RETRO AUTO-SHIFT: crossing INTO a retrospective episode (canonical names
+    // from the participant task's page advances) flips the mode to 'retro';
+    // crossing OUT restores whatever mode was active before. Fires ONLY on
+    // boundary crossings, so a manual mode choice inside a retrospective
+    // sticks until playback leaves it. Editors only — retro memos are an
+    // editor instrument.
+    if (codingEnabled) {
+      const eps = episodeNamesRef.current;
+      let epName: string | null = null;
+      for (const e of eps) {
+        if (e.tStartMs <= tMs) epName = e.name;
+        else break;
+      }
+      const inRetro = epName !== null && /retro/i.test(epName);
+      if (inRetro !== inRetroEpisodeRef.current) {
+        inRetroEpisodeRef.current = inRetro;
+        if (inRetro) {
+          ensureRetroData();
+          setMode((prev) => {
+            if (prev !== 'retro') prevModeRef.current = prev;
+            return 'retro';
+          });
+        } else {
+          setMode((prev) => (prev === 'retro' ? prevModeRef.current : prev));
+        }
+      }
+    }
     // Round to the second so the current-event box re-renders at most once/s.
     const sec = Math.floor(video.currentTime) * 1000;
     setCurrentMs((prev) => (prev === sec ? prev : sec));
@@ -496,7 +629,7 @@ export default function SessionPlayer({
         // Quota/private-mode failures just lose resume — never break playback.
       }
     }
-  }, [segments, id]);
+  }, [segments, id, codingEnabled, ensureRetroData]);
 
   // Follow-along scrolling PAGES like a teleprompter instead of creeping.
   // scrollIntoView({block:'nearest'}) moved one line per cue advance — a
@@ -1545,7 +1678,7 @@ export default function SessionPlayer({
       // and the margin composer opens seeded with that first keystroke (the
       // annotator-HTML gesture). ⌘⏎ (or ⏎ later, in the composer) saves. No
       // modifier chords to memorize — the selection is the mode.
-      if (mode === 'comment' && pending && !composerOpen && !popupPos) {
+      if ((mode === 'comment' || mode === 'retro') && pending && !composerOpen && !popupPos) {
         const target = e.target as HTMLElement | null;
         const inField =
           target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
@@ -1854,6 +1987,17 @@ export default function SessionPlayer({
     }
     return idx;
   }, [orderedEpisodes, currentMs]);
+
+  // Mirror the episode timeline into a ref for handleTimeUpdate's retro
+  // auto-shift: the handler is declared ABOVE this memo (TDZ forbids a direct
+  // dep) and a per-tick recreation of the handler would churn the <video>
+  // listener. Ref write only — no setState in this effect.
+  useEffect(() => {
+    episodeNamesRef.current = orderedEpisodes.map((e) => ({
+      tStartMs: e.tStartMs,
+      name: e.episodeName,
+    }));
+  }, [orderedEpisodes]);
 
   // Keep the current event scrolled into view inside its small box.
   useEffect(() => {
@@ -2621,12 +2765,13 @@ export default function SessionPlayer({
                 aria-label="Selection mode"
                 className="flex rounded border border-foreground/20 text-xs"
               >
-                {/* Internal values stay 'comment' | 'code'; only the DISPLAY
-                    labels differ ('Comment' / 'Coding'). */}
+                {/* Internal values stay 'comment' | 'code' | 'retro'; only the
+                    DISPLAY labels differ. */}
                 {(
                   [
                     ['comment', 'Comment'],
                     ['code', 'Coding'],
+                    ['retro', 'Retro'],
                   ] as const
                 ).map(([m, label]) => (
                   <button
@@ -2634,7 +2779,15 @@ export default function SessionPlayer({
                     type="button"
                     role="tab"
                     aria-selected={mode === m}
-                    onClick={() => setMode(m)}
+                    onClick={() => {
+                      if (m === 'retro') ensureRetroData();
+                      if (mode === 'retro' && m !== 'retro') {
+                        // A manual exit is a real mode choice — remember it as
+                        // the return target for the next auto-exit too.
+                        prevModeRef.current = m;
+                      }
+                      setMode(m);
+                    }}
                     className={`px-3 py-1 first:rounded-l last:rounded-r ${
                       mode === m
                         ? 'bg-foreground text-background'
@@ -2692,9 +2845,18 @@ export default function SessionPlayer({
           real content width (42rem text + 1rem gap + 16rem gutter). The old
           1/3 : 2/3 split left dead space between the gutter and the video on
           wide screens — space the video can actually use. */}
-      <div className="grid gap-6 lg:grid-cols-[minmax(20rem,1fr)_minmax(0,59rem)]">
-        {/* LEFT (shared across modes): video + current-event + flags. */}
-        <div className="space-y-4">
+      <div
+        className={`grid gap-6 ${
+          mode === 'retro'
+            ? 'lg:grid-cols-[minmax(0,1fr)_24rem]'
+            : 'lg:grid-cols-[minmax(20rem,1fr)_minmax(0,59rem)]'
+        }`}
+      >
+        {/* LEFT (comment/code modes): video + current-event + flags. HIDDEN in
+            retro mode — the video keeps playing (display:none never pauses
+            HTML media), so the participant's answer stays audible with
+            space/←→ as the transport. */}
+        <div className={mode === 'retro' ? 'hidden' : 'space-y-4'}>
           <video
             ref={videoRef}
             controls
@@ -3085,7 +3247,9 @@ export default function SessionPlayer({
         </div>
 
 
-        {/* RIGHT: transcript with the comment margin + code-chip gutter. */}
+        {/* MIDDLE/RIGHT: transcript with the comment margin + code-chip gutter.
+            In retro mode this is the LEFT column (the video column above is
+            hidden and the RetroPanel takes the right). */}
         <div>
           {/* Surface tabs (Transcript · Specification · LLM Help) + the
               Transcript surface's compact Original/Cleaned variant toggle
@@ -3323,7 +3487,7 @@ export default function SessionPlayer({
                 <p className="mb-1 text-xs text-foreground/40">
                   {reanchoringId
                     ? null
-                    : mode === 'comment'
+                    : mode === 'comment' || mode === 'retro'
                       ? 'Select text → just start typing to leave a margin comment (⏎ saves).'
                       : 'Select text → assign codes in the popup (⌘⏎ assigns · Esc closes).'}
                 </p>
@@ -3395,6 +3559,27 @@ export default function SessionPlayer({
             </>
           )}
         </div>
+
+      {/* RETRO PANEL: the right column of retro mode — the question bank +
+          per-question memo editor for THIS participant. */}
+      {mode === 'retro' && (
+        <RetroPanel
+          myUid={myUid}
+          currentEpisodeName={
+            currentEpisodeIdx >= 0 ? orderedEpisodes[currentEpisodeIdx]?.episodeName ?? null : null
+          }
+          askedQuestions={retroQuestions}
+          playheadLabel={formatTime(currentMs)}
+          bank={retroBank}
+          memos={retroMemos}
+          busy={retroBusy}
+          error={retroError}
+          onSeed={handleRetroSeed}
+          onCreateQuestion={handleRetroCreate}
+          onDeleteQuestion={handleRetroDelete}
+          onSaveMemo={handleRetroSaveMemo}
+        />
+      )}
       </div>
 
       {/* The coding popup: spawned by a selection, anchored at the release point.
