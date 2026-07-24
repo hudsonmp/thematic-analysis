@@ -1556,11 +1556,13 @@ export default function SessionPlayer({
       m.set(segId, list);
     };
     for (const a of myAnnotations) {
-      // kind:'code' NEVER paints inline (owner's call, overriding an earlier review
-      // fix): the bracket + chip block in the gutter is the code's ONLY rendering.
-      // A background wash on coded text made every coded span read like a comment
-      // highlight — two different speech acts in one visual voice.
-      if (a.kind === 'code') continue;
+      // kind:'code' paints inline like everything else (owner's call, REVERSED
+      // 2026-07-23: "the transcript I highlight should stay highlighted when
+      // coded"). The old fear — coded spans reading like comment highlights —
+      // is answered by the channel grammar instead: the code wash is FAINT
+      // emerald, comments are yellow + dotted, and flags are top-stripes, so
+      // one glance separates the speech acts. The gutter chips remain the
+      // code-management surface; this wash is the extent marker.
       const startIdx = segIndexById.get(a.segmentId);
       const endIdx = a.endSegmentId ? segIndexById.get(a.endSegmentId) : startIdx;
       if (
