@@ -63,6 +63,7 @@ export default function CodingPopup({
   onClose,
   onCodeCreated,
   onBookmark,
+  onQuote,
   bookmarked = false,
   onOpenNotes = null,
   onAddSpanNote = null,
@@ -85,6 +86,9 @@ export default function CodingPopup({
    *  creates the anchor and closes the popup. When `bookmarked`, the same row
    *  REMOVES the existing bookmark instead (the parent flips the callback). */
   onBookmark: () => void;
+  /** Flag the selection as a QUOTE — a quotable excerpt (kind:'quote', yellow,
+   *  no code). One-shot like Bookmark: creates the anchor and closes. */
+  onQuote: () => void;
   /** True when the popup was reopened ON an existing bookmark annotation — the
    *  bookmark's "later" is now: row 0 becomes Remove, and any assign resolves
    *  the bookmark into a coded span (server-side kind promotion). */
@@ -101,10 +105,10 @@ export default function CodingPopup({
   onAddSpanNote?: ((body: string) => Promise<void>) | null;
 }) {
   const [query, setQuery] = useState('');
-  // Row 0 is the pinned Bookmark option; codes occupy 1..N. The cursor STARTS on
-  // the top code (1) so the type-query-then-Enter muscle memory still assigns —
-  // Bookmark is one ArrowUp away, never the accidental default.
-  const [cursor, setCursor] = useState(1);
+  // Rows 0/1 are the pinned Bookmark and Quote options; codes occupy 2..N+1.
+  // The cursor STARTS on the top code (2) so type-query-then-Enter still
+  // assigns — the pinned rows are ArrowUps away, never the accidental default.
+  const [cursor, setCursor] = useState(2);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   // ≥1 assign this popup session arms LEAVE-TO-CLOSE: moving the cursor off
@@ -215,7 +219,9 @@ export default function CodingPopup({
   );
   // Row space: 0 = the pinned Bookmark option, 1..N = the ranked codes. With no
   // codes at all the clamp lands on 0, so Enter bookmarks — the only action left.
-  const rowCount = ranked.length + 1;
+  // Two pinned rows (0 = Bookmark, 1 = Quote); codes occupy 2..N+1.
+  const PINNED = 2;
+  const rowCount = ranked.length + PINNED;
   const safeCursor = Math.min(cursor, rowCount - 1);
 
   // Focus the search on open — the popup exists to be typed into.
@@ -237,7 +243,11 @@ export default function CodingPopup({
       onBookmark();
       return;
     }
-    const code = ranked[safeCursor - 1];
+    if (safeCursor === 1) {
+      onQuote();
+      return;
+    }
+    const code = ranked[safeCursor - PINNED];
     if (code) assign(code.id);
   }
 
@@ -386,9 +396,9 @@ export default function CodingPopup({
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
-              // Back to the TOP CODE (row 1), not the Bookmark row — typing a
+              // Back to the TOP CODE (row 2), not the pinned rows — typing a
               // query means hunting a code; Enter must assign the best match.
-              setCursor(1);
+              setCursor(2);
             }}
             onKeyDown={onSearchKeyDown}
             placeholder="Search codes… (↑/↓ · ⌘⏎ assign)"
@@ -486,13 +496,32 @@ export default function CodingPopup({
               {memoError && <p className="text-xs text-red-600">{memoError}</p>}
             </div>
           )}
+          {/* Pinned row 1: QUOTE — flag a quotable excerpt (yellow, no code).
+              Same one-shot contract as Bookmark. */}
+          <div data-row>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onQuote}
+              className={`flex w-full items-center gap-2 px-3 py-1 text-left disabled:opacity-40 ${
+                safeCursor === 1 ? 'bg-foreground/[0.06]' : ''
+              }`}
+              title="Flag this selection as a quotable excerpt"
+            >
+              <span aria-hidden>❝</span>
+              <span className="text-sm text-yellow-700 dark:text-yellow-300">Quote</span>
+              <span className="truncate text-[11px] text-foreground/40">
+                flag a quotable excerpt
+              </span>
+            </button>
+          </div>
           {ranked.length === 0 && (
             <p className="px-3 py-2 text-xs italic text-foreground/40">
               No code matches — create one below.
             </p>
           )}
           {ranked.map((c, i) => {
-            const focused = i + 1 === safeCursor;
+            const focused = i + PINNED === safeCursor;
             // Details reveal on HOVER as well as click: hovering is transient
             // (leave → collapse), a click PINS the expansion open. Both show the
             // same block — slug alone is recognition-hostile for terse slugs, so
