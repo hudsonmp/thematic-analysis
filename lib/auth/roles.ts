@@ -1,4 +1,5 @@
 import 'server-only';
+import { cache } from 'react';
 import { redirect } from 'next/navigation';
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
@@ -13,7 +14,9 @@ export type Role = 'admin' | 'full' | 'viewer';
  * also treats a missing row as non-editor.) ensureProfile provisions the real row on
  * login/register, so the closed default only bites a genuinely rowless session.
  */
-export async function getMyRole(): Promise<Role> {
+export const getMyRole = cache(async (): Promise<Role> => {
+  // Per-request memoized like getAuthUser: stacked gates (requireEditor in an
+  // action that also renders admin chrome, etc.) query cb_profiles once.
   const user = await requireAuthUser();
   const sb = await createUserServerClient();
   const { data } = await sb
@@ -23,7 +26,7 @@ export async function getMyRole(): Promise<Role> {
     .maybeSingle();
   const role = data?.role;
   return role === 'admin' || role === 'full' ? role : 'viewer';
-}
+});
 
 /**
  * Gate for MUTATING server actions that write through the service-role client

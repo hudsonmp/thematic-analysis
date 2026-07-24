@@ -107,6 +107,15 @@ export default function CodingPopup({
   const [cursor, setCursor] = useState(1);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  // ≥1 assign this popup session arms LEAVE-TO-CLOSE: moving the cursor off
+  // the card dismisses it (multi-assign = stay hovering and keep clicking).
+  // Local flag, not `assigned.length` — the prop only updates after the
+  // server refetch, and a quick assign-then-flick must still close.
+  const [hasAssigned, setHasAssigned] = useState(false);
+  const assign = (codeId: string) => {
+    setHasAssigned(true);
+    onAssign(codeId);
+  };
   const [showNew, setShowNew] = useState(false);
 
   const [newSlug, setNewSlug] = useState('');
@@ -229,7 +238,7 @@ export default function CodingPopup({
       return;
     }
     const code = ranked[safeCursor - 1];
-    if (code) onAssign(code.id);
+    if (code) assign(code.id);
   }
 
   function onSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -304,6 +313,12 @@ export default function CodingPopup({
         data-comment-card
         className="fixed z-50 flex flex-col border border-foreground/25 bg-background shadow-2xl"
         style={{ left: Math.max(8, left), top: Math.max(8, top), width: POPUP_W, maxHeight: POPUP_MAX_H }}
+        onMouseLeave={() => {
+          // Leave-to-close, armed by the first assign. Not before: the popup
+          // spawns under a moving cursor, and closing on a stray pass-through
+          // would kill the picker before it was ever used.
+          if (hasAssigned && !busy) onClose();
+        }}
         onKeyDown={(e) => {
           // ⌘⏎ assigns from anywhere in the card EXCEPT text fields — those own
           // their Enter semantics (the search input assigns on bare ⏎ already, so
@@ -510,7 +525,7 @@ export default function CodingPopup({
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => onAssign(c.id)}
+                    onClick={() => assign(c.id)}
                     aria-label={`Assign ${c.mnemonic}`}
                     title="Assign to the selection (⌘⏎ assigns the focused row)"
                     className="shrink-0 border border-foreground/25 px-1.5 text-xs leading-5 text-foreground/60 transition hover:border-foreground hover:text-foreground disabled:opacity-40"
