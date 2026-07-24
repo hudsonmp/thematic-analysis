@@ -3288,6 +3288,28 @@ export default function SessionPlayer({
                       : 'Select text → assign codes in the popup (⌘⏎ assigns · Esc closes).'}
                 </p>
               )}
+              {codingEnabled && surface === 'transcript' && (
+                <p
+                  aria-hidden
+                  className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-foreground/45 print:hidden"
+                >
+                  <span className="rounded-sm bg-emerald-300/25 px-1 dark:bg-emerald-400/15">
+                    code
+                  </span>
+                  <span className="rounded-sm bg-yellow-300/55 px-1 dark:bg-yellow-400/30">
+                    quote / comment
+                  </span>
+                  <span className="rounded-sm bg-violet-300/50 px-1 dark:bg-violet-400/30">
+                    bookmark
+                  </span>
+                  <span className="rounded-sm px-1 shadow-[inset_0_3px_0_0_rgb(244_63_94/0.85)]">
+                    flag
+                  </span>
+                  <span className="rounded-sm px-1 shadow-[inset_0_-2px_0_0_rgb(14_165_233/0.85)]">
+                    now playing
+                  </span>
+                </p>
+              )}
               {reanchoringId && (
                 <p className="mb-1 rounded border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-xs text-sky-800 dark:text-sky-200">
                   Re-anchoring: highlight the NEW span for this bracket — its codes and
@@ -3924,7 +3946,15 @@ function renderHighlightedText(
         return (
           <mark
             key={idx}
-            style={{ backgroundColor: hexWithAlpha(colorById.get(flagId)!, 0.32) }}
+            // Flags mark a MOMENT, not an extent — so they get an edge, not a
+            // wash: a colored TOP stripe (the bottom edge belongs to the
+            // now-playing underline) over a whisper of tint. This frees the
+            // background channel for the analyst's own marks (code/quote/
+            // bookmark), which a 0.32-alpha rainbow was drowning.
+            style={{
+              boxShadow: `inset 0 3px 0 0 ${hexWithAlpha(colorById.get(flagId)!, 0.85)}`,
+              backgroundColor: hexWithAlpha(colorById.get(flagId)!, 0.08),
+            }}
             className="rounded-sm text-foreground"
             title="A live flag was logged at this moment"
           >
@@ -3962,7 +3992,7 @@ function renderHighlightedText(
       ? 'bg-yellow-300/55 text-foreground dark:bg-yellow-400/30'
       : hasBookmark
         ? 'bg-violet-300/50 text-foreground dark:bg-violet-400/30'
-        : 'bg-emerald-300/50 text-foreground dark:bg-emerald-400/30';
+        : 'bg-emerald-300/25 text-foreground dark:bg-emerald-400/15';
     const underline = hasComment
       ? 'underline decoration-sky-500 decoration-dotted decoration-2 underline-offset-2'
       : '';
