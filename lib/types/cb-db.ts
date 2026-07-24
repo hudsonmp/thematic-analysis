@@ -566,6 +566,83 @@ export type Database = {
           },
         ]
       }
+      cb_retro_questions: {
+        Row: {
+          codebook_id: string
+          created_at: string
+          id: string
+          parent_id: string | null
+          position: number
+          text: string
+        }
+        Insert: {
+          codebook_id: string
+          created_at?: string
+          id?: string
+          parent_id?: string | null
+          position?: number
+          text: string
+        }
+        Update: {
+          codebook_id?: string
+          created_at?: string
+          id?: string
+          parent_id?: string | null
+          position?: number
+          text?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_retro_questions_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_retro_questions_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "cb_retro_questions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_retro_memos: {
+        Row: {
+          author_id: string
+          body: string
+          id: string
+          question_id: string
+          session_id: string
+          updated_at: string
+        }
+        Insert: {
+          author_id: string
+          body?: string
+          id?: string
+          question_id: string
+          session_id: string
+          updated_at?: string
+        }
+        Update: {
+          author_id?: string
+          body?: string
+          id?: string
+          question_id?: string
+          session_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_retro_memos_question_id_fkey"
+            columns: ["question_id"]
+            isOneToOne: false
+            referencedRelation: "cb_retro_questions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_coder_comments: {
         Row: {
           author: string
