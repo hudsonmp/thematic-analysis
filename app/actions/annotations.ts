@@ -596,7 +596,11 @@ export async function listAllAnnotations(
   const { data, error } = await sb
     .from('cb_annotations')
     .select(
-      'id, coder_id, segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments(ordinal), cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
+      // cb_annotations carries TWO FKs to cb_segments (segment_id + the multi-cue
+      // end_segment_id), so the embed MUST name its relationship — the bare
+      // cb_segments(ordinal) form 500s with 'more than one relationship found'
+      // (this silently broke /compare when multi-cue anchors landed).
+      'id, coder_id, segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments!cb_annotations_segment_id_fkey(ordinal), cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
     )
     .eq('session_id', sessionId);
   if (error) {
