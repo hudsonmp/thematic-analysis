@@ -1520,6 +1520,25 @@ export default function SessionPlayer({
           return;
         }
       }
+      // ←/→ = ±5s transport, same field-gating as Space. The coding popup's
+      // arrow navigation lives on ITS OWN focused input, so it lands in the
+      // inField branch and keeps its rows; bare arrows anywhere else scrub.
+      if (
+        (e.code === 'ArrowLeft' || e.code === 'ArrowRight') &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        const t = e.target as HTMLElement | null;
+        const inField =
+          t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
+        if (!inField) {
+          e.preventDefault();
+          skipBy(e.code === 'ArrowLeft' ? -5000 : 5000);
+          return;
+        }
+      }
       if (!codingEnabled && !canComment) return;
 
       // COMMENT mode, marginalia-style: with a selection pending, just START TYPING
@@ -1556,7 +1575,7 @@ export default function SessionPlayer({
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [codingEnabled, canComment, pending, composerOpen, popupPos, mode, clearSelection]);
+  }, [codingEnabled, canComment, pending, composerOpen, popupPos, mode, clearSelection, skipBy]);
 
   // --- Derived view helpers ----------------------------------------------
 
