@@ -54,7 +54,7 @@ import {
   deleteRetroQuestion,
   listRetroMemos,
   listRetroQuestions,
-  seedRetroQuestions,
+  syncRetroQuestionsFromStudy,
   upsertRetroMemo,
   type RetroMemo,
   type RetroQuestion,
@@ -510,7 +510,11 @@ export default function SessionPlayer({
   const ensureRetroData = useCallback(() => {
     if (retroLoadedRef.current) return;
     retroLoadedRef.current = true;
-    void Promise.all([listRetroQuestions(codebookId), listRetroMemos(id)])
+    void syncRetroQuestionsFromStudy(codebookId)
+      .catch(() => {
+        // Non-fatal: a failed sync (e.g. viewer role) still shows the bank.
+      })
+      .then(() => Promise.all([listRetroQuestions(codebookId), listRetroMemos(id)]))
       .then(([bank, memos]) => {
         setRetroBank(bank);
         setRetroMemos(memos);
@@ -525,12 +529,14 @@ export default function SessionPlayer({
     setRetroBank(await listRetroQuestions(codebookId));
   }, [codebookId]);
 
-  const handleRetroSeed = useCallback(() => {
+  const handleRetroSync = useCallback(() => {
     setRetroBusy(true);
     setRetroError(null);
-    void seedRetroQuestions(codebookId)
+    void syncRetroQuestionsFromStudy(codebookId)
       .then(reloadRetroBank)
-      .catch((e) => setRetroError(e instanceof Error ? e.message : 'Failed to seed.'))
+      .catch((e) =>
+        setRetroError(e instanceof Error ? e.message : 'Failed to load study questions.'),
+      )
       .finally(() => setRetroBusy(false));
   }, [codebookId, reloadRetroBank]);
 
@@ -1121,6 +1127,29 @@ export default function SessionPlayer({
       el.removeEventListener('scroll', onScroll);
       if (t !== null) window.clearTimeout(t);
     };
+  }, []);
+
+  // Play state mirror for the retro panel's transport button. Listeners set
+  // state from EVENTS (not the effect body), so the no-setState-in-effect rule
+  // holds; initial `true` matches a freshly-mounted, paused <video>.
+  const [isPaused, setIsPaused] = useState(true);
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onPlay = () => setIsPaused(false);
+    const onPause = () => setIsPaused(true);
+    v.addEventListener('play', onPlay);
+    v.addEventListener('pause', onPause);
+    return () => {
+      v.removeEventListener('play', onPlay);
+      v.removeEventListener('pause', onPause);
+    };
+  }, []);
+  const togglePlay = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) v.play().catch(() => {});
+    else v.pause();
   }, []);
 
   const clearSelection = useCallback(() => {
@@ -2848,7 +2877,7 @@ export default function SessionPlayer({
       <div
         className={`grid gap-6 ${
           mode === 'retro'
-            ? 'lg:grid-cols-[minmax(0,1fr)_24rem]'
+            ? 'lg:grid-cols-[minmax(0,59rem)_minmax(20rem,1fr)]'
             : 'lg:grid-cols-[minmax(20rem,1fr)_minmax(0,59rem)]'
         }`}
       >
@@ -3574,7 +3603,9 @@ export default function SessionPlayer({
           memos={retroMemos}
           busy={retroBusy}
           error={retroError}
-          onSeed={handleRetroSeed}
+          isPaused={isPaused}
+          onTogglePlay={togglePlay}
+          onSync={handleRetroSync}
           onCreateQuestion={handleRetroCreate}
           onDeleteQuestion={handleRetroDelete}
           onSaveMemo={handleRetroSaveMemo}
