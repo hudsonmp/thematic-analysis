@@ -1294,6 +1294,36 @@ export default function SessionPlayer({
     }
   }, [pending, versionId, id, clearSelection, afterAnnotationMutation]);
 
+  // QUOTE the pending selection — the popup's pinned second option. A flagged
+  // quotable excerpt: kind:'quote', no codes, paints yellow. Same one-shot
+  // optimistic-close contract as the bookmark above.
+  const handleQuoteSelection = useCallback(async () => {
+    if (!pending || !versionId) return;
+    setError(null);
+    const anchor = pending;
+    clearSelection();
+    try {
+      await addAnnotation({
+        sessionId: id,
+        versionId,
+        segmentId: anchor.startSeg.id,
+        endSegmentId: anchor.endSeg.id,
+        charStart: anchor.startChar,
+        charEnd: anchor.endChar,
+        quoteText: anchor.quoteText,
+        prefix: anchor.prefix,
+        suffix: anchor.suffix,
+        tStartMs: anchor.startSeg.startMs,
+        tEndMs: anchor.endSeg.endMs,
+        kind: 'quote',
+        codeIds: [],
+      });
+      await afterAnnotationMutation();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to flag the quote.');
+    }
+  }, [pending, versionId, id, clearSelection, afterAnnotationMutation]);
+
   const handleDeleteComment = useCallback(
     async (commentId: string) => {
       if (!openCommentAnnId) return;
@@ -3322,6 +3352,7 @@ export default function SessionPlayer({
             router.refresh();
             void handleAssignCodeRef.current(cid);
           }}
+          onQuote={() => void handleQuoteSelection()}
           onBookmark={() => {
             // On an EXISTING bookmark the row is "Remove bookmark" — delete the
             // anchor and close. On a fresh selection it pins a new bookmark.
