@@ -607,6 +607,24 @@ export default function SessionPlayer({
         // Quota/private-mode failures just lose resume — never break playback.
       }
     };
+    // Playback SPEED persists globally (not per session): "whatever it was on
+    // last use". Restored on mount, saved on every ratechange — imperative
+    // video writes only, same contract as the position resume below.
+    try {
+      const rate = Number(window.localStorage.getItem('ta:rate') ?? NaN);
+      if (Number.isFinite(rate) && rate >= 0.25 && rate <= 4) video.playbackRate = rate;
+    } catch {
+      // Ignore — default speed.
+    }
+    const saveRate = () => {
+      try {
+        window.localStorage.setItem('ta:rate', String(video.playbackRate));
+      } catch {
+        // Quota/private-mode failures just lose the preference.
+      }
+    };
+    video.addEventListener('ratechange', saveRate);
+
     const restore = () => {
       let saved = NaN;
       try {
@@ -626,6 +644,7 @@ export default function SessionPlayer({
     window.addEventListener('pagehide', save);
     return () => {
       video.removeEventListener('loadedmetadata', restore);
+      video.removeEventListener('ratechange', saveRate);
       window.removeEventListener('pagehide', save);
     };
   }, [id]);
@@ -3304,7 +3323,11 @@ export default function SessionPlayer({
                   <span className="rounded-sm bg-violet-300/50 px-1 dark:bg-violet-400/30">
                     bookmark
                   </span>
-                  <span className="rounded-sm px-1 shadow-[inset_0_3px_0_0_rgb(244_63_94/0.85)]">
+                  <span className="rounded-sm px-1">
+                    <span
+                      aria-hidden
+                      className="mr-0.5 inline-block h-[0.9em] w-[3px] translate-y-[0.12em] rounded-sm bg-rose-500"
+                    />
                     flag
                   </span>
                   <span className="rounded-sm px-1 shadow-[inset_0_-2px_0_0_rgb(14_165_233/0.85)]">
@@ -3948,18 +3971,20 @@ function renderHighlightedText(
         return (
           <mark
             key={idx}
-            // Flags mark a MOMENT, not an extent — so they get an edge, not a
-            // wash: a colored TOP stripe (the bottom edge belongs to the
-            // now-playing underline) over a whisper of tint. This frees the
-            // background channel for the analyst's own marks (code/quote/
-            // bookmark), which a 0.32-alpha rainbow was drowning.
-            style={{
-              boxShadow: `inset 0 3px 0 0 ${hexWithAlpha(colorById.get(flagId)!, 0.85)}`,
-              backgroundColor: hexWithAlpha(colorById.get(flagId)!, 0.08),
-            }}
-            className="rounded-sm text-foreground"
+            // Flags mark a MOMENT, not an extent — rendered as a small colored
+            // TICK at the start of the flagged text, nothing across the span.
+            // (The first cut used a top-edge stripe; on wrapped multi-line
+            // spans the stripe fragments into stray colored lines that read as
+            // broken underlines mid-paragraph — a point event gets a point
+            // mark.) Background channel stays with the analyst's own marks.
+            className="bg-transparent text-foreground"
             title="A live flag was logged at this moment"
           >
+            <span
+              aria-hidden
+              style={{ backgroundColor: colorById.get(flagId)! }}
+              className="mx-0.5 inline-block h-[0.9em] w-[3px] translate-y-[0.12em] rounded-sm"
+            />
             {piece.text}
           </mark>
         );
