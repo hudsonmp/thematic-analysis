@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useState, useTransition } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
   createFacetValue,
   deleteFacetValue,
@@ -15,6 +15,8 @@ import {
 import { addCodeFacetValue, deleteCode, removeCodeFacetValue } from '@/app/actions/codes';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { searchCodes } from '@/lib/codebook/codePicker';
+import { fuzzyRank } from '@/lib/transcript/fuzzy';
+import { splitDefinition } from '@/lib/codebook/definition';
 import { buildTree } from '@/lib/codebook/tree';
 import { answersFacet, rollUpByValue } from '@/lib/codebook/inheritance';
 import { ancestorsOf, layoutTree, subtreeAt, type LayoutNode } from '@/lib/codebook/treeLayout';
@@ -452,6 +454,15 @@ export default function FacetCanvas({
             Merge
             {mergeMode && mergeIds.length > 0 && <span className="ml-1">{mergeIds.length}</span>}
           </button>
+
+          <CodeFinder
+            codes={codes}
+            onPick={(id) => {
+              setTriageOpen(false);
+              setMemosOpen(false);
+              setSelected({ kind: 'code', id });
+            }}
+          />
 
           <span className="ml-auto text-xs text-foreground/40">
             {mergeMode
@@ -1400,6 +1411,171 @@ function InterposeDialog({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+
+/**
+ * Toolbar code search — the SAME search the coding popup runs (fuzzyRank over
+ * slug + applied definition + exemplars, literature half excluded) with the same
+ * hover-expand anatomy, but picking a hit INSPECTS it (opens the right-panel
+ * editor) instead of assigning: on the canvas, finding a code means editing or
+ * relocating it. ↑/↓ move, ⏎ inspects the focused row, Esc closes.
+ */
+function CodeFinder({
+  codes,
+  onPick,
+}: {
+  codes: CodeWithRefs[];
+  onPick: (id: string) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const [cursor, setCursor] = useState(0);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  const exemplarsOf = (c: CodeWithRefs): string[] => {
+    const j = c.current?.exemplars;
+    if (!Array.isArray(j)) return [];
+    return j
+      .map((raw) => (raw as { text?: unknown })?.text)
+      .filter((t): t is string => typeof t === 'string');
+  };
+
+  const ranked = useMemo(
+    () =>
+      fuzzyRank(
+        query,
+        codes,
+        (c) =>
+          `${c.mnemonic} ${splitDefinition(c.current?.definition).applied} ${exemplarsOf(c).join(' ')}`,
+      )
+        .map((m) => m.item)
+        .slice(0, 30),
+    // exemplarsOf is stable per render and cheap; codes/query drive the result.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [query, codes],
+  );
+  const safeCursor = Math.min(cursor, Math.max(0, ranked.length - 1));
+
+  // Light-dismiss on outside mousedown, same contract as the coding popup.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <input
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+          setCursor(0);
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setCursor((c) => Math.min(c + 1, ranked.length - 1));
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setCursor((c) => Math.max(c - 1, 0));
+          } else if (e.key === 'Enter') {
+            e.preventDefault();
+            const hit = ranked[safeCursor];
+            if (hit) {
+              onPick(hit.id);
+              setOpen(false);
+            }
+          } else if (e.key === 'Escape') {
+            setOpen(false);
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+        placeholder="Search codes…"
+        aria-label="Search codes"
+        className="w-44 border border-foreground/20 bg-background px-2 py-1 text-xs focus:border-foreground focus:outline-none"
+      />
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-1 max-h-96 w-80 overflow-y-auto border border-foreground/25 bg-background py-1 shadow-2xl">
+          {ranked.length === 0 && (
+            <p className="px-3 py-2 text-xs italic text-foreground/40">No code matches.</p>
+          )}
+          {ranked.map((c, i) => {
+            const expanded = expandedId === c.id || hoveredId === c.id;
+            const def = splitDefinition(c.current?.definition);
+            const exemplars = exemplarsOf(c);
+            return (
+              <div
+                key={c.id}
+                onMouseEnter={() => setHoveredId(c.id)}
+                onMouseLeave={() => setHoveredId((h) => (h === c.id ? null : h))}
+              >
+                <div
+                  className={`flex items-center gap-2 px-3 py-1 ${
+                    i === safeCursor ? 'bg-foreground/[0.06]' : ''
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onPick(c.id);
+                      setOpen(false);
+                    }}
+                    className="min-w-0 flex-1 text-left"
+                    title="Open this code in the inspector"
+                  >
+                    <span className="font-mono text-[15px] font-medium text-foreground">
+                      {c.mnemonic}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedId(expanded ? null : c.id)}
+                    aria-label={`Toggle details for ${c.mnemonic}`}
+                    className="shrink-0 px-1 text-xs text-foreground/40 hover:text-foreground"
+                  >
+                    {expanded ? '−' : 'ⓘ'}
+                  </button>
+                </div>
+                {expanded && (
+                  <div className="mx-3 mb-1 border-l-2 border-foreground/15 py-0.5 pl-2 text-[13px] text-foreground/80">
+                    <p>{def.applied || <em>No definition yet.</em>}</p>
+                    {exemplars.length > 0 && (
+                      <ul className="mt-1 list-disc space-y-0.5 pl-4 text-foreground/70">
+                        {exemplars.slice(0, 3).map((ex, j) => (
+                          <li key={j} className="italic">
+                            “{ex}”
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {c.current?.disconfirming_pattern && (
+                      <p className="mt-1 text-foreground/70">
+                        <span className="text-[11px] uppercase tracking-wide text-red-700/60 dark:text-red-400/60">
+                          not:{' '}
+                        </span>
+                        {c.current.disconfirming_pattern}
+                      </p>
+                    )}
+                    <p className="mt-0.5 text-[11px] uppercase tracking-wide text-foreground/35">
+                      {c.origin.replace('_', ' ')}
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
