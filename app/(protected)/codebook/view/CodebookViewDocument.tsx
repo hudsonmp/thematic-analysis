@@ -201,7 +201,20 @@ export default function CodebookViewDocument({
         </label>
         <button
           type="button"
-          onClick={() => window.print()}
+          onClick={() => {
+            // The save dialog's suggested filename comes from document.title.
+            // Suggest a clean, DOT-FREE name: a typed name like "1.1" makes
+            // macOS treat ".1" as the extension, so no .pdf is appended and
+            // the file looks broken (twice-observed failure). Dashes only.
+            const prev = document.title;
+            const stamp = new Date().toISOString().slice(0, 10);
+            document.title = `codebook-${codebookName}-${stamp}`
+              .toLowerCase()
+              .replace(/[^a-z0-9-]+/g, '-')
+              .replace(/-+/g, '-');
+            window.print();
+            document.title = prev;
+          }}
           className="ml-auto border border-foreground px-3 py-1 text-xs text-foreground transition hover:bg-foreground hover:text-background"
         >
           Export PDF
