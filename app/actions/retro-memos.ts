@@ -4,7 +4,7 @@ import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { requireEditor } from '@/lib/auth/roles';
 import type { Tables } from '@/lib/types/cb-db';
-import { getShownStudy } from '@/app/actions/codebook';
+import { getShownStudy, listCodebooks, listCodebookTree } from '@/app/actions/codebook';
 
 /**
  * Retrospective analysis — the question BANK and per-participant MEMOS.
@@ -237,4 +237,51 @@ export async function upsertRetroMemo(
     throw new Error(`upsertRetroMemo failed: ${error?.message ?? 'no row returned'}`);
   }
   return data;
+}
+
+
+/** The popup-shaped code list of the study's RETROSPECTIVE codebook (name
+ *  matching /retro/i), or null when no such codebook exists. The player swaps
+ *  the coding popup onto this whenever the analyst is in retrospective context
+ *  (retro mode, or the playhead inside a retrospective episode) — retro
+ *  answers are coded against their own instrument, not the transcript's. */
+export async function getRetroCodebook(): Promise<{
+  id: string;
+  name: string;
+  codes: {
+    id: string;
+    mnemonic: string;
+    origin: string;
+    definition: string | null;
+    exemplars: string[];
+    counterExample: string | null;
+  }[];
+} | null> {
+  await requireAuthUser();
+  const all = await listCodebooks();
+  const cb = all.find((c) => /retro/i.test(c.name));
+  if (!cb) return null;
+  const tree = await listCodebookTree(cb.id);
+  const exemplarTexts = (raw: unknown): string[] =>
+    Array.isArray(raw)
+      ? raw
+          .map((e) =>
+            e && typeof e === 'object' && typeof (e as { text?: unknown }).text === 'string'
+              ? (e as { text: string }).text
+              : '',
+          )
+          .filter((t) => t !== '')
+      : [];
+  return {
+    id: cb.id,
+    name: cb.name,
+    codes: tree.codes.map((c) => ({
+      id: c.id,
+      mnemonic: c.mnemonic,
+      origin: c.origin,
+      definition: c.current?.definition ?? null,
+      exemplars: exemplarTexts(c.current?.exemplars),
+      counterExample: c.current?.disconfirming_pattern ?? null,
+    })),
+  };
 }

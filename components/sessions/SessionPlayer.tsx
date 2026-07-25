@@ -52,6 +52,7 @@ import RetroPanel from './RetroPanel';
 import {
   createRetroQuestion,
   deleteRetroQuestion,
+  getRetroCodebook,
   listRetroMemos,
   listRetroQuestions,
   syncRetroQuestionsFromStudy,
@@ -502,6 +503,15 @@ export default function SessionPlayer({
   const [retroBank, setRetroBank] = useState<
     (RetroQuestion & { subs: RetroQuestion[] })[] | null
   >(null);
+  // Whether the PLAYHEAD is inside a retrospective episode — independent of the
+  // selected mode, because coding a retro answer (manual flip to Coding while
+  // the section plays) must still target the retrospective codebook.
+  const [inRetroSection, setInRetroSection] = useState(false);
+  // The study's Retrospective codebook (+ popup-shaped codes); 'missing' when
+  // no codebook named like /retro/i exists.
+  const [retroCb, setRetroCb] = useState<
+    { id: string; name: string; codes: PopupCode[] } | 'missing' | null
+  >(null);
   const [retroMemos, setRetroMemos] = useState<RetroMemo[] | null>(null);
   const [retroBusy, setRetroBusy] = useState(false);
   const [retroError, setRetroError] = useState<string | null>(null);
@@ -514,10 +524,13 @@ export default function SessionPlayer({
       .catch(() => {
         // Non-fatal: a failed sync (e.g. viewer role) still shows the bank.
       })
-      .then(() => Promise.all([listRetroQuestions(codebookId), listRetroMemos(id)]))
-      .then(([bank, memos]) => {
+      .then(() =>
+        Promise.all([listRetroQuestions(codebookId), listRetroMemos(id), getRetroCodebook()]),
+      )
+      .then(([bank, memos, rcb]) => {
         setRetroBank(bank);
         setRetroMemos(memos);
+        setRetroCb(rcb ?? 'missing');
       })
       .catch((e) => {
         retroLoadedRef.current = false; // allow a retry on the next entry
@@ -610,6 +623,7 @@ export default function SessionPlayer({
       const inRetro = epName !== null && /retro/i.test(epName);
       if (inRetro !== inRetroEpisodeRef.current) {
         inRetroEpisodeRef.current = inRetro;
+        setInRetroSection(inRetro);
         if (inRetro) {
           ensureRetroData();
           setMode((prev) => {
@@ -2343,8 +2357,25 @@ export default function SessionPlayer({
   // or open thread) keeps the top z-index so it sits above collapsed neighbors.
   // code id → full PopupCode (definition/exemplars/counter-example). Shared by the
   // popup's assigned chips AND the gutter chips' hover cards — declared above
-  // renderGutter because that callback's deps reference it.
-  const popupCodeById = useMemo(() => new Map(codes.map((c) => [c.id, c])), [codes]);
+  // renderGutter because that callback's deps reference it. UNION of the
+  // transcript codebook and the retrospective codebook, so chips resolve no
+  // matter which instrument a span was coded against.
+  const popupCodeById = useMemo(() => {
+    const extra = typeof retroCb === 'object' && retroCb !== null ? retroCb.codes : [];
+    return new Map([...codes, ...extra].map((c) => [c.id, c]));
+  }, [codes, retroCb]);
+
+  // RETROSPECTIVE CONTEXT switches the popup's instrument: in retro mode, or
+  // while the playhead sits inside a retrospective episode (a manual flip to
+  // Coding there means "code this answer" — against the retro codebook).
+  const usingRetroCodebook =
+    (mode === 'retro' || inRetroSection) && typeof retroCb === 'object' && retroCb !== null;
+  const activeCodes = usingRetroCodebook ? retroCb.codes : codes;
+  const activeCodebookId = usingRetroCodebook ? retroCb.id : codebookId;
+
+  const refreshRetroCodebook = useCallback(() => {
+    void getRetroCodebook().then((rcb) => setRetroCb(rcb ?? 'missing'));
+  }, []);
 
   const renderGutter = useCallback(
     (turnIdx: number): React.ReactNode => {
@@ -2827,6 +2858,24 @@ export default function SessionPlayer({
                   </button>
                 ))}
               </div>
+            )}
+            {(mode === 'retro' || inRetroSection) && (
+              <span
+                title={
+                  usingRetroCodebook
+                    ? 'Retrospective context — the coding popup draws from this codebook'
+                    : 'No codebook named like “Retrospective” exists — create one in the switcher to code retro answers separately'
+                }
+                className={`rounded border px-2 py-1 text-xs ${
+                  usingRetroCodebook
+                    ? 'border-sky-500/50 text-sky-700 dark:text-sky-300'
+                    : 'border-amber-500/50 text-amber-700 dark:text-amber-400'
+                }`}
+              >
+                {usingRetroCodebook
+                  ? `codebook: ${typeof retroCb === 'object' && retroCb ? retroCb.name : ''}`
+                  : 'no retro codebook'}
+              </span>
             )}
             {bookmarkAnns.length > 0 && surface === 'transcript' && (
               <button
@@ -3621,16 +3670,19 @@ export default function SessionPlayer({
         <CodingPopup
           pos={popupPos}
           quote={pending.quoteText}
-          codes={codes}
+          codes={activeCodes}
           assigned={assignedPopupCodes}
           busy={applying}
           error={error}
-          codebookId={codebookId}
+          codebookId={activeCodebookId}
           studyLabel={collection ?? 'uncategorized'}
           onAssign={(cid) => void handleAssignCode(cid)}
           onUnassign={(cid) => void handleUnassignCode(cid)}
           onClose={clearSelection}
           onCodeCreated={(cid) => {
+            // A code born in retro context lives in the RETRO codebook — the
+            // page refresh only refetches the transcript codebook's list.
+            if (usingRetroCodebook) refreshRetroCodebook();
             router.refresh();
             void handleAssignCodeRef.current(cid);
           }}
