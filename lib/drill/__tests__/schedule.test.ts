@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
+  gradeCard,
   newCard,
+  previewIntervals,
   reviewCard,
   serializeCard,
   parseCard,
@@ -52,6 +54,24 @@ describe('schedule (FSRS wrapper)', () => {
     const b = reviewCard(newCard(T0), true, days(0)).card;
     expect(a.due.getTime()).toBe(b.due.getTime());
     expect(a.stability).toBe(b.stability);
+  });
+
+  it('grades order the schedule: Again ≤ Hard ≤ Good ≤ Easy', () => {
+    // Graduate a card first so all four grades are meaningful.
+    let card = newCard(T0);
+    for (let i = 0; i < 4; i++) {
+      ({ card } = gradeCard(card, 3, card.due));
+    }
+    const at = card.due;
+    const p = previewIntervals(card, at);
+    expect(p[1]).toBeLessThanOrEqual(p[2]);
+    expect(p[2]).toBeLessThanOrEqual(p[3]);
+    expect(p[3]).toBeLessThanOrEqual(p[4]);
+    expect(p[1]).toBeLessThan(p[4]);
+
+    // previewIntervals matches what gradeCard actually schedules.
+    const { card: hard } = gradeCard(card, 2, at);
+    expect(hard.due.getTime() - at.getTime()).toBe(p[2]);
   });
 
   it('serialize → parse round-trips through JSON losslessly', () => {

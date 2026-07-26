@@ -20,10 +20,10 @@ import {
  * Fuzz is disabled: interval jitter exists to de-synchronize big Anki decks,
  * which a ~40-code deck doesn't need, and determinism keeps this testable.
  *
- * Grading is BINARY on purpose. The drill auto-grades from the learner's pick
- * (right code → Good, wrong code → Again); asking a novice to self-rate
- * Hard/Good/Easy adds a judgment-of-learning task, and novice JOLs are poorly
- * calibrated — the pick itself is the honest signal.
+ * Grading is Anki's four-grade scheme with one hard floor: a WRONG pick is
+ * always Again — no self-rating can override an objective miss. A correct
+ * pick earns the Again/Hard/Good/Easy choice (Again stays available for the
+ * lucky guess the learner wants to disown).
  */
 
 const engine = fsrs(generatorParameters({ enable_fuzz: false }));
@@ -55,16 +55,38 @@ export function newCard(now: Date): Card {
   return createEmptyCard(now);
 }
 
-/** One review: right pick → Good, wrong pick → Again. Returns the next card
- *  state and the numeric rating for the review log. */
+/** Anki's grade scale: 1 Again · 2 Hard · 3 Good · 4 Easy. */
+export type DrillRating = 1 | 2 | 3 | 4;
+
+/** One review at an explicit grade. Returns the next card state and the
+ *  numeric rating for the review log. */
+export function gradeCard(
+  card: Card,
+  rating: DrillRating,
+  now: Date,
+): { card: Card; rating: number } {
+  const { card: next } = engine.next(card, now, rating as Grade);
+  return { card: next, rating };
+}
+
+/** Back-compat binary review: right pick → Good, wrong pick → Again. */
 export function reviewCard(
   card: Card,
   correct: boolean,
   now: Date,
 ): { card: Card; rating: number } {
-  const rating: Grade = correct ? Rating.Good : Rating.Again;
-  const { card: next } = engine.next(card, now, rating);
-  return { card: next, rating };
+  return gradeCard(card, correct ? (Rating.Good as DrillRating) : (Rating.Again as DrillRating), now);
+}
+
+/** The projected time-until-next-review for EVERY grade — what the rating
+ *  buttons print (Anki's affordance: the choice shows its consequence). */
+export function previewIntervals(card: Card, now: Date): Record<DrillRating, number> {
+  const out = {} as Record<DrillRating, number>;
+  for (const r of [1, 2, 3, 4] as const) {
+    const { card: next } = engine.next(card, now, r as Grade);
+    out[r] = Math.max(0, next.due.getTime() - now.getTime());
+  }
+  return out;
 }
 
 export function isDue(card: Card, now: Date): boolean {

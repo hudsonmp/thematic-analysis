@@ -5,10 +5,11 @@ import { createUserServerClient } from '@/lib/supabase/user-server';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { listCodebooks, listCodebookTree } from '@/app/actions/codebook';
 import {
+  gradeCard,
   newCard,
   parseCard,
-  reviewCard,
   serializeCard,
+  type DrillRating,
   type FsrsCardJson,
 } from '@/lib/drill/schedule';
 import type { DrillCode } from '@/lib/drill/cards';
@@ -88,21 +89,29 @@ export async function getDrillDeck(): Promise<DrillDeck> {
 
 /**
  * One review. The FSRS transition is computed SERVER-side from the stored
- * card, so a stale client can't corrupt the schedule; the pick is auto-graded
- * (right → Good, wrong → Again). The state upsert is in the critical path —
- * the client needs the new due date — but the append-only review log rides in
- * `after()`, off the perceived latency.
+ * card, so a stale client can't corrupt the schedule. Grade floor enforced
+ * HERE, not trusted from the client: a wrong pick is ALWAYS Again (1); a
+ * correct pick takes the learner's Again/Hard/Good/Easy rating (default
+ * Good). The state upsert is in the critical path — the client needs the new
+ * due date — but the append-only review log rides in `after()`, off the
+ * perceived latency.
  */
 export async function submitDrillReview(input: {
   codeId: string;
   cardType: 'classify' | 'recall' | 'name';
   correct: boolean;
+  rating?: DrillRating;
   chosenCodeId: string | null;
   elapsedMs: number | null;
 }): Promise<DrillState> {
   const user = await requireAuthUser();
   const sb = await createUserServerClient();
   const now = new Date();
+
+  const requested = [1, 2, 3, 4].includes(input.rating as number)
+    ? (input.rating as DrillRating)
+    : 3;
+  const grade: DrillRating = input.correct ? requested : 1;
 
   const { data: existing, error: readErr } = await sb
     .from('cb_drill_states')
@@ -114,7 +123,7 @@ export async function submitDrillReview(input: {
   if (readErr) throw new Error(`submitDrillReview failed: ${readErr.message}`);
 
   const card = existing ? parseCard(existing.fsrs as unknown as FsrsCardJson) : newCard(now);
-  const { card: next, rating } = reviewCard(card, input.correct, now);
+  const { card: next, rating } = gradeCard(card, grade, now);
   const fsrsJson = serializeCard(next) as unknown as Json;
 
   const { error: upsertErr } = await sb.from('cb_drill_states').upsert(

@@ -4,6 +4,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { submitDrillReview, type DrillState } from '@/app/actions/drill';
 import { splitDefinition } from '@/lib/codebook/definition';
 import {
+  newCard,
+  parseCard,
+  previewIntervals,
+  type DrillRating,
+  type FsrsCardJson,
+} from '@/lib/drill/schedule';
+import {
   buildQueue,
   deckStats,
   pickDistractors,
@@ -249,32 +256,31 @@ function Session({
   const [results, setResults] = useState<Result[]>([]);
   const [nextDueText, setNextDueText] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Non-null while a CORRECT pick awaits its Again/Hard/Good/Easy grade — the
+  // projected interval for each button, computed at pick time from the card's
+  // current FSRS state. Wrong picks never wait: they auto-grade Again.
+  const [ratePreview, setRatePreview] = useState<Record<DrillRating, number> | null>(null);
+  const [rated, setRated] = useState(false);
   const shownAtRef = useRef<number>(0);
+  const elapsedRef = useRef<number>(0);
 
   const item = idx < queue.length ? queue[idx] : null;
   const revealed = picked !== null;
+  const awaitingRating = revealed && ratePreview !== null && !rated;
 
   useEffect(() => {
     shownAtRef.current = performance.now();
   }, [idx]);
 
-  const pick = (code: DrillCode) => {
-    if (!item || revealed) return;
-    const correct = code.id === item.code.id;
-    const elapsed = Math.round(performance.now() - shownAtRef.current);
-    setPicked(code.id);
-    setResults((r) => [
-      ...r,
-      { code: item.code, correct, pickedMnemonic: correct ? null : code.mnemonic },
-    ]);
-    setNextDueText(null);
-    setSaveError(null);
+  const submit = (correct: boolean, rating: DrillRating | undefined, chosenId: string) => {
+    if (!item) return;
     submitDrillReview({
       codeId: item.code.id,
       cardType: item.cardType,
       correct,
-      chosenCodeId: code.id,
-      elapsedMs: elapsed,
+      rating,
+      chosenCodeId: chosenId,
+      elapsedMs: elapsedRef.current,
     })
       .then((s) => {
         onStateChange(s);
@@ -283,20 +289,61 @@ function Session({
       .catch(() => setSaveError('review not saved — check connection'));
   };
 
+  const pick = (code: DrillCode) => {
+    if (!item || revealed) return;
+    const correct = code.id === item.code.id;
+    elapsedRef.current = Math.round(performance.now() - shownAtRef.current);
+    setPicked(code.id);
+    setResults((r) => [
+      ...r,
+      { code: item.code, correct, pickedMnemonic: correct ? null : code.mnemonic },
+    ]);
+    setNextDueText(null);
+    setSaveError(null);
+    if (correct) {
+      // Hold for the self-grade; show what each grade would schedule.
+      const at = new Date();
+      const cur = item.fsrs !== null ? parseCard(item.fsrs as FsrsCardJson) : newCard(at);
+      setRatePreview(previewIntervals(cur, at));
+      setRated(false);
+    } else {
+      setRatePreview(null);
+      setRated(true);
+      submit(false, undefined, code.id);
+    }
+  };
+
   const advance = () => {
-    if (!revealed) return;
     setPicked(null);
     setNextDueText(null);
+    setRatePreview(null);
+    setRated(false);
     setIdx((i) => i + 1);
   };
 
-  // Enter/Space advance after a reveal, in both directions. (Quiz's 1–4 keys
-  // live in QuizCard; name mode's field handles its own keys.)
+  const rate = (r: DrillRating) => {
+    if (!item || !awaitingRating) return;
+    setRated(true);
+    submit(true, r, item.code.id);
+    advance(); // the rating IS the advance (Anki cadence)
+  };
+
+  // After a reveal: 1–4 grade a correct pick; Enter/Space advance a graded or
+  // wrong one. (Quiz's option keys live in QuizCard, gated on !revealed; name
+  // mode's field handles its own keys.)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!revealed) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (awaitingRating) {
+        const n = Number(e.key);
+        if (n >= 1 && n <= 4) {
+          e.preventDefault();
+          rate(n as DrillRating);
+        }
+        return;
+      }
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         advance();
@@ -305,7 +352,7 @@ function Session({
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [revealed]);
+  }, [revealed, awaitingRating]);
 
   if (!item) {
     const misses = results.filter((r) => !r.correct);
@@ -361,6 +408,7 @@ function Session({
           {results.length > 0 && (
             <> · {results.filter((r) => r.correct).length}/{results.length} correct</>
           )}
+          {saveError && !revealed && <span className="ml-2 text-red-600">{saveError}</span>}
         </span>
         <span>
           {item.fsrs === null ? 'new' : 'review'} · {item.code.codebookName}
@@ -389,18 +437,47 @@ function Session({
               {item.code.counterExample}
             </p>
           )}
-          <div className="mt-4 flex items-center justify-between">
-            <span className="text-xs text-foreground/45">
-              {saveError ?? (nextDueText ? `next review in ~${nextDueText}` : 'saving…')}
-            </span>
-            <button
-              type="button"
-              onClick={advance}
-              className="border border-foreground/25 px-3 py-1.5 text-xs transition hover:bg-foreground/5"
-            >
-              Continue ⏎
-            </button>
-          </div>
+          {awaitingRating && ratePreview ? (
+            // Correct pick: grade it. Each button shows what it schedules;
+            // the rating advances to the next card (Anki cadence). Again stays
+            // available to disown a lucky guess.
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              {(
+                [
+                  { r: 1 as const, label: 'Again' },
+                  { r: 2 as const, label: 'Hard' },
+                  { r: 3 as const, label: 'Good' },
+                  { r: 4 as const, label: 'Easy' },
+                ]
+              ).map(({ r, label }) => (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => rate(r)}
+                  className={`flex-1 border px-3 py-1.5 text-xs transition hover:bg-foreground/5 ${
+                    r === 3 ? 'border-foreground/40' : 'border-foreground/20'
+                  }`}
+                >
+                  <span className="mr-1 text-foreground/40">{r}</span>
+                  {label}
+                  <span className="ml-1.5 text-foreground/45">{humanizeGap(ratePreview[r])}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-4 flex items-center justify-between">
+              <span className="text-xs text-foreground/45">
+                {saveError ?? (nextDueText ? `next review in ~${nextDueText}` : 'saving…')}
+              </span>
+              <button
+                type="button"
+                onClick={advance}
+                className="border border-foreground/25 px-3 py-1.5 text-xs transition hover:bg-foreground/5"
+              >
+                Continue ⏎
+              </button>
+            </div>
+          )}
         </section>
       )}
     </main>
@@ -497,9 +574,14 @@ function QuizCard({
                 <span className="mr-2 text-xs text-foreground/45">{i + 1}</span>
                 <span className="font-mono">{opt.mnemonic}</span>
               </button>
-              {def && (
+              {(def || opt.exemplars.length > 0) && (
                 <div className="pointer-events-none absolute left-2 right-2 top-full z-20 mt-1 hidden border border-foreground/20 bg-background p-3 text-xs leading-relaxed text-foreground/80 shadow-lg group-hover:block">
-                  {def}
+                  {def && <p>{def}</p>}
+                  {opt.exemplars.slice(0, 2).map((ex, j) => (
+                    <p key={j} className="mt-1.5 italic text-foreground/55">
+                      “{ex.length > 180 ? `${ex.slice(0, 180)}…` : ex}”
+                    </p>
+                  ))}
                 </div>
               )}
             </li>
