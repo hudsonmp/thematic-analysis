@@ -2811,7 +2811,7 @@ export default function SessionPlayer({
   );
 
   return (
-    <main className="px-6 py-6">
+    <main className="px-2 py-4">
       <header className="mb-4">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-lg font-medium tracking-tight">
@@ -2924,7 +2924,7 @@ export default function SessionPlayer({
           1/3 : 2/3 split left dead space between the gutter and the video on
           wide screens — space the video can actually use. */}
       <div
-        className={`grid gap-6 ${
+        className={`grid gap-2 ${
           mode === 'retro'
             ? 'lg:grid-cols-[minmax(0,59rem)_minmax(20rem,1fr)]'
             : 'lg:grid-cols-[minmax(20rem,1fr)_minmax(0,59rem)]'
