@@ -33,6 +33,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: '/reliability', label: 'Reliability', hint: 'Freeze gate, κ audit' },
       { href: '/export', label: 'Export', hint: 'LaTeX, JSON' },
       { href: '/instructions', label: 'Instructions', hint: 'Coder guidance' },
+      { href: '/drill', label: 'Drill', hint: 'Spaced practice on the codes' },
     ],
   },
   {
