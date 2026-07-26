@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   cardTypeFor,
+  cardTypeIn,
+  deckStats,
   pickDistractors,
   exemplarFor,
   buildQueue,
+  rankCodesForQuery,
   mulberry32,
   hashSeed,
   type DrillCode,
@@ -90,7 +93,7 @@ describe('buildQueue', () => {
   ];
 
   it('includes every due card, no future card, and caps new intake', () => {
-    const q = buildQueue(codes, states, T0, 2, 42);
+    const q = buildQueue('quiz', codes, states, T0, 2, 42);
     const ids = q.map((i) => i.code.id);
     expect(ids).toContain('due-old');
     expect(ids).toContain('due-new');
@@ -100,7 +103,7 @@ describe('buildQueue', () => {
   });
 
   it('carries state onto due items and defaults new ones', () => {
-    const q = buildQueue(codes, states, T0, 6, 42);
+    const q = buildQueue('quiz', codes, states, T0, 6, 42);
     const dueOld = q.find((i) => i.code.id === 'due-old')!;
     expect(dueOld.reps).toBe(3);
     expect(dueOld.fsrs).toEqual({ s: 1 });
@@ -110,14 +113,78 @@ describe('buildQueue', () => {
   });
 
   it('is deterministic per seed', () => {
-    const a = buildQueue(codes, states, T0, 3, 9).map((i) => i.code.id);
-    const b = buildQueue(codes, states, T0, 3, 9).map((i) => i.code.id);
+    const a = buildQueue('quiz', codes, states, T0, 3, 9).map((i) => i.code.id);
+    const b = buildQueue('quiz', codes, states, T0, 3, 9).map((i) => i.code.id);
     expect(a).toEqual(b);
   });
 
   it('newCap 0 drills only due cards', () => {
-    const q = buildQueue(codes, states, T0, 0, 1);
+    const q = buildQueue('quiz', codes, states, T0, 0, 1);
     expect(q.every((i) => i.fsrs !== null)).toBe(true);
+  });
+
+  it('ahead admits future-scheduled cards', () => {
+    const q = buildQueue('quiz', codes, states, T0, 0, 1, true);
+    expect(q.map((i) => i.code.id)).toContain('later');
+  });
+
+  it('name mode ignores quiz-direction states — separate schedules', () => {
+    // All three states above are classify/recall, so in name mode every
+    // drillable code is NEW.
+    const q = buildQueue('name', codes, states, T0, 10, 5);
+    expect(q.every((i) => i.fsrs === null && i.cardType === 'name')).toBe(true);
+    const nameState = [
+      { codeId: 'due-old', cardType: 'name', due: '2026-07-20T00:00:00Z', fsrs: { s: 9 }, reps: 1 },
+    ];
+    const q2 = buildQueue('name', codes, nameState, T0, 0, 5);
+    expect(q2.map((i) => i.code.id)).toEqual(['due-old']);
+  });
+});
+
+describe('cardTypeIn / deckStats', () => {
+  it('name mode drops codes with neither definition nor exemplars', () => {
+    const bare = code('bare', { definition: null });
+    expect(cardTypeIn('name', bare)).toBeNull();
+    expect(cardTypeIn('name', code('def'))).toBe('name');
+    expect(cardTypeIn('quiz', bare)).toBe('recall');
+  });
+
+  it('deckStats partitions due / fresh / scheduled and finds next due', () => {
+    const codes = [code('a'), code('b'), code('c')];
+    const states = [
+      { codeId: 'a', cardType: 'recall', due: '2026-07-20T00:00:00Z', fsrs: {}, reps: 1 },
+      { codeId: 'b', cardType: 'recall', due: '2026-07-28T00:00:00Z', fsrs: {}, reps: 1 },
+    ];
+    const s = deckStats('quiz', codes, states, T0);
+    expect(s).toEqual({
+      due: 1,
+      fresh: 1,
+      scheduled: 1,
+      nextDueMs: new Date('2026-07-28T00:00:00Z').getTime(),
+    });
+    // Same states seen from name mode: nothing drilled yet.
+    expect(deckStats('name', codes, states, T0)).toEqual({
+      due: 0,
+      fresh: 3,
+      scheduled: 0,
+      nextDueMs: null,
+    });
+  });
+});
+
+describe('rankCodesForQuery', () => {
+  const pool = [code('spec-localization'), code('spec-revision'), code('update-slot')];
+
+  it('prefix beats substring, ties alphabetical, empty query returns all', () => {
+    expect(rankCodesForQuery(pool, 'spec').map((c) => c.mnemonic)).toEqual([
+      'spec-localization',
+      'spec-revision',
+    ]);
+    expect(rankCodesForQuery(pool, 'loc').map((c) => c.mnemonic)).toEqual([
+      'spec-localization',
+    ]);
+    expect(rankCodesForQuery(pool, '')).toHaveLength(3);
+    expect(rankCodesForQuery(pool, 'zzz')).toHaveLength(0);
   });
 });
 

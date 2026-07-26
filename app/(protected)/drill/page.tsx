@@ -1,5 +1,5 @@
 import { getDrillDeck } from '@/app/actions/drill';
-import DrillSession from '@/components/drill/DrillSession';
+import DrillHome from '@/components/drill/DrillSession';
 
 /**
  * Drill — FSRS-scheduled retrieval practice on the a priori codes. Server
@@ -9,5 +9,5 @@ import DrillSession from '@/components/drill/DrillSession';
  */
 export default async function DrillPage() {
   const deck = await getDrillDeck();
-  return <DrillSession codes={deck.codes} states={deck.states} />;
+  return <DrillHome codes={deck.codes} states={deck.states} />;
 }

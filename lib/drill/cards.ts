@@ -28,7 +28,21 @@ export type DrillCode = {
   codebookName: string;
 };
 
-export type CardType = 'classify' | 'recall';
+export type CardType = 'classify' | 'recall' | 'name';
+
+/**
+ * The two practice DIRECTIONS. Quiz = recognition (excerpt/definition front,
+ * pick among 4 near-miss options). Name = production (definition + exemplars
+ * front, produce the code from the full list). Each direction schedules its
+ * own FSRS card per code — recognition strength does not imply production
+ * strength, so the two must not share a memory state.
+ */
+export type DrillMode = 'quiz' | 'name';
+
+const MODE_CARD_TYPES: Record<DrillMode, CardType[]> = {
+  quiz: ['classify', 'recall'],
+  name: ['name'],
+};
 
 export type QueueItem = {
   code: DrillCode;
@@ -116,40 +130,110 @@ export function exemplarFor(code: DrillCode, reps: number): string {
   return code.exemplars[reps % code.exemplars.length];
 }
 
+type StateRow = { codeId: string; cardType: string; due: string; fsrs: unknown; reps: number };
+
+/** The card type a code takes in `mode`. Null when the code can't be drilled
+ *  in that mode (name cards need SOMETHING on the front). */
+export function cardTypeIn(mode: DrillMode, code: DrillCode): CardType | null {
+  if (mode === 'quiz') return cardTypeFor(code);
+  return code.definition !== null || code.exemplars.length > 0 ? 'name' : null;
+}
+
+/** This mode's scheduling state for a code, if any. */
+function stateIn(mode: DrillMode, states: StateRow[], codeId: string): StateRow | undefined {
+  return states.find(
+    (s) => s.codeId === codeId && MODE_CARD_TYPES[mode].includes(s.cardType as CardType),
+  );
+}
+
+/** Due / new / learned counts for the overview, per mode. */
+export function deckStats(
+  mode: DrillMode,
+  codes: DrillCode[],
+  states: StateRow[],
+  now: Date,
+): { due: number; fresh: number; scheduled: number; nextDueMs: number | null } {
+  let due = 0;
+  let fresh = 0;
+  let scheduled = 0;
+  let nextDueMs: number | null = null;
+  for (const code of codes) {
+    if (cardTypeIn(mode, code) === null) continue;
+    const st = stateIn(mode, states, code.id);
+    if (!st) {
+      fresh++;
+    } else if (new Date(st.due).getTime() <= now.getTime()) {
+      due++;
+    } else {
+      scheduled++;
+      const t = new Date(st.due).getTime();
+      if (nextDueMs === null || t < nextDueMs) nextDueMs = t;
+    }
+  }
+  return { due, fresh, scheduled, nextDueMs };
+}
+
 /**
- * Assemble one session's queue: every DUE card (oldest due first), then up to
- * `newCap` never-drilled codes, the whole thing seeded-shuffled so due and new
- * cards interleave — interleaving is where the discrimination benefit lives.
+ * Assemble one session's queue for `mode`: every DUE card (oldest due first),
+ * then up to `newCap` never-drilled codes, the whole thing seeded-shuffled so
+ * due and new cards interleave — interleaving is where the discrimination
+ * benefit lives.
+ *
+ * `ahead: true` is the "practice anyway" session: cards not yet due are
+ * admitted too (FSRS handles early reviews natively — the shorter elapsed
+ * time just earns a smaller stability bump).
  */
 export function buildQueue(
+  mode: DrillMode,
   codes: DrillCode[],
-  states: { codeId: string; cardType: string; due: string; fsrs: unknown; reps: number }[],
+  states: StateRow[],
   now: Date,
   newCap: number,
   seed: number,
+  ahead = false,
 ): QueueItem[] {
-  const byCode = new Map(states.map((s) => [s.codeId, s]));
-
-  const due: QueueItem[] = [];
+  const due: { item: QueueItem; dueAt: number }[] = [];
   const fresh: QueueItem[] = [];
   for (const code of codes) {
-    const st = byCode.get(code.id);
+    const type = cardTypeIn(mode, code);
+    if (type === null) continue;
+    const st = stateIn(mode, states, code.id);
     if (st) {
-      if (new Date(st.due).getTime() <= now.getTime()) {
-        due.push({ code, cardType: st.cardType as CardType, fsrs: st.fsrs, reps: st.reps });
+      const dueAt = new Date(st.due).getTime();
+      if (ahead || dueAt <= now.getTime()) {
+        due.push({
+          item: { code, cardType: st.cardType as CardType, fsrs: st.fsrs, reps: st.reps },
+          dueAt,
+        });
       }
     } else {
-      fresh.push({ code, cardType: cardTypeFor(code), fsrs: null, reps: 0 });
+      fresh.push({ code, cardType: type, fsrs: null, reps: 0 });
     }
   }
 
-  due.sort((a, b) => {
-    const sa = byCode.get(a.code.id)!;
-    const sb = byCode.get(b.code.id)!;
-    return new Date(sa.due).getTime() - new Date(sb.due).getTime();
-  });
+  due.sort((a, b) => a.dueAt - b.dueAt);
 
   const rand = mulberry32(seed);
   const intake = shuffled(fresh, rand).slice(0, Math.max(0, newCap));
-  return shuffled([...due, ...intake], rand);
+  return shuffled([...due.map((d) => d.item), ...intake], rand);
+}
+
+/**
+ * Rank codes against a typed query for the NAME-mode answer field: prefix
+ * hits first, then any substring, ties alphabetical — deterministic, so the
+ * list never reshuffles under the cursor. Empty query returns everything
+ * (the full code list IS the answer space; browsing it is allowed — the
+ * retrieval act is recognizing the right slug, not spelling it).
+ */
+export function rankCodesForQuery(codes: DrillCode[], query: string): DrillCode[] {
+  const q = query.trim().toLowerCase();
+  return codes
+    .map((c) => {
+      const m = c.mnemonic.toLowerCase();
+      const rank = q === '' ? 3 : m.startsWith(q) ? 0 : m.includes(q) ? 2 : -1;
+      return { c, rank };
+    })
+    .filter((x) => x.rank >= 0)
+    .sort((a, b) => a.rank - b.rank || a.c.mnemonic.localeCompare(b.c.mnemonic))
+    .map((x) => x.c);
 }

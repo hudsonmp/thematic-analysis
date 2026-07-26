@@ -95,7 +95,7 @@ export async function getDrillDeck(): Promise<DrillDeck> {
  */
 export async function submitDrillReview(input: {
   codeId: string;
-  cardType: 'classify' | 'recall';
+  cardType: 'classify' | 'recall' | 'name';
   correct: boolean;
   chosenCodeId: string | null;
   elapsedMs: number | null;
