@@ -2,6 +2,7 @@
 
 import { studyFrom } from '@/lib/supabase/study-guard';
 import { createUserServerClient } from '@/lib/supabase/user-server';
+import { pageAll } from '@/lib/supabase/pageAll';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 
 // ---------------------------------------------------------------------------
@@ -104,13 +105,18 @@ export async function listSessionAssistantChat(
   const userId = userRes.data?.id;
   if (!userId) return [];
 
-  const msgRes = await (await studyFrom('study_assistant_messages'))
-    .select('id, role, content, created_at, module_id, scenario_idx')
-    .eq('user_id', userId)
-    // created_at is the timeline key; id is a deterministic tiebreaker for two
-    // turns sharing a millisecond (matches alignChat's stable sort).
-    .order('created_at', { ascending: true })
-    .order('id', { ascending: true });
+  // Paged past PostgREST's silent 1000-row cap (read-only study select).
+  const studyMsgs = await studyFrom('study_assistant_messages');
+  const msgRes = await pageAll((from, to) =>
+    studyMsgs
+      .select('id, role, content, created_at, module_id, scenario_idx')
+      .eq('user_id', userId)
+      // created_at is the timeline key; id is a deterministic tiebreaker for two
+      // turns sharing a millisecond (matches alignChat's stable sort).
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
   if (msgRes.error) {
     throw new Error(
       `listSessionAssistantChat: study_assistant_messages read failed: ${msgRes.error.message}`,

@@ -1,6 +1,7 @@
 'use server';
 
 import { createUserServerClient } from '@/lib/supabase/user-server';
+import { pageAll } from '@/lib/supabase/pageAll';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import type { Tables } from '@/lib/types/cb-db';
 
@@ -227,13 +228,19 @@ export async function listObservationsForPid(pid: string): Promise<ObservationVi
   await requireAuthUser();
   const sb = await createUserServerClient();
 
-  const { data, error } = await sb
-    .from('cb_observations')
-    .select(
-      'id, pid, flag_type_id, episode_id, body, is_quote, retro_question_scenario_idx, created_at, cb_flag_types(label, color), cb_episodes(name)',
-    )
-    .eq('pid', pid)
-    .order('created_at', { ascending: false });
+  // Paged past PostgREST's silent 1000-row cap — heavily-flagged sessions are
+  // already in the hundreds per pid.
+  const { data, error } = await pageAll((from, to) =>
+    sb
+      .from('cb_observations')
+      .select(
+        'id, pid, flag_type_id, episode_id, body, is_quote, retro_question_scenario_idx, created_at, cb_flag_types(label, color), cb_episodes(name)',
+      )
+      .eq('pid', pid)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
   if (error) {
     throw new Error(`listObservationsForPid failed: ${error.message}`);
   }
