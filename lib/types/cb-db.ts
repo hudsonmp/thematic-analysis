@@ -646,6 +646,95 @@ export type Database = {
           },
         ]
       }
+      cb_drill_states: {
+        Row: {
+          card_type: string
+          code_id: string
+          due: string
+          fsrs: Json
+          id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          card_type?: string
+          code_id: string
+          due?: string
+          fsrs: Json
+          id?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          card_type?: string
+          code_id?: string
+          due?: string
+          fsrs?: Json
+          id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_drill_states_code_id_fkey"
+            columns: ["code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_drill_reviews: {
+        Row: {
+          card_type: string
+          chosen_code_id: string | null
+          code_id: string
+          correct: boolean
+          elapsed_ms: number | null
+          id: string
+          rating: number
+          reviewed_at: string
+          user_id: string
+        }
+        Insert: {
+          card_type: string
+          chosen_code_id?: string | null
+          code_id: string
+          correct: boolean
+          elapsed_ms?: number | null
+          id?: string
+          rating: number
+          reviewed_at?: string
+          user_id: string
+        }
+        Update: {
+          card_type?: string
+          chosen_code_id?: string | null
+          code_id?: string
+          correct?: boolean
+          elapsed_ms?: number | null
+          id?: string
+          rating?: number
+          reviewed_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_drill_reviews_code_id_fkey"
+            columns: ["code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_drill_reviews_chosen_code_id_fkey"
+            columns: ["chosen_code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_coder_comments: {
         Row: {
           author: string
