@@ -2404,6 +2404,16 @@ export default function SessionPlayer({
     const extra = typeof retroCb === 'object' && retroCb !== null ? retroCb.codes : [];
     return new Map([...codes, ...extra].map((c) => [c.id, c]));
   }, [codes, retroCb]);
+  // EMERGENT codes get their own shade (lime vs the a-priori emerald) on chips
+  // and inline washes, so provisional data-driven codings read differently from
+  // the established instrument at a glance.
+  const emergentCodeIds = useMemo(
+    () =>
+      new Set(
+        [...popupCodeById.values()].filter((c) => c.origin === 'emergent').map((c) => c.id),
+      ),
+    [popupCodeById],
+  );
 
   // RETROSPECTIVE CONTEXT switches the popup's instrument: in retro mode, or
   // while the playhead sits inside a retrospective episode (a manual flip to
@@ -2537,7 +2547,11 @@ export default function SessionPlayer({
                 {b.ann.codes.map((c) => (
                   <span
                     key={c.id}
-                    className="group/chip relative inline-flex items-center gap-0.5 border border-emerald-600/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px]"
+                    className={`group/chip relative inline-flex items-center gap-0.5 border px-1.5 py-0.5 font-mono text-[11px] ${
+                      emergentCodeIds.has(c.id)
+                        ? 'border-lime-600/50 bg-lime-500/20'
+                        : 'border-emerald-600/40 bg-emerald-500/10'
+                    }`}
                   >
                     {c.mnemonic}
                     <ChipMetaCard meta={popupCodeById.get(c.id) ?? null} />
@@ -2771,6 +2785,7 @@ export default function SessionPlayer({
     commentedAnnIds,
     openCommentAnnId,
     pendingAnnId: PENDING_ANN_ID,
+    emergentCodeIds,
     rowRefs,
     onSeek: seekTo,
     onFocusAnnotation: focusAnnotation,
@@ -3707,6 +3722,9 @@ export default function SessionPlayer({
                   <span className="rounded-sm bg-emerald-300/25 px-1 dark:bg-emerald-400/15">
                     code
                   </span>
+                  <span className="rounded-sm bg-lime-300/45 px-1">
+                    emergent code
+                  </span>
                   <span className="rounded-sm bg-yellow-300/55 px-1 dark:bg-yellow-400/30">
                     quote / comment
                   </span>
@@ -3883,6 +3901,7 @@ function TranscriptBody({
   commentedAnnIds,
   openCommentAnnId,
   pendingAnnId,
+  emergentCodeIds,
   rowRefs,
   onSeek,
   onFocusAnnotation,
@@ -3901,6 +3920,7 @@ function TranscriptBody({
   commentedAnnIds: Set<string>;
   openCommentAnnId: string | null;
   pendingAnnId: string;
+  emergentCodeIds: Set<string>;
   rowRefs: React.RefObject<(HTMLElement | null)[]>;
   onSeek: (ms: number) => void;
   onFocusAnnotation: (ann: MyAnnotationView, e: React.MouseEvent) => void;
@@ -3976,6 +3996,7 @@ function TranscriptBody({
                               commentedAnnIds,
                               openCommentAnnId,
                               pendingAnnId,
+                              emergentCodeIds,
                             )
                           : seg.text}
                       </span>
@@ -4327,6 +4348,7 @@ function renderHighlightedText(
   commentedAnnIds: Set<string>,
   openCommentAnnId: string | null,
   pendingAnnId: string,
+  emergentCodeIds: Set<string>,
 ): React.ReactNode {
   // Data-driven colors (flags). Built off the passed highlights, so no extra param.
   const colorById = new Map<string, string>();
@@ -4428,18 +4450,32 @@ function renderHighlightedText(
         : hasQuote
           ? 'Flagged quote — click to comment'
           : 'Coded — click to comment';
-    // Precedence: comments/quotes (yellow) > bookmark (violet) > code (emerald).
-    // A bookmarked span that later earns comments reads as a comment span — the
-    // bookmark was a waypoint, the notes are the destination.
+    // A span whose codes are ALL emergent reads in its own green (lime): the
+    // provisional, data-driven layer of the coding stays visually distinct from
+    // the a-priori instrument. Any a-priori code on the span keeps emerald.
+    const allEmergent = realIds.every((hid) => {
+      const a = annById.get(hid);
+      return (
+        a !== undefined && a.codes.length > 0 && a.codes.every((c) => emergentCodeIds.has(c.id))
+      );
+    });
+    // Precedence: comments/quotes (yellow) > bookmark (violet) > code (emerald,
+    // or lime when purely emergent). A bookmarked span that later earns comments
+    // reads as a comment span — the bookmark was a waypoint, the notes are the
+    // destination.
     const bg = isYellow
       ? 'bg-yellow-300/55 text-foreground dark:bg-yellow-400/30'
       : hasBookmark
         ? 'bg-violet-300/50 text-foreground dark:bg-violet-400/30'
-        : 'bg-emerald-300/25 text-foreground dark:bg-emerald-400/15';
+        : allEmergent
+          ? 'bg-lime-300/45 text-foreground'
+          : 'bg-emerald-300/25 text-foreground dark:bg-emerald-400/15';
     const underline = hasComment
       ? 'underline decoration-sky-500 decoration-dotted decoration-2 underline-offset-2'
       : '';
-    const ring = isOpen ? 'ring-2 ring-sky-500' : '';
+    // Open = the solid sky ring; hover previews the SAME ring, so "what would
+    // I be opening?" is answered before the click.
+    const ring = isOpen ? 'ring-2 ring-sky-500' : 'hover:ring-2 hover:ring-sky-500';
     return (
       <mark
         key={idx}
