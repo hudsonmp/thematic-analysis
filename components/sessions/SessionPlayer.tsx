@@ -1098,9 +1098,15 @@ export default function SessionPlayer({
       const target = e.target as HTMLElement | null;
       if (!target) return;
       if (target.isContentEditable) return;
+      // NOTE: `mark` is deliberately NOT in this guard. Interactive marks (code,
+      // comment, quote, bookmark) call stopPropagation in their own onClick, so
+      // this handler never sees them. The marks that DO reach here are the
+      // passive tints — flag colors, search hits, the pending selection wash —
+      // which used to swallow the click into a dead zone; now a click on painted
+      // prose still navigates, keeping "bare click = seek" whole.
       if (
         target.closest(
-          'mark, button, a, [role="button"], [data-rail-card], [data-comment-card], [data-code-block]',
+          'button, a, [role="button"], [data-rail-card], [data-comment-card], [data-code-block]',
         )
       ) {
         return;
@@ -2043,13 +2049,20 @@ export default function SessionPlayer({
   // comment spans) opens the thread. Viewers can't code, so they get the thread.
   const focusAnnotation = useCallback(
     (ann: MyAnnotationView, e: React.MouseEvent) => {
-      if (ann.kind === 'bookmark' && codingEnabled && !commentedAnnIds.has(ann.id)) {
+      // In CODING mode, clicking a coded span opens the code editor (the popup,
+      // pre-anchored to this annotation) — the mark is the biggest target on
+      // screen, so the natural gesture now edits the thing it represents rather
+      // than routing to comments. Bookmarks (no codes yet) open the popup too.
+      // In COMMENT mode, or for a pure quote/comment span, the click opens the
+      // thread. The popup carries a "🗨 notes" handoff, so a coded span's
+      // comments are one click away from the code editor.
+      if (codingEnabled && (ann.codes.length > 0 || ann.kind === 'bookmark')) {
         openPopupForAnnotation(ann, e);
         return;
       }
       openThreadForAnnotation(ann);
     },
-    [codingEnabled, commentedAnnIds, openPopupForAnnotation, openThreadForAnnotation],
+    [codingEnabled, openPopupForAnnotation, openThreadForAnnotation],
   );
 
   // --- Speaker-turn grouping ----------------------------------------------
@@ -2576,17 +2589,27 @@ export default function SessionPlayer({
                   </span>
                 ))}
               </button>
-              <span className="flex shrink-0 items-center gap-0.5">
+              <span className="flex shrink-0 items-center gap-1.5">
+                {/* Re-anchor: armed state is shown IN the button (filled sky +
+                    "re-anchor…"), so the feedback sits at the locus of the
+                    action, not only in the banner above the transcript. The two
+                    controls are spaced (gap-1.5) so a slip off re-anchor doesn't
+                    land on delete. */}
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setReanchoringId(b.ann.id);
+                    setReanchoringId(reanchoringId === b.ann.id ? null : b.ann.id);
                   }}
-                  title="Edit selection — the next text you highlight becomes this bracket's span"
-                  className="px-0.5 text-[11px] text-foreground/40 hover:text-foreground"
+                  aria-pressed={reanchoringId === b.ann.id}
+                  title="Re-anchor — the next text you highlight replaces this bracket's span"
+                  className={`rounded px-1 py-0.5 text-[10px] transition ${
+                    reanchoringId === b.ann.id
+                      ? 'bg-sky-500 text-white'
+                      : 'text-foreground/45 hover:bg-foreground/5 hover:text-foreground'
+                  }`}
                 >
-                  ✎
+                  {reanchoringId === b.ann.id ? 're-anchor…' : 're-anchor'}
                 </button>
                 <button
                   type="button"
@@ -2598,9 +2621,9 @@ export default function SessionPlayer({
                   }}
                   disabled={busyId === b.ann.id}
                   title="Delete the bracket"
-                  className="px-0.5 text-[11px] text-foreground/40 hover:text-red-600 disabled:opacity-40"
+                  className="rounded px-1 py-0.5 text-[10px] text-foreground/45 transition hover:bg-foreground/5 hover:text-red-600 disabled:opacity-40"
                 >
-                  🗑
+                  delete
                 </button>
               </span>
             </div>
@@ -3768,7 +3791,12 @@ export default function SessionPlayer({
                     : undefined
                 }
                 style={{ scrollbarGutter: 'stable' }}
-                className="relative h-[80vh] overflow-y-auto pr-3"
+                // While a re-anchor is armed, the whole transcript is a target
+                // for the replacement span — a crosshair cursor says so at the
+                // locus of the coming action, complementing the armed button.
+                className={`relative h-[80vh] overflow-y-auto pr-3 ${
+                  reanchoringId ? 'cursor-crosshair' : ''
+                }`}
               >
                 {surface === 'specification' ? (
                   specPane
@@ -4006,6 +4034,7 @@ function TranscriptBody({
                               openCommentAnnId,
                               pendingAnnId,
                               emergentCodeIds,
+                              codingEnabled,
                             )
                           : seg.text}
                       </span>
@@ -4358,6 +4387,7 @@ function renderHighlightedText(
   openCommentAnnId: string | null,
   pendingAnnId: string,
   emergentCodeIds: Set<string>,
+  codingEnabled: boolean,
 ): React.ReactNode {
   // Data-driven colors (flags). Built off the passed highlights, so no extra param.
   const colorById = new Map<string, string>();
@@ -4452,13 +4482,19 @@ function renderHighlightedText(
     // The old lg+ suppression traded that for a brace glyph, which read as
     // decoration, not extent.
 
-    const title = hasComment
-      ? 'Has comments — click to open the thread'
-      : hasBookmark
-        ? 'Bookmarked — click to code it (assigning resolves the bookmark)'
-        : hasQuote
-          ? 'Flagged quote — click to comment'
-          : 'Coded — click to comment';
+    // In coding mode a coded span's click edits its CODES (the popup); the
+    // title says so. In comment mode (or a pure quote/comment), it opens the
+    // thread.
+    const codeEditable = codingEnabled && (realIds.length > 0) && !isYellow;
+    const title = codeEditable
+      ? 'Coded — click to edit its codes'
+      : hasComment
+        ? 'Has comments — click to open the thread'
+        : hasBookmark
+          ? 'Bookmarked — click to code it (assigning resolves the bookmark)'
+          : hasQuote
+            ? 'Flagged quote — click to comment'
+            : 'Coded — click to comment';
     // A span whose codes are ALL emergent reads in its own green (lime): the
     // provisional, data-driven layer of the coding stays visually distinct from
     // the a-priori instrument. Any a-priori code on the span keeps emerald.
