@@ -777,6 +777,7 @@ export type Database = {
         Row: {
           codebook_id: string
           created_at: string
+          created_by: string | null
           current_version_id: string | null
           id: string
           mnemonic: string
@@ -789,6 +790,7 @@ export type Database = {
         Insert: {
           codebook_id: string
           created_at?: string
+          created_by?: string | null
           current_version_id?: string | null
           id?: string
           mnemonic: string
@@ -801,6 +803,7 @@ export type Database = {
         Update: {
           codebook_id?: string
           created_at?: string
+          created_by?: string | null
           current_version_id?: string | null
           id?: string
           mnemonic?: string
@@ -1192,6 +1195,7 @@ export type Database = {
       }
       cb_profiles: {
         Row: {
+          codes_seen_at: string
           created_at: string
           display_name: string | null
           initials: string | null
@@ -1199,6 +1203,7 @@ export type Database = {
           role: string
         }
         Insert: {
+          codes_seen_at?: string
           created_at?: string
           display_name?: string | null
           initials?: string | null
@@ -1206,6 +1211,7 @@ export type Database = {
           role?: string
         }
         Update: {
+          codes_seen_at?: string
           created_at?: string
           display_name?: string | null
           initials?: string | null
