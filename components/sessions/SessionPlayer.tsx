@@ -47,6 +47,7 @@ import type { ChatMessage } from '@/app/actions/chat';
 import { alignChat, activeChatIndex } from '@/lib/chat/align';
 import type { SpecTimelineResult } from '@/app/actions/spec';
 import { specStateAt } from '@/lib/spec/reconstruct';
+import { coalesceEditBursts } from '@/lib/sessions/editBursts';
 import { retroQuestionsAt } from '@/lib/live/retro';
 import RetroPanel from './RetroPanel';
 import {
@@ -1885,6 +1886,26 @@ export default function SessionPlayer({
     return Math.max(1, durationMs, lastOffset);
   }, [flagMarkers, durationMs]);
 
+  // Participant TYPING activity as timeline spans — every settled spec /
+  // entities autosave, coalesced into bursts (lib/sessions/editBursts) on the
+  // SAME anchor clock as the flags. Rendered as two thin lanes under the flag
+  // rail so "they were typing here" is visible at a glance without adding 115
+  // ticks of noise.
+  const specBursts = useMemo(
+    () =>
+      anchorMs === null
+        ? []
+        : coalesceEditBursts(specTimeline.specEdits.map((e) => e.createdAt), anchorMs),
+    [specTimeline.specEdits, anchorMs],
+  );
+  const entityBursts = useMemo(
+    () =>
+      anchorMs === null
+        ? []
+        : coalesceEditBursts(specTimeline.entityEdits.map((e) => e.createdAt), anchorMs),
+    [specTimeline.entityEdits, anchorMs],
+  );
+
   // The flags LIST follows playback: the CURRENT flag is the last one whose
   // offset ≤ the playhead (the markers' own anchor math — `offsetMs` is video
   // time, `currentMs` the second-rounded playhead). The row is scrolled into view
@@ -3096,7 +3117,7 @@ export default function SessionPlayer({
               the list scrolls at ~8 rows so the code panel below is reachable.
               Shown while coding even with ZERO flags — a sparsely-flagged session
               is exactly the one that needs the retro "+ Flag" repair. */}
-          {(flagMarkers.length > 0 || codingEnabled) && (
+          {(flagMarkers.length > 0 || specBursts.length > 0 || entityBursts.length > 0 || codingEnabled) && (
             <section
               aria-label="Live flags on the timeline"
               className="rounded border border-foreground/15 p-3"
@@ -3191,6 +3212,51 @@ export default function SessionPlayer({
                   );
                 })}
               </div>
+
+              {/* Typing-activity lanes: one span per edit BURST, clickable to
+                  seek to the burst's start. Same railSpanMs scale as the flag
+                  ticks above, so a flag and the typing that surrounds it line
+                  up vertically. */}
+              {(specBursts.length > 0 || entityBursts.length > 0) && (
+                <div className="mt-1.5 space-y-1">
+                  {[
+                    { label: 'spec typing', bursts: specBursts, cls: 'bg-sky-500/70' },
+                    { label: 'entity typing', bursts: entityBursts, cls: 'bg-orange-500/70' },
+                  ]
+                    .filter((lane) => lane.bursts.length > 0)
+                    .map(({ label, bursts, cls }) => (
+                      <div key={label} className="flex items-center gap-2">
+                        <span className="w-24 shrink-0 text-right text-[10px] leading-none text-foreground/40">
+                          {label}
+                        </span>
+                        <div
+                          role="group"
+                          aria-label={`${label} bursts`}
+                          className="relative h-2 flex-1 rounded bg-foreground/[0.04]"
+                        >
+                          {bursts.map((b, i) => {
+                            const leftPct = Math.min(100, (b.startMs / railSpanMs) * 100);
+                            const widthPct = Math.max(
+                              0.5,
+                              Math.min(100 - leftPct, ((b.endMs - b.startMs) / railSpanMs) * 100),
+                            );
+                            return (
+                              <button
+                                key={i}
+                                type="button"
+                                onClick={() => seekTo(b.startMs)}
+                                title={`${label}: ${b.count} edit${b.count === 1 ? '' : 's'} · ${formatTime(b.startMs)}–${formatTime(b.endMs)}`}
+                                aria-label={`Seek to ${label} burst at ${formatTime(b.startMs)}`}
+                                style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                                className={`absolute top-0 h-full rounded-sm opacity-80 transition hover:opacity-100 ${cls}`}
+                              />
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
 
               <ul className="mt-3 max-h-64 divide-y divide-foreground/10 overflow-y-auto">
                 {flagMarkers.map(({ obs, offsetMs }, i) => {
