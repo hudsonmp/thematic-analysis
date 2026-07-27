@@ -3942,6 +3942,15 @@ function TranscriptBody({
         const speaker = firstSeg?.speaker ?? null;
         const turnInner = (
           <div className="flex items-start gap-1.5">
+            {/* Line number = the turn's first segment ORDINAL (1-based): stable
+                across turn regrouping and identical for both coders, so "look
+                at line 214" survives edits — a display count would not. */}
+            <span
+              aria-hidden
+              className="mt-px w-9 shrink-0 select-none text-right font-mono text-[10px] leading-5 text-foreground/25"
+            >
+              {(firstSeg?.idx ?? turn.segIndices[0]) + 1}
+            </span>
             <button
               type="button"
               onClick={() => onSeek(turn.startMs)}
