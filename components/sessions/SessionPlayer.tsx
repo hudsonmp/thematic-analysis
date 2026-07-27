@@ -1905,6 +1905,17 @@ export default function SessionPlayer({
         : coalesceEditBursts(specTimeline.entityEdits.map((e) => e.createdAt), anchorMs),
     [specTimeline.entityEdits, anchorMs],
   );
+  // Is the PLAYHEAD inside a burst right now? Drives the live badge overlaid
+  // on the video — the at-a-glance "they are typing" signal while watching;
+  // the rail lanes below remain the navigation view.
+  const typingSpecNow = useMemo(
+    () => specBursts.some((b) => currentMs >= b.startMs && currentMs <= b.endMs),
+    [specBursts, currentMs],
+  );
+  const typingEntityNow = useMemo(
+    () => entityBursts.some((b) => currentMs >= b.startMs && currentMs <= b.endMs),
+    [entityBursts, currentMs],
+  );
 
   // The flags LIST follows playback: the CURRENT flag is the last one whose
   // offset ≤ the playhead (the markers' own anchor math — `offsetMs` is video
@@ -2956,14 +2967,35 @@ export default function SessionPlayer({
             HTML media), so the participant's answer stays audible with
             space/←→ as the transport. */}
         <div className={mode === 'retro' ? 'hidden' : 'space-y-4'}>
-          <video
-            ref={videoRef}
-            controls
-            preload="metadata"
-            src={`/api/media/${id}/video`}
-            onTimeUpdate={handleTimeUpdate}
-            className="w-full bg-black"
-          />
+          <div className="relative">
+            <video
+              ref={videoRef}
+              controls
+              preload="metadata"
+              src={`/api/media/${id}/video`}
+              onTimeUpdate={handleTimeUpdate}
+              className="w-full bg-black"
+            />
+            {/* Live typing badges: on while the playhead is inside an edit
+                burst. Top-left, clear of the native controls; pointer-events
+                off so the video stays fully clickable. */}
+            {(typingSpecNow || typingEntityNow) && (
+              <div className="pointer-events-none absolute left-2 top-2 flex gap-1.5">
+                {typingSpecNow && (
+                  <span className="flex items-center gap-1.5 rounded-sm bg-sky-600/90 px-2 py-0.5 text-[11px] font-medium text-white shadow">
+                    <span aria-hidden className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+                    spec typing
+                  </span>
+                )}
+                {typingEntityNow && (
+                  <span className="flex items-center gap-1.5 rounded-sm bg-orange-600/90 px-2 py-0.5 text-[11px] font-medium text-white shadow">
+                    <span aria-hidden className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+                    entity typing
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Transport: fine-grained ±5s nudges (the native scrubber is too
               coarse for re-hearing one utterance). Play state is preserved. */}
