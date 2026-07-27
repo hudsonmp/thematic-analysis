@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* This app is LIGHT-ONLY: the theme vars below never change with the OS
+   scheme, so Tailwind's default media-query `dark:` variant is a landmine —
+   on a dark-mode OS every `dark:text-*-200` class fires against the
+   permanently cream background (pale-on-pale; the unreadable /compare chips).
+   Rebind `dark:` to a `.dark` class that is never applied, which makes every
+   current and future `dark:` utility inert. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* Design system mirrored from spec-study-app (the study portal) so the analysis
    tool reads as the same product: warm editorial-academic palette + serif body. */
 :root {
@@ -87,10 +95,6 @@ input, textarea, select, button {
   0% { background-color: rgb(56 189 248 / 0.6); }
   100% { background-color: rgb(186 230 253 / 0.7); }
 }
-@keyframes cue-now-pulse-dark {
-  0% { background-color: rgb(56 189 248 / 0.5); }
-  100% { background-color: rgb(56 189 248 / 0.25); }
-}
 .cue-now {
   border-radius: 2px;
   background-color: rgb(186 230 253 / 0.7);
@@ -99,13 +103,9 @@ input, textarea, select, button {
   -webkit-box-decoration-break: clone;
   animation: cue-now-pulse 1.4s ease-out 1;
 }
-@media (prefers-color-scheme: dark) {
-  .cue-now {
-    background-color: rgb(56 189 248 / 0.25);
-    box-shadow: inset 0 -2px 0 0 rgb(56 189 248 / 0.75);
-    animation-name: cue-now-pulse-dark;
-  }
-}
+/* No prefers-color-scheme override: the page background never changes with
+   the OS scheme, so a dark-tuned cue style on a dark OS just washes out
+   against the light page (same failure class as the `dark:` utilities). */
 @media (prefers-reduced-motion: reduce) {
   .cue-now { animation: none; }
 }
