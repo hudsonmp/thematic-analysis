@@ -70,3 +70,47 @@ export const SEEDED_RESEARCHER_ALIASES: readonly string[] = [
 export function seededResearcherKeys(): Set<string> {
   return new Set(SEEDED_RESEARCHER_ALIASES.map(speakerKey));
 }
+
+/**
+ * Infer researcher aliases from cross-session recurrence — with a
+ * CO-OCCURRENCE VETO.
+ *
+ * Premise of the inference: participants each appear in exactly one session,
+ * so a speaker key recurring across sessions is the interviewer. That premise
+ * fails for labels that recur because they are PLACEHOLDERS, not people:
+ * Zoom's un-named track is literally "Speaker" in 20 sessions here, and the
+ * bare recurrence rule credited 12k participant utterances to "Researcher".
+ *
+ * The veto is structural, not lexical: one session has ONE interviewer, so a
+ * key that shares a session with a seeded researcher alias cannot itself be
+ * the researcher — the researcher's track in that session is already spoken
+ * for. This kills "Speaker" (it always co-occurs with the interviewer's real
+ * name) and any future participant-name collision, while a genuine display-
+ * name variant of the interviewer still promotes: it recurs in sessions where
+ * NO seeded alias is present, which is exactly the gap the inference exists
+ * to fill.
+ *
+ * Pure: takes each session's set of normalized keys, returns seeded ∪ inferred.
+ */
+export function inferResearcherKeys(
+  sessionKeySets: ReadonlyMap<string, ReadonlySet<string>>,
+  seeded: ReadonlySet<string> = seededResearcherKeys(),
+): Set<string> {
+  const sessionsByKey = new Map<string, number>();
+  const vetoed = new Set<string>();
+
+  for (const keys of sessionKeySets.values()) {
+    const hasSeeded = [...keys].some((k) => seeded.has(k));
+    for (const key of keys) {
+      if (key === '' || seeded.has(key)) continue;
+      sessionsByKey.set(key, (sessionsByKey.get(key) ?? 0) + 1);
+      if (hasSeeded) vetoed.add(key);
+    }
+  }
+
+  const out = new Set(seeded);
+  for (const [key, n] of sessionsByKey) {
+    if (n >= 2 && !vetoed.has(key)) out.add(key);
+  }
+  return out;
+}
