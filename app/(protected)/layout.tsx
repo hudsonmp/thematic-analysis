@@ -4,6 +4,8 @@ import { getOrCreateCodebook, getShownStudy, listCodebooks } from '@/app/actions
 import type { CodebookOption } from '@/components/CodebookSwitcher';
 import CodebookNav from './CodebookNav';
 import GuidePrompt from './GuidePrompt';
+import NewCodesBanner from '@/components/NewCodesBanner';
+import { listNewCodes, type NewCode } from '@/app/actions/code-news';
 
 export default async function ProtectedLayout({ children }: { children: React.ReactNode }) {
   // Supabase Auth is the real gate. `requireAuthUser()` reads the cookie-bound
@@ -31,6 +33,15 @@ export default async function ProtectedLayout({ children }: { children: React.Re
   // props into the Client nav. Tolerant of a missing/unbound study so the shell
   // still renders rather than 500-ing the whole protected tree — the page-level
   // empty states handle the "no study/codebook" case in detail.
+  // Co-coder code news (watermark-based; see app/actions/code-news.ts).
+  // Tolerant: a failed read renders no banner, never a broken shell.
+  let newCodes: NewCode[] = [];
+  try {
+    newCodes = await listNewCodes();
+  } catch {
+    // leave empty
+  }
+
   let studyName: string | null = null;
   let codebooks: CodebookOption[] = [];
   let activeCodebookId: string | null = null;
@@ -58,6 +69,7 @@ export default async function ProtectedLayout({ children }: { children: React.Re
         isAdmin={isAdmin}
       />
       <GuidePrompt />
+      <NewCodesBanner codes={newCodes} />
       {children}
     </div>
   );

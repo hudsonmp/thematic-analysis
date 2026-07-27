@@ -13,6 +13,7 @@ import type { RowFacetWrites } from '@/lib/codebook/grid';
 import { CodeVersionInput, type CodeVersionInputT } from '@/lib/types/contracts';
 import type { Json, Tables, TablesInsert } from '@/lib/types/cb-db';
 import { requireEditor } from '@/lib/auth/roles';
+import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { createUserServerClient } from '@/lib/supabase/user-server';
 
 type Code = Tables<'cb_codes'>;
@@ -88,6 +89,7 @@ export async function createCode({
   autoUniqueMnemonic?: boolean;
 }): Promise<string> {
   await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const creator = await requireAuthUser();
   const parsed = CodeVersionInput.parse(version);
 
   if (autoUniqueMnemonic) {
@@ -107,6 +109,9 @@ export async function createCode({
       origin,
       status: 'proposed',
       study_label: studyLabel?.trim() || null,
+      // Attribution for the new-code notification: this insert runs through the
+      // service-role guard (no auth.uid() default), so the creator is explicit.
+      created_by: creator.id,
     })
     .select('*')
     .single();
