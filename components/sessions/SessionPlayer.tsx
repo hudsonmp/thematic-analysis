@@ -450,6 +450,13 @@ export default function SessionPlayer({
   const posSaveAtRef = useRef(0);
 
   const [synced, setSynced] = useState(true);
+  // Click-transcript-to-seek, toggleable: during reconciliation with a
+  // co-coder you click spans to DISCUSS them, and playback yanking to every
+  // click is noise. Persisted (ta:clickseek) so the preference survives
+  // navigating between sessions mid-review; default on.
+  const [clickSeek, setClickSeek] = useState(
+    () => typeof window === 'undefined' || window.localStorage.getItem('ta:clickseek') !== 'off',
+  );
   const syncedRef = useRef(true);
   useEffect(() => {
     syncedRef.current = synced;
@@ -1085,6 +1092,7 @@ export default function SessionPlayer({
   const clickSeekTimer = useRef<number | null>(null);
   const handleTranscriptClick = useCallback(
     (e: React.MouseEvent) => {
+      if (!clickSeek) return;
       const sel = window.getSelection();
       if (sel && !sel.isCollapsed) return;
       const target = e.target as HTMLElement | null;
@@ -1120,7 +1128,7 @@ export default function SessionPlayer({
         seekTo(seg.startMs);
       }, 230);
     },
-    [segments, seekTo],
+    [segments, seekTo, clickSeek],
   );
 
   // While the transcript scrolls, chip hover cards are suppressed (CSS rule on
@@ -3554,6 +3562,29 @@ export default function SessionPlayer({
                   {editing ? 'Done' : 'Edit'}
                 </button>
               )}
+              <button
+                type="button"
+                suppressHydrationWarning
+                onClick={() => {
+                  setClickSeek((v) => {
+                    window.localStorage.setItem('ta:clickseek', v ? 'off' : 'on');
+                    return !v;
+                  });
+                }}
+                aria-pressed={clickSeek}
+                title={
+                  clickSeek
+                    ? 'Clicking the transcript seeks playback (click to stop — useful while reviewing with a co-coder)'
+                    : 'Clicking the transcript does NOT move playback (click to re-enable seeking)'
+                }
+                className={`rounded border px-2 py-1 text-xs ${
+                  clickSeek
+                    ? 'border-foreground bg-foreground text-background'
+                    : 'border-foreground/30 text-foreground/70 hover:text-foreground'
+                }`}
+              >
+                {clickSeek ? 'Click seeks: on' : 'Click seeks: off'}
+              </button>
               <button
                 type="button"
                 onClick={() => setSynced((s) => !s)}
