@@ -8,7 +8,7 @@ import { parseSrt, type Segment } from '@/lib/transcript/srt';
 import { orderByTime } from '@/lib/transcript/order';
 import {
   anonymizeSpeaker,
-  seededResearcherKeys,
+  inferResearcherKeys,
   speakerKey,
   RESEARCHER_LABEL,
 } from '@/lib/transcript/anonymize';
@@ -523,8 +523,6 @@ export async function researcherSpeakerLabels(): Promise<Set<string>> {
   await requireAuthUser();
   const sb = await createUserServerClient();
 
-  const keys = seededResearcherKeys();
-
   // This scans EVERY segment row (20k+), so it must page past PostgREST's
   // 1000-row cap — uncapped it silently inferred labels from the first 1000.
   const { data, error } = await pageAll((from, to) =>
@@ -539,25 +537,24 @@ export async function researcherSpeakerLabels(): Promise<Set<string>> {
     throw new Error(`researcherSpeakerLabels: cb_segments select failed: ${error.message}`);
   }
 
-  // Distinct session_ids per normalized speaker key.
-  const sessionsByKey = new Map<string, Set<string>>();
+  // Each session's set of normalized speaker keys; the recurrence-with-veto
+  // inference itself is pure (lib/transcript/anonymize.ts). The veto is what
+  // keeps Zoom's placeholder "Speaker" track (present in 20 sessions) from
+  // being classified as the interviewer.
+  const sessionKeySets = new Map<string, Set<string>>();
   for (const row of data ?? []) {
     if (row.speaker === null) continue;
     const key = speakerKey(row.speaker);
     if (key === '') continue;
-    let set = sessionsByKey.get(key);
+    let set = sessionKeySets.get(row.session_id);
     if (!set) {
       set = new Set<string>();
-      sessionsByKey.set(key, set);
+      sessionKeySets.set(row.session_id, set);
     }
-    set.add(row.session_id);
+    set.add(key);
   }
 
-  for (const [key, sessions] of sessionsByKey) {
-    if (sessions.size >= 2) keys.add(key);
-  }
-
-  return keys;
+  return inferResearcherKeys(sessionKeySets);
 }
 
 /**
