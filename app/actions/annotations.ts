@@ -3,6 +3,7 @@
 import { after } from 'next/server';
 
 import { createUserServerClient } from '@/lib/supabase/user-server';
+import { pageAll } from '@/lib/supabase/pageAll';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { requireEditor } from '@/lib/auth/roles';
 import type { Tables } from '@/lib/types/cb-db';
@@ -187,14 +188,20 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
   const user = await requireAuthUser();
   const sb = await createUserServerClient();
 
-  const { data, error } = await sb
-    .from('cb_annotations')
-    .select(
-      'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
-    )
-    .eq('session_id', sessionId)
-    .eq('coder_id', user.id)
-    .order('t_start_ms', { ascending: true });
+  // Paged past PostgREST's silent 1000-row cap — a well-coded long session
+  // will pass 1000 annotations. `id` tiebreak keeps the page order total.
+  const { data, error } = await pageAll((from, to) =>
+    sb
+      .from('cb_annotations')
+      .select(
+        'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
+      )
+      .eq('session_id', sessionId)
+      .eq('coder_id', user.id)
+      .order('t_start_ms', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
   if (error) {
     throw new Error(`listMyAnnotations: cb_annotations select failed: ${error.message}`);
   }
@@ -257,15 +264,19 @@ export async function listMyAnnotationsForVersion(
   const user = await requireAuthUser();
   const sb = await createUserServerClient();
 
-  const { data, error } = await sb
-    .from('cb_annotations')
-    .select(
-      'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
-    )
-    .eq('session_id', sessionId)
-    .eq('version_id', versionId)
-    .eq('coder_id', user.id)
-    .order('t_start_ms', { ascending: true });
+  const { data, error } = await pageAll((from, to) =>
+    sb
+      .from('cb_annotations')
+      .select(
+        'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
+      )
+      .eq('session_id', sessionId)
+      .eq('version_id', versionId)
+      .eq('coder_id', user.id)
+      .order('t_start_ms', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
   if (error) {
     throw new Error(
       `listMyAnnotationsForVersion: cb_annotations select failed: ${error.message}`,
@@ -593,7 +604,8 @@ export async function listAllAnnotations(
   await requireAuthUser();
   const sb = await createUserServerClient();
 
-  const { data, error } = await sb
+  const { data, error } = await pageAll((from, to) =>
+    sb
     .from('cb_annotations')
     .select(
       // cb_annotations carries TWO FKs to cb_segments (segment_id + the multi-cue
@@ -602,7 +614,10 @@ export async function listAllAnnotations(
       // (this silently broke /compare when multi-cue anchors landed).
       'id, coder_id, segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments!cb_annotations_segment_id_fkey(ordinal), cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
     )
-    .eq('session_id', sessionId);
+    .eq('session_id', sessionId)
+    .order('id', { ascending: true })
+    .range(from, to),
+  );
   if (error) {
     throw new Error(`listAllAnnotations: cb_annotations select failed: ${error.message}`);
   }
@@ -824,14 +839,18 @@ export async function listCanonical(sessionId: string): Promise<CanonicalView[]>
   await requireAuthUser();
   const sb = await createUserServerClient();
 
-  const { data, error } = await sb
-    .from('cb_annotations')
-    .select(
-      'id, segment_id, t_start_ms, t_end_ms, cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
-    )
-    .eq('session_id', sessionId)
-    .eq('is_canonical', true)
-    .order('t_start_ms', { ascending: true });
+  const { data, error } = await pageAll((from, to) =>
+    sb
+      .from('cb_annotations')
+      .select(
+        'id, segment_id, t_start_ms, t_end_ms, cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
+      )
+      .eq('session_id', sessionId)
+      .eq('is_canonical', true)
+      .order('t_start_ms', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
   if (error) {
     throw new Error(`listCanonical: cb_annotations select failed: ${error.message}`);
   }

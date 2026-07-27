@@ -2,6 +2,7 @@
 
 import { studyFrom } from '@/lib/supabase/study-guard';
 import { createUserServerClient } from '@/lib/supabase/user-server';
+import { pageAll } from '@/lib/supabase/pageAll';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getShownStudy } from '@/app/actions/codebook';
 import { taskModuleIdFrom } from '@/lib/study/task-module';
@@ -129,16 +130,21 @@ export async function listSessionSpecTimeline(
 
   // 4. Select this user's spec_edit + entities_edit rows, ascending by created_at.
   //    Scoped to the task module when resolvable. Two `.select()`s, no write.
-  let query = (await studyFrom('study_events'))
-    .select('event_type, payload, created_at')
-    .eq('user_id', userId)
-    .in('event_type', ['spec_edit', 'entities_edit'])
-    .order('created_at', { ascending: true });
-  if (taskModuleId) {
-    query = query.eq('module_id', taskModuleId);
-  }
-
-  const evRes = await query;
+  //    Paged past PostgREST's silent 1000-row cap (read-only study select) —
+  //    long sessions accumulate hundreds of debounced autosaves.
+  const studyEvents = await studyFrom('study_events');
+  const evRes = await pageAll((from, to) => {
+    let query = studyEvents
+      .select('event_type, payload, created_at')
+      .eq('user_id', userId)
+      .in('event_type', ['spec_edit', 'entities_edit'])
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true });
+    if (taskModuleId) {
+      query = query.eq('module_id', taskModuleId);
+    }
+    return query.range(from, to);
+  });
   if (evRes.error) {
     throw new Error(
       `listSessionSpecTimeline: study_events read failed: ${evRes.error.message}`,

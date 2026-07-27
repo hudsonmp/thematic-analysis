@@ -2,6 +2,7 @@
 
 import { notFound } from 'next/navigation';
 import { createUserServerClient } from '@/lib/supabase/user-server';
+import { pageAll } from '@/lib/supabase/pageAll';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { parseSrt, type Segment } from '@/lib/transcript/srt';
 import { orderByTime } from '@/lib/transcript/order';
@@ -524,10 +525,16 @@ export async function researcherSpeakerLabels(): Promise<Set<string>> {
 
   const keys = seededResearcherKeys();
 
-  const { data, error } = await sb
-    .from('cb_segments')
-    .select('speaker, session_id')
-    .not('speaker', 'is', null);
+  // This scans EVERY segment row (20k+), so it must page past PostgREST's
+  // 1000-row cap — uncapped it silently inferred labels from the first 1000.
+  const { data, error } = await pageAll((from, to) =>
+    sb
+      .from('cb_segments')
+      .select('speaker, session_id')
+      .not('speaker', 'is', null)
+      .order('id', { ascending: true })
+      .range(from, to),
+  );
   if (error) {
     throw new Error(`researcherSpeakerLabels: cb_segments select failed: ${error.message}`);
   }
@@ -625,11 +632,17 @@ export async function getSessionCloud(
   // carries the DB key annotations anchor to (segment_id), not just `ordinal`.
   let segments: CloudSegment[] = [];
   if (version) {
-    const { data: rows, error: segErr } = await sb
-      .from('cb_segments')
-      .select('id, speaker, t_start_ms, t_end_ms, text, ordinal')
-      .eq('version_id', version.id)
-      .order('ordinal', { ascending: true });
+    // Paged: 7 sessions exceed 1000 segments, and PostgREST truncates
+    // un-ranged selects at 1000 SILENTLY — this was the "transcript stops at
+    // 60 min of a 90-min video" bug.
+    const { data: rows, error: segErr } = await pageAll((from, to) =>
+      sb
+        .from('cb_segments')
+        .select('id, speaker, t_start_ms, t_end_ms, text, ordinal')
+        .eq('version_id', version.id)
+        .order('ordinal', { ascending: true })
+        .range(from, to),
+    );
     if (segErr) {
       throw new Error(`getSessionCloud: cb_segments select failed: ${segErr.message}`);
     }
@@ -736,11 +749,14 @@ export async function getSessionSegments(
     throw new Error(`getSessionSegments: cb_sessions pid_label select failed: ${sessErr.message}`);
   }
 
-  const { data: rows, error: segErr } = await sb
-    .from('cb_segments')
-    .select('id, speaker, t_start_ms, t_end_ms, text, ordinal')
-    .eq('version_id', versionId)
-    .order('ordinal', { ascending: true });
+  const { data: rows, error: segErr } = await pageAll((from, to) =>
+    sb
+      .from('cb_segments')
+      .select('id, speaker, t_start_ms, t_end_ms, text, ordinal')
+      .eq('version_id', versionId)
+      .order('ordinal', { ascending: true })
+      .range(from, to),
+  );
   if (segErr) {
     throw new Error(`getSessionSegments: cb_segments select failed: ${segErr.message}`);
   }
@@ -832,11 +848,16 @@ export async function ensureCleanedVersion(sessionId: string): Promise<string> {
   const cleanedId = created.id;
 
   // Copy the original's segments into the cleaned version (time-aligned).
-  const { data: origSegs, error: readErr } = await sb
-    .from('cb_segments')
-    .select('speaker, t_start_ms, t_end_ms, text, ordinal')
-    .eq('version_id', original.id)
-    .order('ordinal', { ascending: true });
+  // Paged: an uncapped read here would have COPIED only the first 1000
+  // segments — permanent, silent data loss in the derived version.
+  const { data: origSegs, error: readErr } = await pageAll((from, to) =>
+    sb
+      .from('cb_segments')
+      .select('speaker, t_start_ms, t_end_ms, text, ordinal')
+      .eq('version_id', original.id)
+      .order('ordinal', { ascending: true })
+      .range(from, to),
+  );
   if (readErr) {
     // Unwind the just-created cleaned version (no segments to cascade yet).
     await sb.from('cb_transcript_versions').delete().eq('id', cleanedId);
