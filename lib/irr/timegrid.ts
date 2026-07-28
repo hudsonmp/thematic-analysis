@@ -42,6 +42,9 @@ export type TimeGridPerCode = {
   bothActive: number;
   aOnly: number;
   bOnly: number;
+  /** Bins where NEITHER coder had this code active — real agreement-on-absence
+   *  (n00). Exposed so a worked example can show the full 2×2 and the κ arithmetic. */
+  inactive: number;
   underpowered: boolean;
 };
 
@@ -130,6 +133,7 @@ export function timeGridKappa(
       bothActive: n11,
       aOnly: n10,
       bOnly: n01,
+      inactive: n00,
       underpowered: active < minActiveBins,
     };
   });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import {
   computeIrr,
   type IrrMethod,
@@ -103,6 +103,8 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
           the 548 diagnosis in <code>docs/irr-design.md</code>.
         </p>
       </header>
+
+      <ConceptPanel />
 
       {/* Method selector */}
       <section className="mt-6 flex gap-2">
@@ -288,9 +290,113 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
   );
 }
 
+/**
+ * The conceptual frame — collapsible, so it scaffolds on first read and gets out
+ * of the way once the ideas are yours (expertise-reversal: scaffolding that
+ * can't be dismissed becomes noise for the expert). Kept dense and specific to
+ * this study; it teaches the mental model, not a textbook.
+ */
+function ConceptPanel() {
+  return (
+    <details className="mt-5 border border-foreground/15 bg-foreground/[0.02] px-4 py-3 text-sm">
+      <summary className="cursor-pointer text-sm font-medium text-foreground/80">
+        How to read this — the four ideas
+      </summary>
+      <div className="mt-3 space-y-3 leading-relaxed text-foreground/70">
+        <p>
+          <b>1 · Two questions, not one.</b> Reliability decomposes into{' '}
+          <i>segmentation</i> (do you and the other coder mark the <i>same moments</i>?) and{' '}
+          <i>categorization</i> (given you both marked a moment, do you assign the <i>same
+          code</i>?). A single number hides which one is failing. Yours fails on segmentation
+          first — fix that before the codes.
+        </p>
+        <p>
+          <b>2 · κ is agreement minus luck.</b> Raw agreement counts how often you match; κ
+          subtracts the matches you&apos;d expect by chance and rescales:{' '}
+          <span className="font-mono">κ = (p₀ − pₑ)/(1 − pₑ)</span>, where p₀ is observed
+          agreement and pₑ is chance agreement. κ = 0 means &ldquo;no better than luck&rdquo;;
+          κ = 1 is perfect. Expand any code&apos;s row below to see this computed on its real
+          bins.
+        </p>
+        <p>
+          <b>3 · The base-rate paradox.</b> When a code is rare, you agree on its <i>absence</i>{' '}
+          almost every bin — so chance agreement pₑ is nearly 1, and κ collapses toward 0 even at
+          96% raw agreement. That low κ is an <span className="text-amber-700">artifact</span> (we
+          flag it amber), not real disagreement. Gwet&apos;s <b>AC1</b> is the guard: it estimates
+          chance differently and doesn&apos;t collapse. But AC1 <i>over</i>-credits absence, so
+          trust it per-prevalent-code, never as a headline.
+        </p>
+        <p>
+          <b>4 · The two instruments measure different failures.</b>{' '}
+          <b>Time-grid κ</b> slices the session into fixed bins both coders share, so it forgives
+          different <i>edges</i> around the same moment. <b>EasyDIAg</b> matches your free-drawn
+          spans and penalizes edge differences. Flip between them on a well-sampled code: κ near 0
+          under EasyDIAg but ~0.6 under time-grid means your disagreement is boundary-drawing, not
+          perception. Full rationale in <code>docs/irr-design.md</code>.
+        </p>
+      </div>
+    </details>
+  );
+}
+
+/** A transparent worked κ for one code (time-grid), computed on its real bins —
+ *  the worked-example device that makes the formula concrete on the user's data. */
+function WorkedKappa({ cells }: { cells: { n11: number; n10: number; n01: number; n00: number } }) {
+  const { n11, n10, n01, n00 } = cells;
+  const N = n11 + n10 + n01 + n00;
+  if (N === 0) return null;
+  const po = (n11 + n00) / N;
+  const pa = (n11 + n10) / N; // this coder active-rate
+  const pb = (n11 + n01) / N; // other coder active-rate
+  const pe = pa * pb + (1 - pa) * (1 - pb);
+  const kappa = 1 - pe === 0 ? null : (po - pe) / (1 - pe);
+  const f = (x: number) => x.toFixed(3);
+  return (
+    <div className="bg-foreground/[0.02] px-4 py-3 text-xs leading-relaxed text-foreground/70">
+      <div className="mb-2 grid max-w-xs grid-cols-3 gap-x-3 gap-y-0.5 font-mono">
+        <span></span>
+        <span className="text-foreground/45">B active</span>
+        <span className="text-foreground/45">B not</span>
+        <span className="text-foreground/45">A active</span>
+        <span className="font-semibold text-emerald-700">{n11}</span>
+        <span>{n10}</span>
+        <span className="text-foreground/45">A not</span>
+        <span>{n01}</span>
+        <span className="font-semibold text-emerald-700">{n00}</span>
+      </div>
+      <p>
+        Of <b>{N}</b> bins, you agree on <b>{n11 + n00}</b> (both active {n11} + both empty {n00}),
+        so observed agreement <span className="font-mono">p₀ = {n11 + n00}/{N} = {f(po)}</span>.
+      </p>
+      <p className="mt-1">
+        You mark this code in <span className="font-mono">{f(pa)}</span> of bins, the other coder{' '}
+        <span className="font-mono">{f(pb)}</span>; so by chance you&apos;d both-agree{' '}
+        <span className="font-mono">
+          pₑ = {f(pa)}·{f(pb)} + {f(1 - pa)}·{f(1 - pb)} = {f(pe)}
+        </span>
+        .
+      </p>
+      <p className="mt-1">
+        <span className="font-mono">
+          κ = (p₀ − pₑ)/(1 − pₑ) = ({f(po)} − {f(pe)})/(1 − {f(pe)}) ={' '}
+          <b>{kappa === null ? '—' : f(kappa)}</b>
+        </span>
+        {pe > 0.9 && (
+          <span className="text-amber-700">
+            {' '}
+            — note pₑ ≈ {f(pe)}: almost all agreement here is agreement-on-absence, so κ is
+            base-rate-suppressed (idea 3).
+          </span>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function PerCodeTable({ report, method }: { report: IrrReport; method: IrrMethod }) {
   const { perCode, codeOrigin } = report;
   const [showEmergent, setShowEmergent] = useState(true);
+  const [openCode, setOpenCode] = useState<string | null>(null);
   const rows = perCode.filter((p) => showEmergent || codeOrigin[p.code] !== 'emergent');
   const countsHead = method === 'timegrid' ? 'A/B/✓ bins' : 'A/B/✓';
   return (
@@ -319,38 +425,57 @@ function PerCodeTable({ report, method }: { report: IrrReport; method: IrrMethod
             </tr>
           </thead>
           <tbody>
-            {rows.map((p) => (
-              <tr
-                key={p.code}
-                className={`border-b border-foreground/10 ${p.underpowered ? 'opacity-55' : ''}`}
-              >
-                <td className="py-1.5 pr-3 font-mono text-[13px]">
-                  {p.code}
-                  {p.underpowered && (
-                    <span className="ml-1.5 text-[10px] uppercase text-amber-700" title="too few to trust">
-                      low-n
-                    </span>
-                  )}
-                </td>
-                <td className="py-1.5 pr-3">
-                  <span
-                    className={`inline-block rounded-sm px-1 text-[11px] ${
-                      codeOrigin[p.code] === 'emergent' ? 'bg-lime-500/20' : 'bg-emerald-500/15'
+            {rows.map((p) => {
+              const canExpand = p.cells !== undefined;
+              const open = openCode === p.code;
+              return (
+                <Fragment key={p.code}>
+                  <tr
+                    onClick={() => canExpand && setOpenCode(open ? null : p.code)}
+                    className={`border-b border-foreground/10 ${p.underpowered ? 'opacity-55' : ''} ${
+                      canExpand ? 'cursor-pointer hover:bg-foreground/[0.03]' : ''
                     }`}
+                    title={canExpand ? 'Click to see the κ computed on this code’s bins' : undefined}
                   >
-                    {codeOrigin[p.code] ?? '—'}
-                  </span>
-                </td>
-                <td className={`py-1.5 pr-3 text-right font-mono ${p.paradox ? 'text-amber-700' : ''}`}>
-                  {num(p.kappa)}
-                </td>
-                <td className="py-1.5 pr-3 text-right font-mono">{num(p.ac1)}</td>
-                <td className="py-1.5 pr-3 text-right font-mono text-foreground/60">
-                  {pct(p.prevalence)}
-                </td>
-                <td className="py-1.5 pr-3 text-right font-mono text-foreground/60">{p.counts}</td>
-              </tr>
-            ))}
+                    <td className="py-1.5 pr-3 font-mono text-[13px]">
+                      {canExpand && (
+                        <span className="mr-1 inline-block text-foreground/40">{open ? '▾' : '▸'}</span>
+                      )}
+                      {p.code}
+                      {p.underpowered && (
+                        <span className="ml-1.5 text-[10px] uppercase text-amber-700" title="too few to trust">
+                          low-n
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-3">
+                      <span
+                        className={`inline-block rounded-sm px-1 text-[11px] ${
+                          codeOrigin[p.code] === 'emergent' ? 'bg-lime-500/20' : 'bg-emerald-500/15'
+                        }`}
+                      >
+                        {codeOrigin[p.code] ?? '—'}
+                      </span>
+                    </td>
+                    <td className={`py-1.5 pr-3 text-right font-mono ${p.paradox ? 'text-amber-700' : ''}`}>
+                      {num(p.kappa)}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right font-mono">{num(p.ac1)}</td>
+                    <td className="py-1.5 pr-3 text-right font-mono text-foreground/60">
+                      {pct(p.prevalence)}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right font-mono text-foreground/60">{p.counts}</td>
+                  </tr>
+                  {open && p.cells && (
+                    <tr>
+                      <td colSpan={6} className="border-b border-foreground/10 p-0">
+                        <WorkedKappa cells={p.cells} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>

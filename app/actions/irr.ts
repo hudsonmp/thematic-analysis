@@ -100,6 +100,9 @@ export type IrrPerCodeView = {
   underpowered: boolean;
   /** Low κ despite high agreement + low prevalence — flag as a base-rate artifact. */
   paradox: boolean;
+  /** Time-grid only: the 2×2 bin cells for a transparent worked example
+   *  (n11 both-active, n10 A-only, n01 B-only, n00 both-inactive). */
+  cells?: { n11: number; n10: number; n01: number; n00: number };
 };
 
 export type IrrReport = {
@@ -236,6 +239,7 @@ export async function computeIrr(input: {
       underpowered: p.underpowered,
       paradox:
         p.kappa !== null && p.ac1 !== null && p.kappa < 0.4 && p.ac1 > 0.85 && p.prevalence < 0.15,
+      cells: { n11: p.bothActive, n10: p.aOnly, n01: p.bOnly, n00: p.inactive },
     }));
     note = `${evA.length} events / ${evB.length} events · ${r.nBins} bins of ${binMs / 1000}s · one-sided time A ${r.segAOnly} vs B ${r.segBOnly} bins`;
   } else {
