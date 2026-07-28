@@ -42,6 +42,11 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
   const [coderBId, setCoderBId] = useState(session?.coders[1]?.id ?? '');
   const [thresholdPct, setThresholdPct] = useState(60);
   const [minInstances, setMinInstances] = useState(10);
+  // Matched-effort window (minutes). A coder who stopped early left the tail
+  // uncoded — that is not disagreement, so restrict the estimate to where both
+  // coded at comparable density (see docs/irr-design.md §8).
+  const [winStartMin, setWinStartMin] = useState('');
+  const [winEndMin, setWinEndMin] = useState('');
   const [report, setReport] = useState<IrrReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,7 +67,16 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
     }
     setBusy(true);
     setError(null);
-    computeIrr({ sessionId, coderAId, coderBId, threshold: thresholdPct / 100, minInstances })
+    const toMs = (v: string) => (v.trim() === '' ? null : Math.round(Number(v) * 60000));
+    computeIrr({
+      sessionId,
+      coderAId,
+      coderBId,
+      threshold: thresholdPct / 100,
+      minInstances,
+      windowStartMs: toMs(winStartMin),
+      windowEndMs: toMs(winEndMin),
+    })
       .then((r) => setReport(r))
       .catch((e) => setError(String(e?.message ?? e)))
       .finally(() => setBusy(false));
@@ -158,6 +172,26 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
             onChange={(e) => setMinInstances(Number(e.target.value))}
             className="w-20 border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
           />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-foreground/60">
+          Window min–max (min)
+          <span className="flex items-center gap-1">
+            <input
+              type="number"
+              placeholder="0"
+              value={winStartMin}
+              onChange={(e) => setWinStartMin(e.target.value)}
+              className="w-14 border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
+            />
+            <span className="text-foreground/40">–</span>
+            <input
+              type="number"
+              placeholder="end"
+              value={winEndMin}
+              onChange={(e) => setWinEndMin(e.target.value)}
+              className="w-14 border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
+            />
+          </span>
         </label>
         <button
           type="button"

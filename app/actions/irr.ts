@@ -104,6 +104,12 @@ export async function computeIrr(input: {
   coderBId: string;
   threshold?: number;
   minInstances?: number;
+  /** Restrict to annotations whose ONSET falls in [windowStartMs, windowEndMs].
+   *  Null bounds = open. Purpose: a coder who tapered off late did not DISAGREE
+   *  in the tail, they left it uncoded; scoring the region where both coded at
+   *  comparable density is the honest estimate (the "matched-effort window"). */
+  windowStartMs?: number | null;
+  windowEndMs?: number | null;
 }): Promise<IrrReport> {
   await requireAuthUser();
   const sb = await createUserServerClient();
@@ -131,11 +137,15 @@ export async function computeIrr(input: {
     cb_annotation_codes: { cb_codes: { mnemonic: string; origin: string } | null }[] | null;
   };
 
+  const lo = input.windowStartMs ?? null;
+  const hi = input.windowEndMs ?? null;
   const codeOrigin: Record<string, string> = {};
   const expand = (coderId: string): Annotation[] => {
     const out: Annotation[] = [];
     for (const r of (data ?? []) as Row[]) {
       if (r.coder_id !== coderId) continue;
+      if (lo !== null && r.t_start_ms < lo) continue;
+      if (hi !== null && r.t_start_ms > hi) continue;
       const codes = (r.cb_annotation_codes ?? [])
         .map((ac) => ac.cb_codes)
         .filter((c): c is { mnemonic: string; origin: string } => c !== null);

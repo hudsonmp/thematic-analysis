@@ -105,6 +105,41 @@ doi:10.11613/BM.2012.031): **κ ≥ .80 licenses solo-coding a code; .667–.80 
 double-coding; < .667 revise the code's definition.** The tool computes; the gate
 is the researcher's, applied per code.
 
+## 8. Matched-effort window, and what the first run actually showed
+
+A coder who stops early leaves the tail uncoded — that is not disagreement, so
+`computeIrr` accepts an optional onset window `[windowStartMs, windowEndMs]`. In
+session 548 the two coders are density-matched only through ~40 min (73 vs 65
+events); from 40–60 min Moonwaraa tapered off (5 events to 39), so the whole-
+session estimate is contaminated by ~35 one-sided events in the tail.
+
+Restricting to the matched window barely moves the numbers, and that is itself
+the finding:
+
+| window | segmentation | categorization\|linked | overall κ |
+|--------|--------------|------------------------|-----------|
+| full (0–89 min) | 24% | 52% | 0.065 |
+| 0–40 min | 29% | 56% | 0.088 |
+| 0–25 min | 33% | 59% | 0.106 |
+
+The tail is a minor deflator; the dominant signal is genuine — even where both
+coded densely, the coders co-locate events only ~30% of the time and, given
+co-location, agree on the code ~55% of the time. NO code clears κ ≥ .6 while
+adequately sampled in any window.
+
+**Which statistic is honest here** — neither the pooled κ nor the mean AC1:
+- Overall κ (~0.06) is *deflated* by rarity + the segmentation gap.
+- Mean per-code AC1 (~0.97) is *inflated*: for rare codes AC1's chance term is
+  dominated by agreement-on-ABSENCE (both coders correctly NOT applying a rare
+  code across many linked pairs), which is nearly free. AC1 is the right paradox
+  guard for a *single prevalent* code, but a poor *summary* over a rare-heavy
+  event-linked scheme.
+- The faithful characterization is the two-number decomposition Bakeman et al.
+  recommend: **segmentation agreement** (do they mark the same moment?) and
+  **categorization | linked** (given they do, same code?). Both are reported as
+  headline stats. On 548 they are ~30% and ~55% — i.e., not yet reliable enough
+  to license single-coding, and the codebook/coding needs reconciliation first.
+
 ## What this feature deliberately does NOT do
 
 - It does not write anything, and does not touch the coding UI.
