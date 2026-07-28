@@ -31,6 +31,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: '/', label: 'Scheme', hint: 'Facets and their values' },
       { href: '/citations', label: 'Citations', hint: 'BibTeX library' },
       { href: '/reliability', label: 'Reliability', hint: 'Freeze gate, κ audit' },
+      { href: '/reliability/irr', label: 'IRR (live)', hint: 'EasyDIAg κ from coding' },
       { href: '/export', label: 'Export', hint: 'LaTeX, JSON' },
       { href: '/instructions', label: 'Instructions', hint: 'Coder guidance' },
       { href: '/drill', label: 'Drill', hint: 'Spaced practice on the codes' },
