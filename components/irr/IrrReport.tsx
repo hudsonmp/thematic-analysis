@@ -3,19 +3,19 @@
 import { useState } from 'react';
 import {
   computeIrr,
+  type IrrMethod,
   type IrrReport,
   type IrrSessionOption,
 } from '@/app/actions/irr';
 
 /**
- * The IRR (EasyDIAg) surface. READ-ONLY: pick a session with two coders, pick
- * the overlap threshold, and read the reliability. Every number is per code
- * (never a single pooled κ), reported beside prevalence, raw agreement, and
- * Gwet's AC1 so a base-rate artifact is legible as such. Underpowered codes —
- * too few instances to trust — are flagged, not hidden.
- *
- * The method and every design decision are documented in
- * lib/irr/easydiag.ts and docs/irr-design.md.
+ * The IRR surface. Pick a session with two coders, pick the STATISTIC —
+ *  • EasyDIAg (event matching, IPF-κ): answers "same events?", penalizes
+ *    boundary jitter (Holle & Rein 2014).
+ *  • Time-grid κ (fixed bins, Cohen's κ): answers "agree bin-by-bin?", robust to
+ *    boundary jitter because both coders inherit the same units (Bakeman 2009).
+ * Both render one overall row + one per-code table. Read-only; never changes the
+ * coding. Method rationale + the 548 diagnosis in docs/irr-design.md.
  */
 
 function pct(x: number | null): string {
@@ -24,8 +24,6 @@ function pct(x: number | null): string {
 function num(x: number | null): string {
   return x === null ? '—' : x.toFixed(2);
 }
-/** Landis & Koch band, shown only as a reference — the cutoffs are, per the
- *  authors, arbitrary (see docs). */
 function band(k: number | null): string {
   if (k === null) return 'n/a';
   if (k < 0.21) return 'slight';
@@ -40,11 +38,10 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
   const session = sessions.find((s) => s.sessionId === sessionId) ?? sessions[0];
   const [coderAId, setCoderAId] = useState(session?.coders[0]?.id ?? '');
   const [coderBId, setCoderBId] = useState(session?.coders[1]?.id ?? '');
+  const [method, setMethod] = useState<IrrMethod>('timegrid');
   const [thresholdPct, setThresholdPct] = useState(60);
-  const [minInstances, setMinInstances] = useState(10);
-  // Matched-effort window (minutes). A coder who stopped early left the tail
-  // uncoded — that is not disagreement, so restrict the estimate to where both
-  // coded at comparable density (see docs/irr-design.md §8).
+  const [binSec, setBinSec] = useState(2);
+  const [minInstances, setMinInstances] = useState(5);
   const [winStartMin, setWinStartMin] = useState('');
   const [winEndMin, setWinEndMin] = useState('');
   const [report, setReport] = useState<IrrReport | null>(null);
@@ -72,7 +69,9 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
       sessionId,
       coderAId,
       coderBId,
+      method,
       threshold: thresholdPct / 100,
+      binMs: binSec * 1000,
       minInstances,
       windowStartMs: toMs(winStartMin),
       windowEndMs: toMs(winEndMin),
@@ -90,24 +89,50 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
     setReport(null);
   };
 
-  const r = report?.result;
-  const aprioriUnderpowered = r
-    ? r.perCode.filter((p) => report!.codeOrigin[p.code] === 'a_priori' && p.underpowered).length
+  const aprioriUnderpowered = report
+    ? report.perCode.filter((p) => report.codeOrigin[p.code] === 'a_priori' && p.underpowered).length
     : 0;
 
   return (
     <main className="mx-auto max-w-4xl px-6 py-10">
       <header>
-        <h1 className="text-lg font-medium tracking-tight">Inter-rater reliability · EasyDIAg</h1>
+        <h1 className="text-lg font-medium tracking-tight">Inter-rater reliability</h1>
         <p className="mt-1 max-w-2xl text-sm leading-relaxed text-foreground/60">
-          Time-domain agreement on the code annotations (Holle &amp; Rein 2014). Two coders&apos;
-          codes are linked by temporal overlap, then chance-corrected per code. This reads the
-          coding; it never changes it. Method &amp; rationale in <code>docs/irr-design.md</code>.
+          Agreement on the code annotations, in time. Choose the statistic; both give an overall
+          figure and a code-by-code table. This reads the coding; it never changes it. Method &amp;
+          the 548 diagnosis in <code>docs/irr-design.md</code>.
         </p>
       </header>
 
+      {/* Method selector */}
+      <section className="mt-6 flex gap-2">
+        {(
+          [
+            ['timegrid', 'Time-grid κ', 'Cohen κ on fixed bins · robust to boundary jitter (Bakeman)'],
+            ['easydiag', 'EasyDIAg', 'Event matching by overlap · IPF-κ (Holle & Rein)'],
+          ] as [IrrMethod, string, string][]
+        ).map(([m, label, sub]) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => {
+              setMethod(m);
+              setReport(null);
+            }}
+            className={`flex-1 border px-3 py-2 text-left transition ${
+              method === m
+                ? 'border-foreground bg-foreground/5'
+                : 'border-foreground/15 hover:bg-foreground/5'
+            }`}
+          >
+            <div className="text-sm font-medium">{label}</div>
+            <div className="text-xs text-foreground/55">{sub}</div>
+          </button>
+        ))}
+      </section>
+
       {/* Controls */}
-      <section className="mt-6 flex flex-wrap items-end gap-4 border border-foreground/15 p-4">
+      <section className="mt-4 flex flex-wrap items-end gap-4 border border-foreground/15 p-4">
         <label className="flex flex-col gap-1 text-xs text-foreground/60">
           Session
           <select
@@ -150,20 +175,35 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
             ))}
           </select>
         </label>
+        {method === 'easydiag' ? (
+          <label className="flex flex-col gap-1 text-xs text-foreground/60">
+            Overlap link ≥ {thresholdPct}%
+            <input
+              type="range"
+              min={10}
+              max={100}
+              step={5}
+              value={thresholdPct}
+              onChange={(e) => setThresholdPct(Number(e.target.value))}
+              className="w-32"
+            />
+          </label>
+        ) : (
+          <label className="flex flex-col gap-1 text-xs text-foreground/60">
+            Bin width {binSec}s
+            <input
+              type="range"
+              min={1}
+              max={10}
+              step={1}
+              value={binSec}
+              onChange={(e) => setBinSec(Number(e.target.value))}
+              className="w-32"
+            />
+          </label>
+        )}
         <label className="flex flex-col gap-1 text-xs text-foreground/60">
-          Overlap link ≥ {thresholdPct}%
-          <input
-            type="range"
-            min={10}
-            max={100}
-            step={5}
-            value={thresholdPct}
-            onChange={(e) => setThresholdPct(Number(e.target.value))}
-            className="w-32"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-foreground/60">
-          Min instances
+          Min {method === 'timegrid' ? 'bins' : 'instances'}
           <input
             type="number"
             min={1}
@@ -204,70 +244,55 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
       </section>
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
 
-      {r && report && (
+      {report && (
         <>
-          {/* Headline */}
+          {/* Headline (overall) */}
           <section className="mt-8 grid gap-3 sm:grid-cols-3">
-            <Stat
-              label="Overall κ"
-              value={num(r.overallKappa)}
-              sub={`${band(r.overallKappa)} · IPF-corrected`}
-            />
-            <Stat
-              label="Segmentation agreement"
-              value={pct(r.segmentationAgreement)}
-              sub={`${r.nLinked} linked · ${r.nUnmatchedA}+${r.nUnmatchedB} unmatched`}
-            />
-            <Stat
-              label="Categorization agreement"
-              value={pct(r.categorizationAgreement)}
-              sub="of linked pairs, same code"
-            />
+            {report.headline.map((h, i) => (
+              <div key={i} className="border border-foreground/15 p-4">
+                <div className="text-xs uppercase tracking-wide text-foreground/45">{h.label}</div>
+                <div className="mt-1 font-mono text-2xl">
+                  {h.value}
+                  {h.label.includes('κ') && h.value !== '—' && (
+                    <span className="ml-2 align-middle text-xs text-foreground/45">
+                      {band(Number(h.value))}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1 text-xs text-foreground/50">{h.sub}</div>
+              </div>
+            ))}
           </section>
           <p className="mt-3 text-xs leading-relaxed text-foreground/55">
-            Overlap threshold {Math.round(r.threshold * 100)}% · {report.coderA.name} coded{' '}
-            {r.nEventsA} events, {report.coderB.name} coded {r.nEventsB}. Overall κ is the joint
-            segmentation+categorization coefficient over the full table incl. the unmatched
-            (&ldquo;Void&rdquo;) margin; read it as context, and gate on the PER-CODE numbers below.
+            {report.coderA.name} vs {report.coderB.name} · {report.note}.
             {aprioriUnderpowered > 0 && (
               <>
                 {' '}
                 <span className="text-amber-700">
-                  {aprioriUnderpowered} a-priori code
-                  {aprioriUnderpowered === 1 ? '' : 's'} are underpowered in this session — too few
-                  instances to certify (add sessions or keep double-coding those).
+                  {aprioriUnderpowered} a-priori code{aprioriUnderpowered === 1 ? '' : 's'}{' '}
+                  underpowered here — too few {method === 'timegrid' ? 'active bins' : 'instances'}{' '}
+                  to certify.
                 </span>
               </>
             )}
           </p>
 
-          {/* Per-code table */}
-          <PerCodeTable report={report} />
+          <PerCodeTable report={report} method={method} />
 
-          {/* Confusion matrix */}
-          <ConfusionMatrix report={report} />
+          {report.method === 'easydiag' && report.confusion && (
+            <ConfusionMatrix report={report} />
+          )}
         </>
       )}
     </main>
   );
 }
 
-function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
-  return (
-    <div className="border border-foreground/15 p-4">
-      <div className="text-xs uppercase tracking-wide text-foreground/45">{label}</div>
-      <div className="mt-1 font-mono text-2xl">{value}</div>
-      <div className="mt-1 text-xs text-foreground/50">{sub}</div>
-    </div>
-  );
-}
-
-function PerCodeTable({ report }: { report: IrrReport }) {
-  const { result, codeOrigin } = report;
+function PerCodeTable({ report, method }: { report: IrrReport; method: IrrMethod }) {
+  const { perCode, codeOrigin } = report;
   const [showEmergent, setShowEmergent] = useState(true);
-  const rows = result.perCode.filter(
-    (p) => showEmergent || codeOrigin[p.code] !== 'emergent',
-  );
+  const rows = perCode.filter((p) => showEmergent || codeOrigin[p.code] !== 'emergent');
+  const countsHead = method === 'timegrid' ? 'A/B/✓ bins' : 'A/B/✓';
   return (
     <section className="mt-8">
       <div className="mb-2 flex items-center justify-between">
@@ -287,100 +312,89 @@ function PerCodeTable({ report }: { report: IrrReport }) {
             <tr className="border-b border-foreground/15">
               <th className="py-1.5 pr-3 font-normal">code</th>
               <th className="py-1.5 pr-3 font-normal">origin</th>
-              <th className="py-1.5 pr-3 text-right font-normal" title="chance-corrected agreement (IPF-κ)">κ</th>
+              <th className="py-1.5 pr-3 text-right font-normal" title="chance-corrected agreement">κ</th>
               <th className="py-1.5 pr-3 text-right font-normal" title="Gwet's AC1 — paradox-robust">AC1</th>
-              <th className="py-1.5 pr-3 text-right font-normal" title="raw agreement over linked pairs">raw</th>
               <th className="py-1.5 pr-3 text-right font-normal">prev</th>
-              <th className="py-1.5 pr-3 text-right font-normal" title="events by A / by B / linked-both">A/B/✓</th>
+              <th className="py-1.5 pr-3 text-right font-normal" title={countsHead}>{countsHead}</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((p) => {
-              const paradox =
-                p.kappa !== null && p.rawAgreement !== null && p.kappa < 0.4 && p.rawAgreement > 0.8;
-              return (
-                <tr
-                  key={p.code}
-                  className={`border-b border-foreground/10 ${p.underpowered ? 'opacity-55' : ''}`}
-                >
-                  <td className="py-1.5 pr-3 font-mono text-[13px]">
-                    {p.code}
-                    {p.underpowered && (
-                      <span className="ml-1.5 text-[10px] uppercase text-amber-700" title="too few instances to trust">
-                        low-n
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-1.5 pr-3">
-                    <span
-                      className={`inline-block rounded-sm px-1 text-[11px] ${
-                        codeOrigin[p.code] === 'emergent'
-                          ? 'bg-lime-500/20'
-                          : 'bg-emerald-500/15'
-                      }`}
-                    >
-                      {codeOrigin[p.code] ?? '—'}
+            {rows.map((p) => (
+              <tr
+                key={p.code}
+                className={`border-b border-foreground/10 ${p.underpowered ? 'opacity-55' : ''}`}
+              >
+                <td className="py-1.5 pr-3 font-mono text-[13px]">
+                  {p.code}
+                  {p.underpowered && (
+                    <span className="ml-1.5 text-[10px] uppercase text-amber-700" title="too few to trust">
+                      low-n
                     </span>
-                  </td>
-                  <td className={`py-1.5 pr-3 text-right font-mono ${paradox ? 'text-amber-700' : ''}`}>
-                    {num(p.kappa)}
-                  </td>
-                  <td className="py-1.5 pr-3 text-right font-mono">{num(p.ac1)}</td>
-                  <td className="py-1.5 pr-3 text-right font-mono text-foreground/60">{pct(p.rawAgreement)}</td>
-                  <td className="py-1.5 pr-3 text-right font-mono text-foreground/60">{pct(p.prevalence)}</td>
-                  <td className="py-1.5 pr-3 text-right font-mono text-foreground/60">
-                    {p.byCoderA}/{p.byCoderB}/{p.linkedBoth}
-                  </td>
-                </tr>
-              );
-            })}
+                  )}
+                </td>
+                <td className="py-1.5 pr-3">
+                  <span
+                    className={`inline-block rounded-sm px-1 text-[11px] ${
+                      codeOrigin[p.code] === 'emergent' ? 'bg-lime-500/20' : 'bg-emerald-500/15'
+                    }`}
+                  >
+                    {codeOrigin[p.code] ?? '—'}
+                  </span>
+                </td>
+                <td className={`py-1.5 pr-3 text-right font-mono ${p.paradox ? 'text-amber-700' : ''}`}>
+                  {num(p.kappa)}
+                </td>
+                <td className="py-1.5 pr-3 text-right font-mono">{num(p.ac1)}</td>
+                <td className="py-1.5 pr-3 text-right font-mono text-foreground/60">
+                  {pct(p.prevalence)}
+                </td>
+                <td className="py-1.5 pr-3 text-right font-mono text-foreground/60">{p.counts}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
       <p className="mt-2 text-xs leading-relaxed text-foreground/50">
-        <span className="text-amber-700">Amber κ</span> = base-rate paradox (low κ despite high raw
-        agreement and low prevalence — read AC1 instead). <span className="uppercase">low-n</span> =
-        below the min-instance floor; not certifiable from this sample regardless of the point
-        estimate. Gate solo-coding per code (κ ≥ .80 licenses; .667–.80 keep double-coding).
+        <span className="text-amber-700">Amber κ</span> = base-rate paradox (low κ despite high
+        agreement and low prevalence — read AC1). <span className="uppercase">low-n</span> = below
+        the min floor; not certifiable from this sample. Gate solo-coding per code (κ ≥ .80
+        licenses; .667–.80 keep double-coding).
       </p>
     </section>
   );
 }
 
 function ConfusionMatrix({ report }: { report: IrrReport }) {
-  const { result } = report;
-  const cats = result.categories;
-  // Only show categories that appear (a full 38-wide matrix is unreadable).
-  const active = cats
-    .map((c, i) => ({ c, i }))
-    .filter(({ i }) =>
-      result.confusion[i].some((v) => v > 0) || result.confusion.some((row) => row[i] > 0),
-    );
+  const conf = report.confusion!;
+  const cats = conf.categories;
   return (
     <section className="mt-8">
       <h2 className="mb-2 text-sm font-medium">
-        Confusion matrix <span className="font-normal text-foreground/45">· rows {report.coderA.name} · cols {report.coderB.name}</span>
+        Confusion matrix{' '}
+        <span className="font-normal text-foreground/45">
+          · rows {report.coderA.name} · cols {report.coderB.name}
+        </span>
       </h2>
       <div className="overflow-x-auto">
         <table className="text-right text-[11px]">
           <thead>
             <tr className="text-foreground/45">
               <th className="p-1"></th>
-              {active.map(({ c, i }) => (
-                <th key={i} className="max-w-[3rem] truncate p-1 font-mono font-normal" title={c}>
+              {cats.map((c, j) => (
+                <th key={j} className="max-w-[3rem] truncate p-1 font-mono font-normal" title={c}>
                   {c === 'Void' ? '∅' : c.slice(0, 6)}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody className="font-mono">
-            {active.map(({ c: rc, i }) => (
+            {cats.map((rc, i) => (
               <tr key={i}>
                 <th className="max-w-[7rem] truncate p-1 text-left font-normal text-foreground/60" title={rc}>
                   {rc === 'Void' ? '∅ Void' : rc}
                 </th>
-                {active.map(({ i: j }) => {
-                  const v = result.confusion[i][j];
+                {cats.map((_, j) => {
+                  const v = conf.matrix[i][j];
                   const diag = i === j;
                   return (
                     <td
@@ -397,9 +411,8 @@ function ConfusionMatrix({ report }: { report: IrrReport }) {
         </table>
       </div>
       <p className="mt-2 text-xs text-foreground/50">
-        Diagonal = agreements. The ∅ (Void) row/col are events one coder marked and the other did
-        not; ∅×∅ is a structural zero (an event neither coder saw cannot exist), which is why κ is
-        IPF-corrected rather than plain Cohen&apos;s.
+        Diagonal = agreements. ∅ (Void) rows/cols are events one coder marked and the other did not;
+        ∅×∅ is a structural zero, which is why κ is IPF-corrected.
       </p>
     </section>
   );

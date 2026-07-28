@@ -257,6 +257,25 @@ export function kappaFromTable(
   return (po - pe) / (1 - pe);
 }
 
+/** Standard Cohen's κ for a binary 2×2 (n11 both-yes, n10 A-only, n01 B-only,
+ *  n00 both-no). Unlike the event-linked table, the both-NO cell here is REAL
+ *  agreement (a time bin neither coder marked), so plain Cohen applies — no
+ *  structural zero, no IPF. */
+export function cohenKappaBinary(
+  n11: number,
+  n10: number,
+  n01: number,
+  n00: number,
+): number | null {
+  const N = n11 + n10 + n01 + n00;
+  if (N === 0) return null;
+  const po = (n11 + n00) / N;
+  const pa = (n11 + n10) / N;
+  const pb = (n11 + n01) / N;
+  const pe = pa * pb + (1 - pa) * (1 - pb);
+  return 1 - pe === 0 ? null : (po - pe) / (1 - pe);
+}
+
 /** Gwet's AC1 for a binary agreement table over LINKED pairs only.
  *  n11=both k, n12=A k / B ¬k, n21=A ¬k / B k, n22=both ¬k. */
 export function ac1Binary(n11: number, n12: number, n21: number, n22: number): number | null {

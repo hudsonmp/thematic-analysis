@@ -3,7 +3,8 @@
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { pageAll } from '@/lib/supabase/pageAll';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
-import { easyDiag, type Annotation, type EasyDiagResult } from '@/lib/irr/easydiag';
+import { easyDiag, type Annotation } from '@/lib/irr/easydiag';
+import { timeGridKappa } from '@/lib/irr/timegrid';
 
 /**
  * IRR (EasyDIAg) — READ-ONLY. Loads two coders' TIME-anchored code annotations
@@ -83,26 +84,58 @@ export async function listIrrSessions(): Promise<IrrSessionOption[]> {
 }
 
 export type CodeMeta = { mnemonic: string; origin: string };
+export type IrrMethod = 'easydiag' | 'timegrid';
+
+/** One overall (headline) statistic, method-agnostic for the UI. */
+export type IrrHeadline = { label: string; value: string; sub: string };
+
+/** One code's row, normalized across methods so the UI renders ONE table. */
+export type IrrPerCodeView = {
+  code: string;
+  kappa: number | null;
+  ac1: number | null;
+  prevalence: number;
+  /** Method-specific count summary, e.g. "12/7/1" (A/B/both) or "44 bins ✓". */
+  counts: string;
+  underpowered: boolean;
+  /** Low κ despite high agreement + low prevalence — flag as a base-rate artifact. */
+  paradox: boolean;
+};
 
 export type IrrReport = {
+  method: IrrMethod;
   sessionId: string;
   pidLabel: string;
   coderA: { id: string; name: string };
   coderB: { id: string; name: string };
-  result: EasyDiagResult;
   /** origin per code mnemonic, so the UI can partition a-priori vs emergent. */
   codeOrigin: Record<string, string>;
+  headline: IrrHeadline[];
+  perCode: IrrPerCodeView[];
+  /** One-line note on events/bins + params. */
+  note: string;
+  /** EasyDIAg-only: the confusion matrix for the detail view. */
+  confusion?: { categories: string[]; matrix: number[][] };
 };
 
 /**
- * Compute the EasyDIAg report for one (session, coderA, coderB) at a given
- * overlap threshold. `minInstances` sets the underpowered flag.
+ * Compute the IRR report for one (session, coderA, coderB).
+ *
+ * `method` selects the statistic:
+ *  - 'easydiag' — event matching by temporal overlap, then IPF-κ (Holle & Rein);
+ *    penalizes boundary jitter, so it answers "do the coders mark the same
+ *    EVENTS". Controlled by `threshold`.
+ *  - 'timegrid' — fixed time bins, Cohen's κ per code (Bakeman); inherits the
+ *    same units for both coders, so boundary jitter is not penalized. Answers
+ *    "do the coders agree bin-by-bin". Controlled by `binMs`.
  */
 export async function computeIrr(input: {
   sessionId: string;
   coderAId: string;
   coderBId: string;
+  method?: IrrMethod;
   threshold?: number;
+  binMs?: number;
   minInstances?: number;
   /** Restrict to annotations whose ONSET falls in [windowStartMs, windowEndMs].
    *  Null bounds = open. Purpose: a coder who tapered off late did not DISAGREE
@@ -162,10 +195,87 @@ export async function computeIrr(input: {
     return out;
   };
 
-  const result = easyDiag(expand(input.coderAId), expand(input.coderBId), {
-    threshold: input.threshold ?? 0.6,
-    minInstances: input.minInstances ?? 10,
-  });
+  const method: IrrMethod = input.method ?? 'easydiag';
+  const evA = expand(input.coderAId);
+  const evB = expand(input.coderBId);
+
+  const pct = (x: number | null) => (x === null ? '—' : `${Math.round(x * 100)}%`);
+  const k2 = (x: number | null) => (x === null ? '—' : x.toFixed(2));
+
+  let headline: IrrHeadline[];
+  let perCode: IrrPerCodeView[];
+  let note: string;
+  let confusion: { categories: string[]; matrix: number[][] } | undefined;
+
+  if (method === 'timegrid') {
+    const binMs = input.binMs ?? 2000;
+    const r = timeGridKappa(evA, evB, { binMs, minActiveBins: input.minInstances ?? 5 });
+    headline = [
+      {
+        label: 'Segmentation κ',
+        value: k2(r.segmentationKappa),
+        sub: `any-code-active · ${r.segBothActive} shared bins`,
+      },
+      {
+        label: 'Mean per-code κ',
+        value: k2(r.meanKappaPowered),
+        sub: 'powered codes only',
+      },
+      {
+        label: 'Grid',
+        value: `${r.nBins}`,
+        sub: `bins of ${binMs / 1000}s`,
+      },
+    ];
+    perCode = r.perCode.map((p) => ({
+      code: p.code,
+      kappa: p.kappa,
+      ac1: p.ac1,
+      prevalence: p.prevalence,
+      counts: `${p.bothActive + p.aOnly}/${p.bothActive + p.bOnly}/${p.bothActive}`,
+      underpowered: p.underpowered,
+      paradox:
+        p.kappa !== null && p.ac1 !== null && p.kappa < 0.4 && p.ac1 > 0.85 && p.prevalence < 0.15,
+    }));
+    note = `${evA.length} events / ${evB.length} events · ${r.nBins} bins of ${binMs / 1000}s · one-sided time A ${r.segAOnly} vs B ${r.segBOnly} bins`;
+  } else {
+    const r = easyDiag(evA, evB, {
+      threshold: input.threshold ?? 0.6,
+      minInstances: input.minInstances ?? 10,
+    });
+    headline = [
+      { label: 'Overall κ', value: k2(r.overallKappa), sub: 'IPF-corrected, incl. Void' },
+      {
+        label: 'Segmentation agreement',
+        value: pct(r.segmentationAgreement),
+        sub: `${r.nLinked} linked · ${r.nUnmatchedA}+${r.nUnmatchedB} unmatched`,
+      },
+      {
+        label: 'Categorization agreement',
+        value: pct(r.categorizationAgreement),
+        sub: 'of linked pairs, same code',
+      },
+    ];
+    perCode = r.perCode.map((p) => ({
+      code: p.code,
+      kappa: p.kappa,
+      ac1: p.ac1,
+      prevalence: p.prevalence,
+      counts: `${p.byCoderA}/${p.byCoderB}/${p.linkedBoth}`,
+      underpowered: p.underpowered,
+      paradox:
+        p.kappa !== null && p.rawAgreement !== null && p.kappa < 0.4 && p.rawAgreement > 0.8,
+    }));
+    note = `overlap link ≥ ${Math.round(r.threshold * 100)}% · ${r.nEventsA} events / ${r.nEventsB} events · ${r.nLinked} linked`;
+    // Only show categories that appear, so the matrix is readable.
+    const seen = r.categories
+      .map((c, i) => ({ c, i }))
+      .filter(({ i }) => r.confusion[i].some((v) => v > 0) || r.confusion.some((row) => row[i] > 0));
+    confusion = {
+      categories: seen.map(({ c }) => c),
+      matrix: seen.map(({ i }) => seen.map(({ i: j }) => r.confusion[i][j])),
+    };
+  }
 
   const [{ data: sessRow }, { data: profRows }] = await Promise.all([
     sb.from('cb_sessions').select('pid_label').eq('id', input.sessionId).maybeSingle(),
@@ -177,11 +287,15 @@ export async function computeIrr(input: {
   const nameById = new Map((profRows ?? []).map((p) => [p.user_id, p.display_name ?? 'coder']));
 
   return {
+    method,
     sessionId: input.sessionId,
     pidLabel: sessRow?.pid_label ?? input.sessionId.slice(0, 8),
     coderA: { id: input.coderAId, name: nameById.get(input.coderAId) ?? 'coder A' },
     coderB: { id: input.coderBId, name: nameById.get(input.coderBId) ?? 'coder B' },
-    result,
     codeOrigin,
+    headline,
+    perCode,
+    note,
+    confusion,
   };
 }
