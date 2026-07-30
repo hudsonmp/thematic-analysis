@@ -3968,55 +3968,46 @@ function TranscriptBody({
       {turns.map((turn, turnIdx) => {
         const firstSeg = segments[turn.segIndices[0]];
         const speaker = firstSeg?.speaker ?? null;
+        {/* One numbered LINE per segment (not per paragraph). Line number =
+            segment ORDINAL+1 (stable across regrouping; identical for both
+            coders). The speaker label shows only on the FIRST line of a turn —
+            consecutive same-speaker lines don't restate it. Blank/whitespace
+            segments are numbered too. Each segment keeps its own data-seg-idx
+            span, so annotation anchoring (segment_id + char offset) is
+            unchanged from the old inline-flow layout. */}
         const turnInner = (
-          <div className="flex items-start gap-1.5">
-            {/* Line number = the turn's first segment ORDINAL (1-based): stable
-                across turn regrouping and identical for both coders, so "look
-                at line 214" survives edits — a display count would not. */}
-            <span
-              aria-hidden
-              className="mt-px w-9 shrink-0 select-none text-right font-mono text-[10px] leading-5 text-foreground/25"
-            >
-              {(firstSeg?.idx ?? turn.segIndices[0]) + 1}
-            </span>
-            <button
-              type="button"
-              onClick={() => onSeek(turn.startMs)}
-              title="Seek to here"
-              className="mt-px shrink-0 font-mono text-xs text-foreground/40 hover:text-foreground hover:underline"
-            >
-              [{formatTime(turn.startMs)}]
-            </button>
-
-            {isCleanedActive && editing ? (
-              /* Continuous inline-editable cues (R6). */
-              <p className="flex-1 text-left">
-                {speaker && <span className="mr-1.5 font-semibold">{speaker}:</span>}
-                {turn.segIndices.map((si, posInTurn) => {
-                  const seg = segments[si];
-                  return (
-                    <span key={seg.id}>
-                      {posInTurn > 0 ? ' ' : null}
+          <div>
+            {turn.segIndices.map((si, posInTurn) => {
+              const seg = segments[si];
+              const highlights = highlightsBySegmentAll.get(seg.id) ?? [];
+              const active = si === activeIdx;
+              return (
+                <div key={seg.id} className="flex items-start gap-1.5">
+                  <span
+                    aria-hidden
+                    className="mt-px w-9 shrink-0 select-none text-right font-mono text-[10px] leading-5 text-foreground/25"
+                  >
+                    {(seg?.idx ?? si) + 1}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onSeek(seg.startMs)}
+                    title="Seek to this line"
+                    className="mt-px shrink-0 font-mono text-xs text-foreground/40 hover:text-foreground hover:underline"
+                  >
+                    [{formatTime(seg.startMs)}]
+                  </button>
+                  <p className="flex-1 select-text text-left">
+                    {posInTurn === 0 && speaker && (
+                      <span className="mr-1.5 font-semibold">{speaker}:</span>
+                    )}
+                    {isCleanedActive && editing ? (
                       <InlineCueEditor
                         key={`${seg.id}:${seg.text}`}
                         initialText={seg.text}
                         onCommit={(t) => onSegmentTextCommit(seg.id, t)}
                       />
-                    </span>
-                  );
-                })}
-              </p>
-            ) : (
-              /* Read/code: the turn's cues inline in one selectable `<p>`. */
-              <p className="flex-1 select-text text-left">
-                {speaker && <span className="mr-1.5 font-semibold">{speaker}:</span>}
-                {turn.segIndices.map((si, posInTurn) => {
-                  const seg = segments[si];
-                  const highlights = highlightsBySegmentAll.get(seg.id) ?? [];
-                  const active = si === activeIdx;
-                  return (
-                    <span key={seg.id}>
-                      {posInTurn > 0 ? ' ' : null}
+                    ) : (
                       <span
                         data-seg-idx={si}
                         ref={(el) => {
@@ -4038,11 +4029,11 @@ function TranscriptBody({
                             )
                           : seg.text}
                       </span>
-                    </span>
-                  );
-                })}
-              </p>
-            )}
+                    )}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         );
 
