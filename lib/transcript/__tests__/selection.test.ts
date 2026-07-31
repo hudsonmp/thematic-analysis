@@ -3,6 +3,8 @@ import {
   buildTextAnchor,
   buildMultiAnchor,
   splitIntoPieces,
+  sentenceSpans,
+  snapToSentences,
   CONTEXT_CHARS,
   type Highlight,
 } from '../selection';
@@ -163,5 +165,70 @@ describe('buildMultiAnchor', () => {
     expect(a!.startChar).toBe(3);
     expect(a!.endChar).toBe(3);
     expect(a!.quoteText).toBe(' def');
+  });
+});
+
+describe('sentenceSpans', () => {
+  it('splits on . ! ? and tiles the whole string', () => {
+    const t = 'First one. Second! Third?';
+    const spans = sentenceSpans(t);
+    // Spans must tile: each start equals the previous end, covering [0, len].
+    expect(spans[0][0]).toBe(0);
+    expect(spans[spans.length - 1][1]).toBe(t.length);
+    for (let i = 1; i < spans.length; i++) expect(spans[i][0]).toBe(spans[i - 1][1]);
+    expect(spans).toHaveLength(3);
+    expect(t.slice(...spans[0]).trim()).toBe('First one.');
+    expect(t.slice(...spans[1]).trim()).toBe('Second!');
+    expect(t.slice(...spans[2]).trim()).toBe('Third?');
+  });
+
+  it('a cue with no terminal punctuation is one sentence', () => {
+    expect(sentenceSpans('so remember to tell me what you')).toEqual([[0, 31]]);
+  });
+
+  it('empty / whitespace text yields one covering span', () => {
+    expect(sentenceSpans('')).toEqual([[0, 0]]);
+    expect(sentenceSpans('   ')).toEqual([[0, 3]]);
+  });
+
+  it('keeps trailing quote/bracket with the terminator', () => {
+    const t = 'He said "go." Then left.';
+    const spans = sentenceSpans(t);
+    expect(t.slice(...spans[0]).trim()).toBe('He said "go."');
+  });
+});
+
+describe('snapToSentences', () => {
+  const t = 'First one. Second sentence here. Third.';
+  //         0         10                 33
+
+  it('expands a mid-sentence drag outward to whole sentences', () => {
+    // select "cond sentence he" (inside the 2nd sentence) → whole 2nd sentence.
+    const s = t.indexOf('cond');
+    const e = t.indexOf('he') + 2;
+    const out = snapToSentences(t, s, e);
+    expect(t.slice(out.start, out.end).trim()).toBe('Second sentence here.');
+  });
+
+  it('a selection already on sentence boundaries is unchanged', () => {
+    const start = t.indexOf('Second');
+    const end = t.indexOf('here.') + 'here.'.length + 1; // include trailing space
+    const out = snapToSentences(t, start, end);
+    expect(out.start).toBe(start);
+    expect(t.slice(out.start, out.end).trim()).toBe('Second sentence here.');
+  });
+
+  it('a selection spanning two sentences expands to cover both wholly', () => {
+    const s = t.indexOf('one'); // inside sentence 1
+    const e = t.indexOf('Second') + 3; // inside sentence 2
+    const out = snapToSentences(t, s, e);
+    expect(out.start).toBe(0);
+    expect(t.slice(out.start, out.end).trim()).toBe('First one. Second sentence here.');
+  });
+
+  it('no-punctuation cue snaps to the whole cue', () => {
+    const frag = 'just a fragment with no end';
+    const out = snapToSentences(frag, 5, 9);
+    expect(out).toEqual({ start: 0, end: frag.length });
   });
 });

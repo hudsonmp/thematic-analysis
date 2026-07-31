@@ -67,6 +67,7 @@ import ChatReplayPane from './ChatReplayPane';
 import SpecReplay from './SpecReplay';
 import {
   buildMultiAnchor,
+  snapToSentences,
   splitIntoPieces,
   type Highlight,
 } from '@/lib/transcript/selection';
@@ -278,6 +279,7 @@ export default function SessionPlayer({
   durationMs,
   codingEnabled = false,
   canComment = false,
+  enforceSentences = false,
   versionId: originalVersionId = null,
   versions = [],
   codes = [],
@@ -303,6 +305,10 @@ export default function SessionPlayer({
   /** Any authed coder (viewers included) may comment: selection + comment rail +
    *  composer. Split from `codingEnabled` so viewers can comment but not code. */
   canComment?: boolean;
+  /** Method 3: constrain highlighting to whole sentences (expand selections to
+   *  sentence boundaries). Off for the two already-coded sessions so their
+   *  sub-sentence coding stays internally consistent. */
+  enforceSentences?: boolean;
   /** The original transcript version id annotations anchor to (version_id). */
   versionId?: string | null;
   /** All of the session's transcript versions (the Original/Cleaned variants). */
@@ -1003,12 +1009,30 @@ export default function SessionPlayer({
     // Build the (possibly multi-cue) anchor from the covered cues' texts.
     const segTexts: string[] = [];
     for (let i = r.startSegIdx; i <= r.endSegIdx; i++) segTexts.push(segments[i].text);
-    const anchor = buildMultiAnchor(segTexts, r.startChar, r.endChar);
+    let anchor = buildMultiAnchor(segTexts, r.startChar, r.endChar);
     if (!anchor) {
       setTextSel(null);
       setPopupPos(null);
       setAssignedAnnId(null);
       return;
+    }
+    // SENTENCE ENFORCEMENT (Method 3): expand the selection OUTWARD to whole
+    // sentences so both coders inherit the same units and boundary jitter cannot
+    // arise. Snap the start edge within the first cue and the end edge within the
+    // last cue (the only cues with partial coverage; middle cues are whole), then
+    // rebuild the anchor. Exempt sessions (already coded sub-sentence) skip this.
+    if (enforceSentences) {
+      const firstText = segTexts[0];
+      const lastText = segTexts[segTexts.length - 1];
+      const snappedStart =
+        segTexts.length === 1
+          ? snapToSentences(firstText, anchor.startChar, anchor.endChar).start
+          : snapToSentences(firstText, anchor.startChar, anchor.startChar).start;
+      const snappedEnd =
+        segTexts.length === 1
+          ? snapToSentences(firstText, anchor.startChar, anchor.endChar).end
+          : snapToSentences(lastText, anchor.endChar, anchor.endChar).end;
+      anchor = buildMultiAnchor(segTexts, snappedStart, snappedEnd) ?? anchor;
     }
     setTextSel({
       startSegIdx: r.startSegIdx,
@@ -1079,7 +1103,7 @@ export default function SessionPlayer({
     }
     // COMMENT mode: the selection just sits (painted pending); typing opens the
     // marginalia composer via the keyboard handler below.
-  }, [segments, myAnnotations, mode, reanchoringId, refreshActiveAnnotations]);
+  }, [segments, myAnnotations, mode, reanchoringId, refreshActiveAnnotations, enforceSentences]);
 
   // CLICK-TO-SEEK: a single click on plain cue text jumps the video to that cue
   // and plays. Click fires AFTER mouseup, so a drag-select arrives here with a

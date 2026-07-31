@@ -148,3 +148,46 @@ adequately sampled in any window.
 - It does not implement γ (Mathet et al. 2015) or Krippendorff's u-α; EasyDIAg was
   the chosen method. Those remain candidates if boundary-level agreement (not just
   overlap-linking) is later required.
+
+## 9. Sentence-grid κ (Method 3) — the recommended primary
+
+The lit review (`~/Desktop/Readings - Claude/07-30-2026-irr-segmentation-methods.pdf`)
+concluded that the fix for the boundary-jitter problem is a **shared unit**, and
+recommended the **sentence** (Chi 1997: the utterance/sentence is the canonical grain
+for verbal-protocol analysis; sentences are auto-segmentable and match the code
+granularity). This is now a third IRR method beside EasyDIAg (Method 2) and time-grid
+(Method 4).
+
+**Enforcement (coding UI).** `lib/transcript/selection.ts` gains `sentenceSpans` (a
+punctuation splitter, ASR-tolerant: a cue with no terminal `.!?` is one sentence) and
+`snapToSentences`, which expands a selection OUTWARD to whole-sentence boundaries.
+`SessionPlayer.handleTranscriptMouseUp` snaps the start edge within the first cue and
+the end edge within the last cue (the only partially-covered cues) before the popup
+opens, gated by an `enforceSentences` prop. Enforcement is ON for every session EXCEPT
+the two already coded sub-sentence (548, 083), whose existing coding must stay
+internally consistent.
+
+**Why text, not time.** Sentence agreement is which-sentence, not when — so it needs
+no timestamps. This matters because `cb_segments.words` is empty and the cleaned tracks
+have multi-minute mega-segments that cannot be time-split. `lib/irr/sentencegrid.ts`
+enumerates sentence units on the fly (`enumerateSentences`) and maps each annotation to
+the units it covers (`sentencesForRange`); no DB re-segmentation.
+
+**Two coefficients** (per the reporting decision):
+- **Strict** (primary): per (sentence × code) presence, standard Cohen's κ. Justified
+  as ordinary per-unit content-analysis agreement on a fixed recording/coding unit
+  (Krippendorff 2004; Lombard et al. 2002).
+- **Overlap-relaxed** (secondary): a strict disagreement on sentence S is upgraded to
+  agreement iff the other coder applied the same code within ±1 sentence — a unitizing
+  tolerance formalized by Krippendorff's unitizing α (Krippendorff et al. 2015) and the
+  γ coefficient (Mathet et al. 2015), mirroring relaxed/overlap span-matching in NLP
+  annotation. It only turns disagreements into agreements (never the reverse), so it
+  inflates κ and is a sensitivity check, not the headline.
+
+**Method 3 vs 4 reporting.** Sentence-grid κ is the **primary**; time-grid κ (1–2 s)
+is the **robustness cross-check** (Bakeman et al. 2009 recommend reporting both a
+unit-based and a time-based coefficient). Decision rule on the next double-coded,
+sentence-enforced session: convergence → sentences win on interpretability;
+sentence-κ ≫ time-κ → sentences are absorbing boundary variance (expected);
+time-κ > sentence-κ → the splitter is mis-segmenting ideas and needs tuning. EasyDIAg
+(Method 2) stays as the reported occurrence-level figure only.

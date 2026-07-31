@@ -5,6 +5,12 @@ import { pageAll } from '@/lib/supabase/pageAll';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { easyDiag, type Annotation } from '@/lib/irr/easydiag';
 import { timeGridKappa } from '@/lib/irr/timegrid';
+import {
+  sentenceGridKappa,
+  enumerateSentences,
+  sentencesForRange,
+  type SentencePresence,
+} from '@/lib/irr/sentencegrid';
 
 /**
  * IRR (EasyDIAg) — READ-ONLY. Loads two coders' TIME-anchored code annotations
@@ -84,7 +90,7 @@ export async function listIrrSessions(): Promise<IrrSessionOption[]> {
 }
 
 export type CodeMeta = { mnemonic: string; origin: string };
-export type IrrMethod = 'easydiag' | 'timegrid';
+export type IrrMethod = 'easydiag' | 'timegrid' | 'sentencegrid';
 
 /** One overall (headline) statistic, method-agnostic for the UI. */
 export type IrrHeadline = { label: string; value: string; sub: string };
@@ -100,9 +106,12 @@ export type IrrPerCodeView = {
   underpowered: boolean;
   /** Low κ despite high agreement + low prevalence — flag as a base-rate artifact. */
   paradox: boolean;
-  /** Time-grid only: the 2×2 bin cells for a transparent worked example
+  /** Time-grid / sentence-grid only: the 2×2 unit cells for the worked example
    *  (n11 both-active, n10 A-only, n01 B-only, n00 both-inactive). */
   cells?: { n11: number; n10: number; n01: number; n00: number };
+  /** Sentence-grid only: the overlap-relaxed κ (±1-sentence tolerance),
+   *  reported beside the strict κ as a sensitivity check. */
+  kappaRelaxed?: number | null;
 };
 
 export type IrrReport = {
@@ -151,11 +160,13 @@ export async function computeIrr(input: {
   const sb = await createUserServerClient();
 
   // Code annotations for the two coders, with their codes and each code's origin.
+  // segment_id / char offsets are needed by the sentence-grid method to map an
+  // annotation onto the sentence units it covers.
   const { data, error } = await pageAll((from, to) =>
     sb
       .from('cb_annotations')
       .select(
-        'id, coder_id, t_start_ms, t_end_ms, cb_annotation_codes(cb_codes(mnemonic, origin))',
+        'id, coder_id, t_start_ms, t_end_ms, segment_id, end_segment_id, char_start, char_end, version_id, cb_annotation_codes(cb_codes(mnemonic, origin))',
       )
       .eq('session_id', input.sessionId)
       .eq('kind', 'code')
@@ -170,6 +181,11 @@ export async function computeIrr(input: {
     coder_id: string;
     t_start_ms: number;
     t_end_ms: number;
+    segment_id: string;
+    end_segment_id: string | null;
+    char_start: number;
+    char_end: number;
+    version_id: string;
     cb_annotation_codes: { cb_codes: { mnemonic: string; origin: string } | null }[] | null;
   };
 
@@ -210,7 +226,72 @@ export async function computeIrr(input: {
   let note: string;
   let confusion: { categories: string[]; matrix: number[][] } | undefined;
 
-  if (method === 'timegrid') {
+  if (method === 'sentencegrid') {
+    // Enumerate sentence units from the coded VERSION's segments, then map each
+    // annotation to the sentences it covers. Version = the one the annotations
+    // are on (both coders share it); fall back to the session's active version.
+    const rows = (data ?? []) as Row[];
+    const versionId = rows[0]?.version_id ?? null;
+    const segRes = versionId
+      ? await pageAll((from, to) =>
+          sb
+            .from('cb_segments')
+            .select('id, ordinal, text')
+            .eq('version_id', versionId)
+            .order('ordinal', { ascending: true })
+            .range(from, to),
+        )
+      : { data: [], error: null };
+    if (segRes.error) throw new Error(`computeIrr (segments) failed: ${segRes.error.message}`);
+    const segs = (segRes.data ?? []) as { id: string; ordinal: number; text: string }[];
+    const ordinalById = new Map(segs.map((s) => [s.id, s.ordinal]));
+    const { units, byOrdinal } = enumerateSentences(segs);
+
+    const presenceFor = (coderId: string): SentencePresence[] => {
+      const out: SentencePresence[] = [];
+      for (const r of rows) {
+        if (r.coder_id !== coderId) continue;
+        const startOrd = ordinalById.get(r.segment_id);
+        if (startOrd === undefined) continue;
+        const endOrd = r.end_segment_id ? ordinalById.get(r.end_segment_id) ?? startOrd : startOrd;
+        const sentenceIdxs = sentencesForRange(byOrdinal, startOrd, r.char_start, endOrd, r.char_end);
+        const codes = (r.cb_annotation_codes ?? [])
+          .map((ac) => ac.cb_codes)
+          .filter((c): c is { mnemonic: string; origin: string } => c !== null);
+        for (const c of codes) {
+          codeOrigin[c.mnemonic] = c.origin;
+          for (const sIdx of sentenceIdxs) out.push({ code: c.mnemonic, sentence: sIdx });
+        }
+      }
+      return out;
+    };
+
+    const r = sentenceGridKappa(units.length, presenceFor(input.coderAId), presenceFor(input.coderBId), {
+      minActiveSentences: input.minInstances ?? 5,
+    });
+    headline = [
+      {
+        label: 'Segmentation κ',
+        value: k2(r.segmentationKappa),
+        sub: `same sentences codeable · ${r.segBothActive} shared`,
+      },
+      { label: 'Mean per-code κ', value: k2(r.meanKappaPowered), sub: 'strict, powered codes' },
+      { label: 'Sentences', value: `${units.length}`, sub: 'coding units' },
+    ];
+    perCode = r.perCode.map((p) => ({
+      code: p.code,
+      kappa: p.kappa,
+      kappaRelaxed: p.kappaRelaxed,
+      ac1: p.ac1,
+      prevalence: p.prevalence,
+      counts: `${p.bothActive + p.aOnly}/${p.bothActive + p.bOnly}/${p.bothActive}`,
+      underpowered: p.underpowered,
+      paradox:
+        p.kappa !== null && p.ac1 !== null && p.kappa < 0.4 && p.ac1 > 0.85 && p.prevalence < 0.15,
+      cells: { n11: p.bothActive, n10: p.aOnly, n01: p.bOnly, n00: p.inactive },
+    }));
+    note = `${units.length} sentence units · ${presenceFor(input.coderAId).length} A / ${presenceFor(input.coderBId).length} B sentence-code marks · strict primary, relaxed (±1) secondary`;
+  } else if (method === 'timegrid') {
     const binMs = input.binMs ?? 2000;
     const r = timeGridKappa(evA, evB, { binMs, minActiveBins: input.minInstances ?? 5 });
     headline = [

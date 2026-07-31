@@ -38,7 +38,7 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
   const session = sessions.find((s) => s.sessionId === sessionId) ?? sessions[0];
   const [coderAId, setCoderAId] = useState(session?.coders[0]?.id ?? '');
   const [coderBId, setCoderBId] = useState(session?.coders[1]?.id ?? '');
-  const [method, setMethod] = useState<IrrMethod>('timegrid');
+  const [method, setMethod] = useState<IrrMethod>('sentencegrid');
   const [thresholdPct, setThresholdPct] = useState(60);
   const [binSec, setBinSec] = useState(2);
   const [minInstances, setMinInstances] = useState(5);
@@ -110,8 +110,9 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
       <section className="mt-6 flex gap-2">
         {(
           [
-            ['timegrid', 'Time-grid κ', 'Cohen κ on fixed bins · robust to boundary jitter (Bakeman)'],
-            ['easydiag', 'EasyDIAg', 'Event matching by overlap · IPF-κ (Holle & Rein)'],
+            ['sentencegrid', 'Sentence-grid κ', 'Cohen κ per sentence unit · primary (Chi 1997) · strict + relaxed'],
+            ['timegrid', 'Time-grid κ', 'Cohen κ on fixed time bins · robustness cross-check (Bakeman)'],
+            ['easydiag', 'EasyDIAg', 'Event matching by overlap · occurrence-level (Holle & Rein)'],
           ] as [IrrMethod, string, string][]
         ).map(([m, label, sub]) => (
           <button
@@ -177,7 +178,7 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
             ))}
           </select>
         </label>
-        {method === 'easydiag' ? (
+        {method === 'easydiag' && (
           <label className="flex flex-col gap-1 text-xs text-foreground/60">
             Overlap link ≥ {thresholdPct}%
             <input
@@ -190,7 +191,8 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
               className="w-32"
             />
           </label>
-        ) : (
+        )}
+        {method === 'timegrid' && (
           <label className="flex flex-col gap-1 text-xs text-foreground/60">
             Bin width {binSec}s
             <input
@@ -205,7 +207,7 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
           </label>
         )}
         <label className="flex flex-col gap-1 text-xs text-foreground/60">
-          Min {method === 'timegrid' ? 'bins' : 'instances'}
+          Min {method === 'timegrid' ? 'bins' : method === 'sentencegrid' ? 'sentences' : 'instances'}
           <input
             type="number"
             min={1}
@@ -418,7 +420,10 @@ function PerCodeTable({ report, method }: { report: IrrReport; method: IrrMethod
             <tr className="border-b border-foreground/15">
               <th className="py-1.5 pr-3 font-normal">code</th>
               <th className="py-1.5 pr-3 font-normal">origin</th>
-              <th className="py-1.5 pr-3 text-right font-normal" title="chance-corrected agreement">κ</th>
+              <th className="py-1.5 pr-3 text-right font-normal" title="chance-corrected agreement (strict)">κ</th>
+              {method === 'sentencegrid' && (
+                <th className="py-1.5 pr-3 text-right font-normal" title="overlap-relaxed κ (±1-sentence tolerance)">κ&nbsp;rlx</th>
+              )}
               <th className="py-1.5 pr-3 text-right font-normal" title="Gwet's AC1 — paradox-robust">AC1</th>
               <th className="py-1.5 pr-3 text-right font-normal">prev</th>
               <th className="py-1.5 pr-3 text-right font-normal" title={countsHead}>{countsHead}</th>
@@ -460,6 +465,11 @@ function PerCodeTable({ report, method }: { report: IrrReport; method: IrrMethod
                     <td className={`py-1.5 pr-3 text-right font-mono ${p.paradox ? 'text-amber-700' : ''}`}>
                       {num(p.kappa)}
                     </td>
+                    {method === 'sentencegrid' && (
+                      <td className="py-1.5 pr-3 text-right font-mono text-foreground/60">
+                        {num(p.kappaRelaxed ?? null)}
+                      </td>
+                    )}
                     <td className="py-1.5 pr-3 text-right font-mono">{num(p.ac1)}</td>
                     <td className="py-1.5 pr-3 text-right font-mono text-foreground/60">
                       {pct(p.prevalence)}
@@ -468,7 +478,7 @@ function PerCodeTable({ report, method }: { report: IrrReport; method: IrrMethod
                   </tr>
                   {open && p.cells && (
                     <tr>
-                      <td colSpan={6} className="border-b border-foreground/10 p-0">
+                      <td colSpan={method === 'sentencegrid' ? 7 : 6} className="border-b border-foreground/10 p-0">
                         <WorkedKappa cells={p.cells} />
                       </td>
                     </tr>

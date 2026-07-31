@@ -59,6 +59,88 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
+// ---------------------------------------------------------------------------
+// Sentence boundaries (Method 3: sentence-level coding standardization).
+//
+// Coders may only highlight WHOLE sentences, so boundary jitter — the ~80% of
+// disagreement diagnosed on session 548 — cannot arise (both coders inherit the
+// same sentence units). `snapToSentences` expands a raw selection OUTWARD to the
+// enclosing sentence boundaries; `sentenceSpans` is the shared splitter, reused
+// by the sentence-grid IRR to enumerate units. Both are pure string math.
+//
+// The splitter is deliberately simple and ASR-tolerant: a boundary is a
+// sentence-final `.`, `!`, or `?` (optionally followed by closing quotes/
+// brackets) and then whitespace or end-of-text. A cue with no terminal
+// punctuation — common for ASR fragments — is one sentence. This is not a
+// linguistic parser; it is a coding-unit segmenter, and its only correctness
+// requirement is that both coders and the IRR computation split identically.
+// ---------------------------------------------------------------------------
+
+const SENTENCE_END = /[.!?]+["'”’)\]]*(?=\s|$)/g;
+
+/**
+ * The sentence spans of `text` as `[start, end)` char ranges that TILE the whole
+ * string (every character belongs to exactly one span, including trailing
+ * whitespace, so offsets round-trip). Whitespace-only or empty text yields a
+ * single span covering it. Terminators stay with their sentence.
+ */
+export function sentenceSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let start = 0;
+  SENTENCE_END.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SENTENCE_END.exec(text)) !== null) {
+    // Include the terminator (and any trailing whitespace up to the next
+    // sentence's first non-space char) in this span so spans tile contiguously.
+    let end = m.index + m[0].length;
+    while (end < text.length && /\s/.test(text[end])) end++;
+    spans.push([start, end]);
+    start = end;
+  }
+  if (start < text.length || spans.length === 0) spans.push([start, text.length]);
+  return spans;
+}
+
+/**
+ * Expand a raw `[start, end]` selection OUTWARD to the enclosing sentence
+ * boundaries within `text`: `start` moves back to the start of the sentence it
+ * falls in, `end` moves forward to the end of the sentence it falls in. A
+ * selection already on boundaries is unchanged. Empty text → the input clamped.
+ *
+ * Applied per cue: for a multi-cue selection the caller snaps `start` within the
+ * first cue's text and `end` within the last cue's text (the only two cues with
+ * partial coverage; middle cues are always whole).
+ */
+export function snapToSentences(
+  text: string,
+  start: number,
+  end: number,
+): { start: number; end: number } {
+  const len = text.length;
+  const s0 = clamp(Math.min(start, end), 0, len);
+  const e0 = clamp(Math.max(start, end), 0, len);
+  const spans = sentenceSpans(text);
+  // Start → the start of the FIRST sentence whose end is past s0 (the sentence
+  // s0 falls in; ties on a boundary keep the later sentence).
+  let s = s0;
+  for (const [b, x] of spans) {
+    if (s0 < x) {
+      s = b;
+      break;
+    }
+  }
+  // End → the end of the LAST sentence whose start is before e0 (the sentence e0
+  // falls in; an e0 exactly on a boundary snaps to that boundary, not into the
+  // next sentence). Read only the ORIGINAL e0 in the test, never the running e.
+  let e = e0;
+  for (const [b, x] of spans) {
+    if (b < e0) e = x;
+    else break;
+  }
+  if (e < s) e = s;
+  return { start: s, end: e };
+}
+
 /** A char-anchored selection that may span MULTIPLE consecutive segments. The
  *  start lives at `startChar` within the FIRST covered segment, the end at
  *  `endChar` within the LAST. For a single-segment selection both offsets index
