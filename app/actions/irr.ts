@@ -3,28 +3,26 @@
 import { createUserServerClient } from '@/lib/supabase/user-server';
 import { pageAll } from '@/lib/supabase/pageAll';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
-import { easyDiag, type Annotation } from '@/lib/irr/easydiag';
-import { timeGridKappa } from '@/lib/irr/timegrid';
-import {
-  sentenceGridKappa,
-  enumerateSentences,
-  sentencesForRange,
-  type SentencePresence,
-} from '@/lib/irr/sentencegrid';
+import { sentenceGridKappa, type SentencePresence } from '@/lib/irr/sentencegrid';
+import { codeCooccurrence, mergeCandidates, type UnitCode } from '@/lib/irr/cooccurrence';
 
 /**
- * IRR (EasyDIAg) — READ-ONLY. Loads two coders' TIME-anchored code annotations
- * for a session and computes inter-rater reliability via lib/irr/easydiag.
+ * IRR + code co-occurrence — READ-ONLY. Loads two coders' code annotations for a
+ * session and computes, per David Smith's Tuesday method:
  *
- * This never writes and never touches the coding surface. The interval for each
- * annotation is the row's own [t_start_ms, t_end_ms] — the coded span's
- * enclosing-segment time extent, already materialized at ingest — so both the
- * mic track and the un-named echo track land on the SAME recording clock and a
- * duplicate-track split collapses by temporal overlap (see easydiag.ts header).
+ *  1. SENTENCE-LEVEL AGREEMENT. The coding unit is the SEGMENT — on the
+ *     sentence-restored version each segment is exactly one sentence, so this is
+ *     agreement "at the sentence level", which David standardized on. Per code we
+ *     report strict Cohen's κ AND an overlap-relaxed κ (±1 adjacent unit counts as
+ *     agreement — David: "if someone highlights one sentence and someone the next,
+ *     that is agreement"). IRR here is a DIAGNOSTIC for systematic disagreement, not
+ *     a headline number to report.
+ *  2. CODE × CODE CO-OCCURRENCE heat map (codeCooccurrence): highly correlated codes
+ *     with weak agreement are merge candidates.
  *
- * A multi-code annotation is expanded to one event per code, because EasyDIAg's
- * category axis is single-valued; two codes on one span are two co-located
- * events, which is the correct model (both compete for a partner independently).
+ * There is ONE method now (the EasyDIAg / time-grid apparatus was removed — David
+ * asked for sentence-level agreement + the heat map, nothing more). Never writes;
+ * never touches the coding surface.
  */
 
 export type CoderOption = { id: string; name: string; nCode: number };
@@ -52,7 +50,6 @@ export async function listIrrSessions(): Promise<IrrSessionOption[]> {
   if (error) throw new Error(`listIrrSessions failed: ${error.message}`);
   const rows = data ?? [];
 
-  // session -> coder -> count
   const bySession = new Map<string, Map<string, number>>();
   for (const r of rows) {
     if (!r.session_id || !r.coder_id) continue;
@@ -67,7 +64,6 @@ export async function listIrrSessions(): Promise<IrrSessionOption[]> {
   const multi = [...bySession.entries()].filter(([, m]) => m.size >= 2);
   if (multi.length === 0) return [];
 
-  // Resolve pid labels and coder names.
   const sessionIds = multi.map(([s]) => s);
   const coderIds = [...new Set(multi.flatMap(([, m]) => [...m.keys()]))];
 
@@ -89,84 +85,74 @@ export async function listIrrSessions(): Promise<IrrSessionOption[]> {
     .sort((a, b) => a.pidLabel.localeCompare(b.pidLabel));
 }
 
-export type CodeMeta = { mnemonic: string; origin: string };
-export type IrrMethod = 'easydiag' | 'timegrid' | 'sentencegrid';
-
-/** One overall (headline) statistic, method-agnostic for the UI. */
+/** One overall (headline) statistic. */
 export type IrrHeadline = { label: string; value: string; sub: string };
 
-/** One code's row, normalized across methods so the UI renders ONE table. */
+/** One code's agreement row. Unit = segment (= sentence on the restored version). */
 export type IrrPerCodeView = {
   code: string;
+  origin: string;
+  /** Strict per-unit Cohen's κ. */
   kappa: number | null;
-  ac1: number | null;
+  /** Overlap-relaxed κ (±1 adjacent unit = agreement) — David's overlap rule. */
+  kappaRelaxed: number | null;
   prevalence: number;
-  /** Method-specific count summary, e.g. "12/7/1" (A/B/both) or "44 bins ✓". */
+  /** "A/B/both" unit counts. */
   counts: string;
   underpowered: boolean;
-  /** Low κ despite high agreement + low prevalence — flag as a base-rate artifact. */
-  paradox: boolean;
-  /** Time-grid / sentence-grid only: the 2×2 unit cells for the worked example
-   *  (n11 both-active, n10 A-only, n01 B-only, n00 both-inactive). */
-  cells?: { n11: number; n10: number; n01: number; n00: number };
-  /** Sentence-grid only: the overlap-relaxed κ (±1-sentence tolerance),
-   *  reported beside the strict κ as a sensitivity check. */
-  kappaRelaxed?: number | null;
+};
+
+/** The code × code co-occurrence heat map payload. */
+export type CooccurrenceView = {
+  codes: string[];
+  matrix: (number | null)[][];
+  counts: number[][];
+  unitCount: number[];
+  nUnits: number;
+  origin: Record<string, string>;
+  mergeCandidates: { a: string; b: string; corr: number; jointUnits: number; weakKappa: number | null }[];
 };
 
 export type IrrReport = {
-  method: IrrMethod;
   sessionId: string;
   pidLabel: string;
   coderA: { id: string; name: string };
   coderB: { id: string; name: string };
   /** origin per code mnemonic, so the UI can partition a-priori vs emergent. */
   codeOrigin: Record<string, string>;
+  /** Every code mnemonic seen (for the code-subset selector). */
+  allCodes: string[];
   headline: IrrHeadline[];
   perCode: IrrPerCodeView[];
-  /** One-line note on events/bins + params. */
+  cooccurrence: CooccurrenceView;
   note: string;
-  /** EasyDIAg-only: the confusion matrix for the detail view. */
-  confusion?: { categories: string[]; matrix: number[][] };
 };
 
 /**
- * Compute the IRR report for one (session, coderA, coderB).
+ * Compute the IRR + co-occurrence report for one (session, coderA, coderB).
  *
- * `method` selects the statistic:
- *  - 'easydiag' — event matching by temporal overlap, then IPF-κ (Holle & Rein);
- *    penalizes boundary jitter, so it answers "do the coders mark the same
- *    EVENTS". Controlled by `threshold`.
- *  - 'timegrid' — fixed time bins, Cohen's κ per code (Bakeman); inherits the
- *    same units for both coders, so boundary jitter is not penalized. Answers
- *    "do the coders agree bin-by-bin". Controlled by `binMs`.
+ * `codeFilter` (optional) restricts BOTH the per-code table and the heat map to the
+ * given mnemonics — "let me select only certain codes for thematic analysis".
+ * `windowStartMs/EndMs` restrict to annotations whose onset falls in the window
+ * (matched-effort: a coder who tapered off late did not disagree in the tail).
  */
 export async function computeIrr(input: {
   sessionId: string;
   coderAId: string;
   coderBId: string;
-  method?: IrrMethod;
-  threshold?: number;
-  binMs?: number;
   minInstances?: number;
-  /** Restrict to annotations whose ONSET falls in [windowStartMs, windowEndMs].
-   *  Null bounds = open. Purpose: a coder who tapered off late did not DISAGREE
-   *  in the tail, they left it uncoded; scoring the region where both coded at
-   *  comparable density is the honest estimate (the "matched-effort window"). */
   windowStartMs?: number | null;
   windowEndMs?: number | null;
+  codeFilter?: string[] | null;
 }): Promise<IrrReport> {
   await requireAuthUser();
   const sb = await createUserServerClient();
 
-  // Code annotations for the two coders, with their codes and each code's origin.
-  // segment_id / char offsets are needed by the sentence-grid method to map an
-  // annotation onto the sentence units it covers.
   const { data, error } = await pageAll((from, to) =>
     sb
       .from('cb_annotations')
       .select(
-        'id, coder_id, t_start_ms, t_end_ms, segment_id, end_segment_id, char_start, char_end, version_id, cb_annotation_codes(cb_codes(mnemonic, origin))',
+        'id, coder_id, t_start_ms, t_end_ms, segment_id, end_segment_id, version_id, cb_annotation_codes(cb_codes(mnemonic, origin))',
       )
       .eq('session_id', input.sessionId)
       .eq('kind', 'code')
@@ -183,184 +169,110 @@ export async function computeIrr(input: {
     t_end_ms: number;
     segment_id: string;
     end_segment_id: string | null;
-    char_start: number;
-    char_end: number;
     version_id: string;
     cb_annotation_codes: { cb_codes: { mnemonic: string; origin: string } | null }[] | null;
   };
+  const allRows = (data ?? []) as Row[];
+
+  // Both coders must be scored on the SAME version so their segment ordinals align.
+  // Pick the modal version among the two coders' annotations; drop rows on others.
+  const verCount = new Map<string, number>();
+  for (const r of allRows) verCount.set(r.version_id, (verCount.get(r.version_id) ?? 0) + 1);
+  const versionId = [...verCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  const droppedOtherVersion = allRows.filter((r) => r.version_id !== versionId).length;
+  const rows = allRows.filter((r) => r.version_id === versionId);
+
+  // Segments of the coded version → dense unit indices in reading (ordinal) order.
+  const segRes = versionId
+    ? await pageAll((from, to) =>
+        sb
+          .from('cb_segments')
+          .select('id, ordinal')
+          .eq('version_id', versionId)
+          .order('ordinal', { ascending: true })
+          .range(from, to),
+      )
+    : { data: [], error: null };
+  if (segRes.error) throw new Error(`computeIrr (segments) failed: ${segRes.error.message}`);
+  const segs = (segRes.data ?? []) as { id: string; ordinal: number }[];
+  const unitIndexById = new Map(segs.map((s, i) => [s.id, i]));
+  const nUnits = segs.length;
 
   const lo = input.windowStartMs ?? null;
   const hi = input.windowEndMs ?? null;
+  const allow = input.codeFilter && input.codeFilter.length ? new Set(input.codeFilter) : null;
   const codeOrigin: Record<string, string> = {};
-  const expand = (coderId: string): Annotation[] => {
-    const out: Annotation[] = [];
-    for (const r of (data ?? []) as Row[]) {
+  const allCodesSet = new Set<string>();
+
+  /** Units [start..end] an annotation covers (segment span in dense index space). */
+  const unitsOf = (r: Row): number[] => {
+    const si = unitIndexById.get(r.segment_id);
+    if (si === undefined) return [];
+    const eiRaw = r.end_segment_id ? unitIndexById.get(r.end_segment_id) : si;
+    const ei = eiRaw === undefined ? si : eiRaw;
+    const a = Math.min(si, ei);
+    const b = Math.max(si, ei);
+    const out: number[] = [];
+    for (let u = a; u <= b; u++) out.push(u);
+    return out;
+  };
+
+  const presenceFor = (coderId: string): SentencePresence[] => {
+    const out: SentencePresence[] = [];
+    for (const r of rows) {
       if (r.coder_id !== coderId) continue;
       if (lo !== null && r.t_start_ms < lo) continue;
       if (hi !== null && r.t_start_ms > hi) continue;
+      const units = unitsOf(r);
+      if (!units.length) continue;
       const codes = (r.cb_annotation_codes ?? [])
         .map((ac) => ac.cb_codes)
         .filter((c): c is { mnemonic: string; origin: string } => c !== null);
       for (const c of codes) {
         codeOrigin[c.mnemonic] = c.origin;
-        out.push({
-          id: `${r.id}:${c.mnemonic}`,
-          onset: r.t_start_ms,
-          offset: r.t_end_ms,
-          code: c.mnemonic,
-        });
+        allCodesSet.add(c.mnemonic);
+        if (allow && !allow.has(c.mnemonic)) continue;
+        for (const u of units) out.push({ code: c.mnemonic, sentence: u });
       }
     }
     return out;
   };
 
-  const method: IrrMethod = input.method ?? 'easydiag';
-  const evA = expand(input.coderAId);
-  const evB = expand(input.coderBId);
+  const presA = presenceFor(input.coderAId);
+  const presB = presenceFor(input.coderBId);
 
-  const pct = (x: number | null) => (x === null ? '—' : `${Math.round(x * 100)}%`);
+  const grid = sentenceGridKappa(nUnits, presA, presB, {
+    minActiveSentences: input.minInstances ?? 3,
+  });
+
+  // Pooled per-unit code presence (union across coders) for co-occurrence.
+  const pooled: UnitCode[] = [...presA, ...presB].map((p) => ({ unit: p.sentence, code: p.code }));
+  const co = codeCooccurrence(nUnits, pooled, { codeFilter: input.codeFilter ?? null });
+  const kappaByCode: Record<string, number | null> = {};
+  for (const p of grid.perCode) kappaByCode[p.code] = p.kappa;
+  const merges = mergeCandidates(co, kappaByCode, { corrThreshold: 0.5, kappaThreshold: 0.6 });
+
   const k2 = (x: number | null) => (x === null ? '—' : x.toFixed(2));
 
-  let headline: IrrHeadline[];
-  let perCode: IrrPerCodeView[];
-  let note: string;
-  let confusion: { categories: string[]; matrix: number[][] } | undefined;
+  const headline: IrrHeadline[] = [
+    {
+      label: 'Segmentation κ',
+      value: k2(grid.segmentationKappa),
+      sub: `agree which units are codeable · ${grid.segBothActive} shared`,
+    },
+    { label: 'Mean per-code κ', value: k2(grid.meanKappaPowered), sub: 'strict, powered codes (diagnostic)' },
+    { label: 'Units', value: `${nUnits}`, sub: 'sentence-level coding units' },
+  ];
 
-  if (method === 'sentencegrid') {
-    // Enumerate sentence units from the coded VERSION's segments, then map each
-    // annotation to the sentences it covers. Version = the one the annotations
-    // are on (both coders share it); fall back to the session's active version.
-    const rows = (data ?? []) as Row[];
-    const versionId = rows[0]?.version_id ?? null;
-    const segRes = versionId
-      ? await pageAll((from, to) =>
-          sb
-            .from('cb_segments')
-            .select('id, ordinal, text')
-            .eq('version_id', versionId)
-            .order('ordinal', { ascending: true })
-            .range(from, to),
-        )
-      : { data: [], error: null };
-    if (segRes.error) throw new Error(`computeIrr (segments) failed: ${segRes.error.message}`);
-    const segs = (segRes.data ?? []) as { id: string; ordinal: number; text: string }[];
-    const ordinalById = new Map(segs.map((s) => [s.id, s.ordinal]));
-    const { units, byOrdinal } = enumerateSentences(segs);
-
-    const presenceFor = (coderId: string): SentencePresence[] => {
-      const out: SentencePresence[] = [];
-      for (const r of rows) {
-        if (r.coder_id !== coderId) continue;
-        const startOrd = ordinalById.get(r.segment_id);
-        if (startOrd === undefined) continue;
-        const endOrd = r.end_segment_id ? ordinalById.get(r.end_segment_id) ?? startOrd : startOrd;
-        const sentenceIdxs = sentencesForRange(byOrdinal, startOrd, r.char_start, endOrd, r.char_end);
-        const codes = (r.cb_annotation_codes ?? [])
-          .map((ac) => ac.cb_codes)
-          .filter((c): c is { mnemonic: string; origin: string } => c !== null);
-        for (const c of codes) {
-          codeOrigin[c.mnemonic] = c.origin;
-          for (const sIdx of sentenceIdxs) out.push({ code: c.mnemonic, sentence: sIdx });
-        }
-      }
-      return out;
-    };
-
-    const r = sentenceGridKappa(units.length, presenceFor(input.coderAId), presenceFor(input.coderBId), {
-      minActiveSentences: input.minInstances ?? 5,
-    });
-    headline = [
-      {
-        label: 'Segmentation κ',
-        value: k2(r.segmentationKappa),
-        sub: `same sentences codeable · ${r.segBothActive} shared`,
-      },
-      { label: 'Mean per-code κ', value: k2(r.meanKappaPowered), sub: 'strict, powered codes' },
-      { label: 'Sentences', value: `${units.length}`, sub: 'coding units' },
-    ];
-    perCode = r.perCode.map((p) => ({
-      code: p.code,
-      kappa: p.kappa,
-      kappaRelaxed: p.kappaRelaxed,
-      ac1: p.ac1,
-      prevalence: p.prevalence,
-      counts: `${p.bothActive + p.aOnly}/${p.bothActive + p.bOnly}/${p.bothActive}`,
-      underpowered: p.underpowered,
-      paradox:
-        p.kappa !== null && p.ac1 !== null && p.kappa < 0.4 && p.ac1 > 0.85 && p.prevalence < 0.15,
-      cells: { n11: p.bothActive, n10: p.aOnly, n01: p.bOnly, n00: p.inactive },
-    }));
-    note = `${units.length} sentence units · ${presenceFor(input.coderAId).length} A / ${presenceFor(input.coderBId).length} B sentence-code marks · strict primary, relaxed (±1) secondary`;
-  } else if (method === 'timegrid') {
-    const binMs = input.binMs ?? 2000;
-    const r = timeGridKappa(evA, evB, { binMs, minActiveBins: input.minInstances ?? 5 });
-    headline = [
-      {
-        label: 'Segmentation κ',
-        value: k2(r.segmentationKappa),
-        sub: `any-code-active · ${r.segBothActive} shared bins`,
-      },
-      {
-        label: 'Mean per-code κ',
-        value: k2(r.meanKappaPowered),
-        sub: 'powered codes only',
-      },
-      {
-        label: 'Grid',
-        value: `${r.nBins}`,
-        sub: `bins of ${binMs / 1000}s`,
-      },
-    ];
-    perCode = r.perCode.map((p) => ({
-      code: p.code,
-      kappa: p.kappa,
-      ac1: p.ac1,
-      prevalence: p.prevalence,
-      counts: `${p.bothActive + p.aOnly}/${p.bothActive + p.bOnly}/${p.bothActive}`,
-      underpowered: p.underpowered,
-      paradox:
-        p.kappa !== null && p.ac1 !== null && p.kappa < 0.4 && p.ac1 > 0.85 && p.prevalence < 0.15,
-      cells: { n11: p.bothActive, n10: p.aOnly, n01: p.bOnly, n00: p.inactive },
-    }));
-    note = `${evA.length} events / ${evB.length} events · ${r.nBins} bins of ${binMs / 1000}s · one-sided time A ${r.segAOnly} vs B ${r.segBOnly} bins`;
-  } else {
-    const r = easyDiag(evA, evB, {
-      threshold: input.threshold ?? 0.6,
-      minInstances: input.minInstances ?? 10,
-    });
-    headline = [
-      { label: 'Overall κ', value: k2(r.overallKappa), sub: 'IPF-corrected, incl. Void' },
-      {
-        label: 'Segmentation agreement',
-        value: pct(r.segmentationAgreement),
-        sub: `${r.nLinked} linked · ${r.nUnmatchedA}+${r.nUnmatchedB} unmatched`,
-      },
-      {
-        label: 'Categorization agreement',
-        value: pct(r.categorizationAgreement),
-        sub: 'of linked pairs, same code',
-      },
-    ];
-    perCode = r.perCode.map((p) => ({
-      code: p.code,
-      kappa: p.kappa,
-      ac1: p.ac1,
-      prevalence: p.prevalence,
-      counts: `${p.byCoderA}/${p.byCoderB}/${p.linkedBoth}`,
-      underpowered: p.underpowered,
-      paradox:
-        p.kappa !== null && p.rawAgreement !== null && p.kappa < 0.4 && p.rawAgreement > 0.8,
-    }));
-    note = `overlap link ≥ ${Math.round(r.threshold * 100)}% · ${r.nEventsA} events / ${r.nEventsB} events · ${r.nLinked} linked`;
-    // Only show categories that appear, so the matrix is readable.
-    const seen = r.categories
-      .map((c, i) => ({ c, i }))
-      .filter(({ i }) => r.confusion[i].some((v) => v > 0) || r.confusion.some((row) => row[i] > 0));
-    confusion = {
-      categories: seen.map(({ c }) => c),
-      matrix: seen.map(({ i }) => seen.map(({ i: j }) => r.confusion[i][j])),
-    };
-  }
+  const perCode: IrrPerCodeView[] = grid.perCode.map((p) => ({
+    code: p.code,
+    origin: codeOrigin[p.code] ?? 'apriori',
+    kappa: p.kappa,
+    kappaRelaxed: p.kappaRelaxed,
+    prevalence: p.prevalence,
+    counts: `${p.bothActive + p.aOnly}/${p.bothActive + p.bOnly}/${p.bothActive}`,
+    underpowered: p.underpowered,
+  }));
 
   const [{ data: sessRow }, { data: profRows }] = await Promise.all([
     sb.from('cb_sessions').select('pid_label').eq('id', input.sessionId).maybeSingle(),
@@ -371,16 +283,21 @@ export async function computeIrr(input: {
   ]);
   const nameById = new Map((profRows ?? []).map((p) => [p.user_id, p.display_name ?? 'coder']));
 
+  const note =
+    `${nUnits} sentence units · ${presA.length} A / ${presB.length} B unit-code marks · ` +
+    `strict κ primary, overlap-relaxed (±1) secondary` +
+    (droppedOtherVersion ? ` · ${droppedOtherVersion} annotation(s) on another version excluded` : '');
+
   return {
-    method,
     sessionId: input.sessionId,
     pidLabel: sessRow?.pid_label ?? input.sessionId.slice(0, 8),
     coderA: { id: input.coderAId, name: nameById.get(input.coderAId) ?? 'coder A' },
     coderB: { id: input.coderBId, name: nameById.get(input.coderBId) ?? 'coder B' },
     codeOrigin,
+    allCodes: [...allCodesSet].sort(),
     headline,
     perCode,
+    cooccurrence: { ...co, origin: codeOrigin, mergeCandidates: merges },
     note,
-    confusion,
   };
 }

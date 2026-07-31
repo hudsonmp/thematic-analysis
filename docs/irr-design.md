@@ -1,4 +1,41 @@
-# IRR (EasyDIAg) — design decisions
+# IRR — design decisions
+
+> **CURRENT METHOD (2026-07-31, David Smith Tuesday sync) — supersedes §§1–8 below.**
+>
+> The three-statistic apparatus (EasyDIAg, time-grid, char-sentence-grid) is
+> retired. David's guidance: report **sentence-level agreement** + a **code
+> co-occurrence heat map**, and treat IRR as a *diagnostic for systematic
+> disagreement*, not a headline number.
+>
+> - **Coding unit = the SEGMENT.** The transcript is first passed through an LLM
+>   sentence-restoration pass (`scripts/restore-sentences.mjs`) that adds only
+>   punctuation/casing and splits into sentences — verified word-for-word against
+>   the source (any deviation falls back to the raw cue), producing a
+>   `kind='restored'` version with **one sentence per segment**. Coders highlight
+>   whole segments (enforced in `SessionPlayer`), so the unit is the sentence and
+>   boundary jitter cannot arise. Rationale for the sentence as the verbal-protocol
+>   unit: Chi 1997; Ericsson & Simon 1993.
+> - **Agreement: strict per-unit Cohen's κ, plus overlap-relaxed κ** (±1 adjacent
+>   unit counts as agreement — David: "if someone marks one sentence and someone
+>   the next, that is agreement"). Relaxed is the unitizing-tolerance read
+>   (Krippendorff u-α 2015; Mathet γ 2015); strict is the conservative one. Both on
+>   a-priori AND emergent codes.
+> - **Code × code co-occurrence heat map** (`lib/irr/cooccurrence.ts`): φ
+>   correlation of each code pair's per-unit presence, pooled across coders,
+>   diagonal = 1. Highly correlated + weak agreement ⇒ **merge candidate** (David:
+>   "if two codes are highly correlated and they have bad agreement, that's an
+>   indication they need to be merged"). A code-subset selector restricts the table
+>   and the map.
+> - Code: `lib/irr/sentencegrid.ts` (unit-agnostic κ, reused for segment units),
+>   `lib/irr/cooccurrence.ts`, `app/actions/irr.ts`, `components/irr/IrrReport.tsx`.
+>
+> The historical record below documents why the earlier time/event methods were
+> tried and what the 548 boundary-jitter diagnosis found — kept because it is the
+> evidence that motivated moving to a shared sentence unit.
+
+---
+
+## Historical: IRR (EasyDIAg) — design decisions
 
 The `/reliability/irr` feature computes inter-rater reliability directly from the
 live code annotations, so the two coders can double-code a subset and certify the

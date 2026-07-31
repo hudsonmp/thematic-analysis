@@ -173,13 +173,10 @@ export default async function SessionPage({
     observations.recordingStartedAt ??
     (await taskStartForPid(session.pidLabel));
 
-  // Method 3: enforce whole-sentence highlighting everywhere EXCEPT the two
-  // sessions already coded sub-sentence (548, 083), whose existing coding must
-  // stay internally consistent.
-  const CODED_SESSION_IDS = new Set([
-    '20dcae3f-034a-4e81-a4d2-3c56264f5f72', // 548
-    '9934b51f-4e58-4f94-8bd4-cec8f3cf6ced', // 083
-  ]);
+  // Whole-sentence coding enforcement is no longer a per-session flag: the player
+  // derives it from the ACTIVE transcript version (ON only while the sentence-
+  // restored version is showing). Sessions with no restored version (the two
+  // already-coded sessions + pilots) simply never enter that state.
 
   return (
     <SessionPlayer
@@ -189,7 +186,6 @@ export default async function SessionPage({
       durationMs={session.durationMs ?? 0}
       codingEnabled={role !== 'viewer'}
       canComment
-      enforceSentences={!CODED_SESSION_IDS.has(session.id)}
       versionId={session.versionId}
       versions={versions}
       codes={codes}

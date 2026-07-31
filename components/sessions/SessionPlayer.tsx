@@ -67,7 +67,6 @@ import ChatReplayPane from './ChatReplayPane';
 import SpecReplay from './SpecReplay';
 import {
   buildMultiAnchor,
-  snapToSentences,
   splitIntoPieces,
   type Highlight,
 } from '@/lib/transcript/selection';
@@ -279,7 +278,6 @@ export default function SessionPlayer({
   durationMs,
   codingEnabled = false,
   canComment = false,
-  enforceSentences = false,
   versionId: originalVersionId = null,
   versions = [],
   codes = [],
@@ -305,10 +303,6 @@ export default function SessionPlayer({
   /** Any authed coder (viewers included) may comment: selection + comment rail +
    *  composer. Split from `codingEnabled` so viewers can comment but not code. */
   canComment?: boolean;
-  /** Method 3: constrain highlighting to whole sentences (expand selections to
-   *  sentence boundaries). Off for the two already-coded sessions so their
-   *  sub-sentence coding stays internally consistent. */
-  enforceSentences?: boolean;
   /** The original transcript version id annotations anchor to (version_id). */
   versionId?: string | null;
   /** All of the session's transcript versions (the Original/Cleaned variants). */
@@ -365,8 +359,20 @@ export default function SessionPlayer({
   // instead of opening the popup / composer.
   const [reanchoringId, setReanchoringId] = useState<string | null>(null);
 
-  // --- Transcript layers (feature #20): original (verbatim) vs cleaned --------
-  const cleanedVersionFromList = versions.find((v) => v.kind === 'cleaned') ?? null;
+  // --- Transcript layers (feature #20): original (verbatim) vs sentence units ---
+  // The toggle's two slots derive from the version LIST, not the loaded prop:
+  //  • the verbatim ORIGINAL, and
+  //  • a SECONDARY variant = the sentence-RESTORED version (coding default) when it
+  //    exists, else the intermediate resegmented `cleaned` version.
+  // The page loads the secondary (restored) by default, so `originalVersionId` (the
+  // loaded version id) may point at the secondary — detected via `loadedIsSecondary`.
+  const trueOriginalVersion = versions.find((v) => v.kind === 'original') ?? null;
+  const secondaryVersion =
+    versions.find((v) => v.kind === 'restored') ??
+    versions.find((v) => v.kind === 'cleaned') ??
+    null;
+  const loadedIsSecondary = !!secondaryVersion && originalVersionId === secondaryVersion.id;
+  const toggleOriginalId = trueOriginalVersion?.id ?? (loadedIsSecondary ? null : originalVersionId);
   // Three pane SURFACES: the transcript (which internally offers the two
   // transcript VERSIONS via the Original/Cleaned variant sub-toggle), the
   // segment-LESS "specification" replay (spec-mode), and the "llm-help" chat
@@ -383,10 +389,10 @@ export default function SessionPlayer({
   // off tab switches before the surface/variant split.
   const [transcriptVariant, setTranscriptVariant] = useState<
     'original' | 'cleaned'
-  >('original');
+  >(loadedIsSecondary ? 'cleaned' : 'original');
   const [versionId, setVersionId] = useState<string | null>(originalVersionId);
   const [cleanedVersionId, setCleanedVersionId] = useState<string | null>(
-    cleanedVersionFromList?.id ?? null,
+    secondaryVersion?.id ?? null,
   );
 
   const [segments, setSegments] = useState<CloudSegment[]>(initialSegments);
@@ -394,8 +400,6 @@ export default function SessionPlayer({
     useState<MyAnnotationView[]>(initialAnnotations);
   const [comments, setComments] =
     useState<Record<string, AnnotationCommentView[]>>(initialComments);
-
-  const originalSegmentsRef = useRef<CloudSegment[]>(initialSegments);
 
   const [versionBusy, setVersionBusy] = useState(false);
   const [versionError, setVersionError] = useState<string | null>(null);
@@ -405,6 +409,12 @@ export default function SessionPlayer({
     surface === 'transcript' && transcriptVariant === 'cleaned';
   const isVerbatim =
     surface === 'transcript' && transcriptVariant === 'original';
+  // Whole-SENTENCE coding enforcement is active exactly when the secondary variant
+  // showing is the sentence-restored version (one sentence per segment). Derived
+  // from the ACTIVE version — not a static prop — so switching to the verbatim
+  // Original (or a session with no restored copy, e.g. the two already-coded ones)
+  // turns enforcement off automatically.
+  const enforceWholeSentence = isCleanedActive && !!secondaryVersion?.sentenceUnits;
 
   const reloadComments = useCallback(async (annotationIds: string[]) => {
     if (annotationIds.length === 0) {
@@ -855,31 +865,22 @@ export default function SessionPlayer({
     if (transcriptVariant === 'original') return;
     setTranscriptVariant('original');
     setEditing(false);
-    setVersionId(originalVersionId);
-    setSegments(originalSegmentsRef.current);
-    setTextSel(null);
-    setComposerOpen(false);
-    setActiveIdx(-1);
-    setOpenCommentAnnId(null);
-    if (originalVersionId) {
-      setVersionBusy(true);
-      setVersionError(null);
-      try {
-        const anns = await listMyAnnotationsForVersion(id, originalVersionId);
-        setMyAnnotations(anns);
-        await reloadComments(anns.map((a) => a.id));
-      } catch (e) {
-        setVersionError(
-          e instanceof Error ? e.message : 'Failed to load original annotations.',
-        );
-      } finally {
-        setVersionBusy(false);
-      }
+    // Always REFETCH the original — the initially-loaded segments may be the
+    // sentence-restored secondary (the coding default), so there is no reliable
+    // cached original to fall back to. `loadVersion` resets all bound state.
+    if (toggleOriginalId) {
+      await loadVersion(toggleOriginalId);
     } else {
+      setVersionId(null);
+      setSegments([]);
       setMyAnnotations([]);
       setComments({});
+      setOpenCommentAnnId(null);
+      setComposerOpen(false);
+      setTextSel(null);
+      setActiveIdx(-1);
     }
-  }, [transcriptVariant, id, originalVersionId, reloadComments]);
+  }, [transcriptVariant, toggleOriginalId, loadVersion]);
 
   const handleSelectCleaned = useCallback(async () => {
     if (transcriptVariant === 'cleaned') return;
@@ -1016,23 +1017,16 @@ export default function SessionPlayer({
       setAssignedAnnId(null);
       return;
     }
-    // SENTENCE ENFORCEMENT (Method 3): expand the selection OUTWARD to whole
-    // sentences so both coders inherit the same units and boundary jitter cannot
-    // arise. Snap the start edge within the first cue and the end edge within the
-    // last cue (the only cues with partial coverage; middle cues are whole), then
-    // rebuild the anchor. Exempt sessions (already coded sub-sentence) skip this.
-    if (enforceSentences) {
-      const firstText = segTexts[0];
-      const lastText = segTexts[segTexts.length - 1];
-      const snappedStart =
-        segTexts.length === 1
-          ? snapToSentences(firstText, anchor.startChar, anchor.endChar).start
-          : snapToSentences(firstText, anchor.startChar, anchor.startChar).start;
-      const snappedEnd =
-        segTexts.length === 1
-          ? snapToSentences(firstText, anchor.startChar, anchor.endChar).end
-          : snapToSentences(lastText, anchor.endChar, anchor.endChar).end;
-      anchor = buildMultiAnchor(segTexts, snappedStart, snappedEnd) ?? anchor;
+    // SENTENCE ENFORCEMENT: on the sentence-restored version each SEGMENT is exactly
+    // one sentence, so "whole sentence" == "whole segment". Expand the selection
+    // OUTWARD to cover the whole first and last touched segments (middle cues are
+    // already whole), so a coder physically cannot mark a fragment and both coders
+    // inherit the same units — boundary jitter cannot arise. A fallback segment (a
+    // rare multi-sentence turn the word-preservation gate kept raw) is one unit too,
+    // so it is coded whole, which matches David's "sentence OR multi-sentence" rule.
+    if (enforceWholeSentence) {
+      const lastLen = segTexts[segTexts.length - 1].length;
+      anchor = buildMultiAnchor(segTexts, 0, lastLen) ?? anchor;
     }
     setTextSel({
       startSegIdx: r.startSegIdx,
@@ -1103,7 +1097,7 @@ export default function SessionPlayer({
     }
     // COMMENT mode: the selection just sits (painted pending); typing opens the
     // marginalia composer via the keyboard handler below.
-  }, [segments, myAnnotations, mode, reanchoringId, refreshActiveAnnotations, enforceSentences]);
+  }, [segments, myAnnotations, mode, reanchoringId, refreshActiveAnnotations, enforceWholeSentence]);
 
   // CLICK-TO-SEEK: a single click on plain cue text jumps the video to that cue
   // and plays. Click fires AFTER mouseup, so a drag-select arrives here with a
@@ -3578,14 +3572,18 @@ export default function SessionPlayer({
                   aria-pressed={transcriptVariant === 'cleaned'}
                   onClick={handleSelectCleaned}
                   disabled={versionBusy}
-                  title="A readable copy you can edit for navigation and quoting"
+                  title={
+                    secondaryVersion?.sentenceUnits
+                      ? 'Sentence-restored transcript — coding happens here, one sentence per line'
+                      : 'A readable copy you can edit for navigation and quoting'
+                  }
                   className={`px-2 py-1 first:rounded-l last:rounded-r disabled:opacity-50 ${
                     transcriptVariant === 'cleaned'
                       ? 'bg-foreground text-background'
                       : 'text-foreground/70 hover:text-foreground'
                   }`}
                 >
-                  Cleaned
+                  {secondaryVersion?.sentenceUnits ? 'Sentences' : 'Cleaned'}
                 </button>
               </div>
             )}
