@@ -58,7 +58,9 @@ function cellText(
       (showLit && def.literature !== null ? `${def.literature} ` : '') + def.applied,
     includeIf: asStrings(v?.include_if).join(' '),
     excludeIf: asStrings(v?.exclude_if).join(' '),
-    exemplars: asExemplarText(v?.exemplars).join(' '),
+    // Only the SHORTEST exemplar renders (see CodeRow), so measure only it — else
+    // the exemplar column is sized for text that never appears.
+    exemplars: shortestExemplar(asExemplarText(v?.exemplars)) ?? '',
     counter: v?.disconfirming_pattern ?? '',
     meta: [...answersFor(code), ...citesFor(code)].join(' '),
   };
@@ -143,7 +145,10 @@ export default function CodebookViewDocument({
   const colKeys = cols.map((c) => c.key);
 
   return (
-    <main className="cb-sheet mx-auto max-w-[1400px] px-6 py-8 print:max-w-none print:px-0 print:py-0">
+    <main
+      lang="en"
+      className="cb-sheet mx-auto max-w-[1400px] px-6 py-8 print:max-w-none print:px-0 print:py-0"
+    >
       {/* The printed artifact is landscape — the column set is unreadable in
           portrait. Scoped to this route by mounting: the rules exist only while
           this document is on screen, so other pages' print output is untouched.
@@ -152,6 +157,15 @@ export default function CodebookViewDocument({
           historically honored one or the other depending on version. */}
       <style>{`
         @page { size: letter landscape; margin: 0.5in; }
+        /* A token wider than its fixed column must not overflow the grid. Two
+           rules together: hyphens:auto inserts a real hyphen where the word has a
+           valid break point (needs lang, set on <main>); overflow-wrap:anywhere
+           guarantees any remaining long token still breaks. On screen AND in print. */
+        .cb-sheet td, .cb-sheet th {
+          overflow-wrap: anywhere;
+          hyphens: auto;
+          -webkit-hyphens: auto;
+        }
         @media print {
           .cb-sheet tbody tr { break-inside: avoid; page-break-inside: avoid; }
           .cb-sheet section { break-inside: avoid; page-break-inside: avoid; }
@@ -413,16 +427,14 @@ function CodeRow({
         return <CellList items={includeIf} />;
       case 'excludeIf':
         return <CellList items={excludeIf} />;
-      case 'exemplars':
-        return exemplars.length > 0 ? (
-          <ul className="space-y-1">
-            {exemplars.map((ex, i) => (
-              <li key={i} className="italic text-foreground/75">
-                &ldquo;{ex}&rdquo;
-              </li>
-            ))}
-          </ul>
+      case 'exemplars': {
+        // One exemplar only — the SHORTEST. A codebook consulted mid-coding wants
+        // the tightest anchor that still shows the pattern, not an exhaustive list.
+        const ex = shortestExemplar(exemplars);
+        return ex ? (
+          <p className="italic text-foreground/75">&ldquo;{ex}&rdquo;</p>
         ) : null;
+      }
       case 'counter':
         return v?.disconfirming_pattern ?? null;
       case 'meta': {
@@ -475,4 +487,10 @@ function asExemplarText(j: unknown): string[] {
   return j
     .map((raw) => (raw as { text?: unknown })?.text)
     .filter((t): t is string => typeof t === 'string');
+}
+/** The shortest exemplar by character length (first one wins ties, so it is
+ *  deterministic). null when there are none. */
+function shortestExemplar(items: string[]): string | null {
+  if (items.length === 0) return null;
+  return items.reduce((a, b) => (b.length < a.length ? b : a));
 }
