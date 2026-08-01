@@ -1,4 +1,41 @@
-# IRR (EasyDIAg) — design decisions
+# IRR — design decisions
+
+> **CURRENT METHOD (2026-07-31, David Smith Tuesday sync) — supersedes §§1–8 below.**
+>
+> The three-statistic apparatus (EasyDIAg, time-grid, char-sentence-grid) is
+> retired. David's guidance: report **sentence-level agreement** + a **code
+> co-occurrence heat map**, and treat IRR as a *diagnostic for systematic
+> disagreement*, not a headline number.
+>
+> - **Coding unit = the SEGMENT.** The transcript is first passed through an LLM
+>   sentence-restoration pass (`scripts/restore-sentences.mjs`) that adds only
+>   punctuation/casing and splits into sentences — verified word-for-word against
+>   the source (any deviation falls back to the raw cue), producing a
+>   `kind='restored'` version with **one sentence per segment**. Coders highlight
+>   whole segments (enforced in `SessionPlayer`), so the unit is the sentence and
+>   boundary jitter cannot arise. Rationale for the sentence as the verbal-protocol
+>   unit: Chi 1997; Ericsson & Simon 1993.
+> - **Agreement: strict per-unit Cohen's κ, plus overlap-relaxed κ** (±1 adjacent
+>   unit counts as agreement — David: "if someone marks one sentence and someone
+>   the next, that is agreement"). Relaxed is the unitizing-tolerance read
+>   (Krippendorff u-α 2015; Mathet γ 2015); strict is the conservative one. Both on
+>   a-priori AND emergent codes.
+> - **Code × code co-occurrence heat map** (`lib/irr/cooccurrence.ts`): φ
+>   correlation of each code pair's per-unit presence, pooled across coders,
+>   diagonal = 1. Highly correlated + weak agreement ⇒ **merge candidate** (David:
+>   "if two codes are highly correlated and they have bad agreement, that's an
+>   indication they need to be merged"). A code-subset selector restricts the table
+>   and the map.
+> - Code: `lib/irr/sentencegrid.ts` (unit-agnostic κ, reused for segment units),
+>   `lib/irr/cooccurrence.ts`, `app/actions/irr.ts`, `components/irr/IrrReport.tsx`.
+>
+> The historical record below documents why the earlier time/event methods were
+> tried and what the 548 boundary-jitter diagnosis found — kept because it is the
+> evidence that motivated moving to a shared sentence unit.
+
+---
+
+## Historical: IRR (EasyDIAg) — design decisions
 
 The `/reliability/irr` feature computes inter-rater reliability directly from the
 live code annotations, so the two coders can double-code a subset and certify the
@@ -148,3 +185,46 @@ adequately sampled in any window.
 - It does not implement γ (Mathet et al. 2015) or Krippendorff's u-α; EasyDIAg was
   the chosen method. Those remain candidates if boundary-level agreement (not just
   overlap-linking) is later required.
+
+## 9. Sentence-grid κ (Method 3) — the recommended primary
+
+The lit review (`~/Desktop/Readings - Claude/07-30-2026-irr-segmentation-methods.pdf`)
+concluded that the fix for the boundary-jitter problem is a **shared unit**, and
+recommended the **sentence** (Chi 1997: the utterance/sentence is the canonical grain
+for verbal-protocol analysis; sentences are auto-segmentable and match the code
+granularity). This is now a third IRR method beside EasyDIAg (Method 2) and time-grid
+(Method 4).
+
+**Enforcement (coding UI).** `lib/transcript/selection.ts` gains `sentenceSpans` (a
+punctuation splitter, ASR-tolerant: a cue with no terminal `.!?` is one sentence) and
+`snapToSentences`, which expands a selection OUTWARD to whole-sentence boundaries.
+`SessionPlayer.handleTranscriptMouseUp` snaps the start edge within the first cue and
+the end edge within the last cue (the only partially-covered cues) before the popup
+opens, gated by an `enforceSentences` prop. Enforcement is ON for every session EXCEPT
+the two already coded sub-sentence (548, 083), whose existing coding must stay
+internally consistent.
+
+**Why text, not time.** Sentence agreement is which-sentence, not when — so it needs
+no timestamps. This matters because `cb_segments.words` is empty and the cleaned tracks
+have multi-minute mega-segments that cannot be time-split. `lib/irr/sentencegrid.ts`
+enumerates sentence units on the fly (`enumerateSentences`) and maps each annotation to
+the units it covers (`sentencesForRange`); no DB re-segmentation.
+
+**Two coefficients** (per the reporting decision):
+- **Strict** (primary): per (sentence × code) presence, standard Cohen's κ. Justified
+  as ordinary per-unit content-analysis agreement on a fixed recording/coding unit
+  (Krippendorff 2004; Lombard et al. 2002).
+- **Overlap-relaxed** (secondary): a strict disagreement on sentence S is upgraded to
+  agreement iff the other coder applied the same code within ±1 sentence — a unitizing
+  tolerance formalized by Krippendorff's unitizing α (Krippendorff et al. 2015) and the
+  γ coefficient (Mathet et al. 2015), mirroring relaxed/overlap span-matching in NLP
+  annotation. It only turns disagreements into agreements (never the reverse), so it
+  inflates κ and is a sensitivity check, not the headline.
+
+**Method 3 vs 4 reporting.** Sentence-grid κ is the **primary**; time-grid κ (1–2 s)
+is the **robustness cross-check** (Bakeman et al. 2009 recommend reporting both a
+unit-based and a time-based coefficient). Decision rule on the next double-coded,
+sentence-enforced session: convergence → sentences win on interpretability;
+sentence-κ ≫ time-κ → sentences are absorbing boundary variance (expected);
+time-κ > sentence-κ → the splitter is mis-segmenting ideas and needs tuning. EasyDIAg
+(Method 2) stays as the reported occurrence-level figure only.

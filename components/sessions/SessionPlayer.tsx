@@ -359,8 +359,20 @@ export default function SessionPlayer({
   // instead of opening the popup / composer.
   const [reanchoringId, setReanchoringId] = useState<string | null>(null);
 
-  // --- Transcript layers (feature #20): original (verbatim) vs cleaned --------
-  const cleanedVersionFromList = versions.find((v) => v.kind === 'cleaned') ?? null;
+  // --- Transcript layers (feature #20): original (verbatim) vs sentence units ---
+  // The toggle's two slots derive from the version LIST, not the loaded prop:
+  //  • the verbatim ORIGINAL, and
+  //  • a SECONDARY variant = the sentence-RESTORED version (coding default) when it
+  //    exists, else the intermediate resegmented `cleaned` version.
+  // The page loads the secondary (restored) by default, so `originalVersionId` (the
+  // loaded version id) may point at the secondary — detected via `loadedIsSecondary`.
+  const trueOriginalVersion = versions.find((v) => v.kind === 'original') ?? null;
+  const secondaryVersion =
+    versions.find((v) => v.kind === 'restored') ??
+    versions.find((v) => v.kind === 'cleaned') ??
+    null;
+  const loadedIsSecondary = !!secondaryVersion && originalVersionId === secondaryVersion.id;
+  const toggleOriginalId = trueOriginalVersion?.id ?? (loadedIsSecondary ? null : originalVersionId);
   // Three pane SURFACES: the transcript (which internally offers the two
   // transcript VERSIONS via the Original/Cleaned variant sub-toggle), the
   // segment-LESS "specification" replay (spec-mode), and the "llm-help" chat
@@ -377,10 +389,10 @@ export default function SessionPlayer({
   // off tab switches before the surface/variant split.
   const [transcriptVariant, setTranscriptVariant] = useState<
     'original' | 'cleaned'
-  >('original');
+  >(loadedIsSecondary ? 'cleaned' : 'original');
   const [versionId, setVersionId] = useState<string | null>(originalVersionId);
   const [cleanedVersionId, setCleanedVersionId] = useState<string | null>(
-    cleanedVersionFromList?.id ?? null,
+    secondaryVersion?.id ?? null,
   );
 
   const [segments, setSegments] = useState<CloudSegment[]>(initialSegments);
@@ -388,8 +400,6 @@ export default function SessionPlayer({
     useState<MyAnnotationView[]>(initialAnnotations);
   const [comments, setComments] =
     useState<Record<string, AnnotationCommentView[]>>(initialComments);
-
-  const originalSegmentsRef = useRef<CloudSegment[]>(initialSegments);
 
   const [versionBusy, setVersionBusy] = useState(false);
   const [versionError, setVersionError] = useState<string | null>(null);
@@ -399,6 +409,12 @@ export default function SessionPlayer({
     surface === 'transcript' && transcriptVariant === 'cleaned';
   const isVerbatim =
     surface === 'transcript' && transcriptVariant === 'original';
+  // Whole-SENTENCE coding enforcement is active exactly when the secondary variant
+  // showing is the sentence-restored version (one sentence per segment). Derived
+  // from the ACTIVE version — not a static prop — so switching to the verbatim
+  // Original (or a session with no restored copy, e.g. the two already-coded ones)
+  // turns enforcement off automatically.
+  const enforceWholeSentence = isCleanedActive && !!secondaryVersion?.sentenceUnits;
 
   const reloadComments = useCallback(async (annotationIds: string[]) => {
     if (annotationIds.length === 0) {
@@ -849,31 +865,22 @@ export default function SessionPlayer({
     if (transcriptVariant === 'original') return;
     setTranscriptVariant('original');
     setEditing(false);
-    setVersionId(originalVersionId);
-    setSegments(originalSegmentsRef.current);
-    setTextSel(null);
-    setComposerOpen(false);
-    setActiveIdx(-1);
-    setOpenCommentAnnId(null);
-    if (originalVersionId) {
-      setVersionBusy(true);
-      setVersionError(null);
-      try {
-        const anns = await listMyAnnotationsForVersion(id, originalVersionId);
-        setMyAnnotations(anns);
-        await reloadComments(anns.map((a) => a.id));
-      } catch (e) {
-        setVersionError(
-          e instanceof Error ? e.message : 'Failed to load original annotations.',
-        );
-      } finally {
-        setVersionBusy(false);
-      }
+    // Always REFETCH the original — the initially-loaded segments may be the
+    // sentence-restored secondary (the coding default), so there is no reliable
+    // cached original to fall back to. `loadVersion` resets all bound state.
+    if (toggleOriginalId) {
+      await loadVersion(toggleOriginalId);
     } else {
+      setVersionId(null);
+      setSegments([]);
       setMyAnnotations([]);
       setComments({});
+      setOpenCommentAnnId(null);
+      setComposerOpen(false);
+      setTextSel(null);
+      setActiveIdx(-1);
     }
-  }, [transcriptVariant, id, originalVersionId, reloadComments]);
+  }, [transcriptVariant, toggleOriginalId, loadVersion]);
 
   const handleSelectCleaned = useCallback(async () => {
     if (transcriptVariant === 'cleaned') return;
@@ -1003,12 +1010,23 @@ export default function SessionPlayer({
     // Build the (possibly multi-cue) anchor from the covered cues' texts.
     const segTexts: string[] = [];
     for (let i = r.startSegIdx; i <= r.endSegIdx; i++) segTexts.push(segments[i].text);
-    const anchor = buildMultiAnchor(segTexts, r.startChar, r.endChar);
+    let anchor = buildMultiAnchor(segTexts, r.startChar, r.endChar);
     if (!anchor) {
       setTextSel(null);
       setPopupPos(null);
       setAssignedAnnId(null);
       return;
+    }
+    // SENTENCE ENFORCEMENT: on the sentence-restored version each SEGMENT is exactly
+    // one sentence, so "whole sentence" == "whole segment". Expand the selection
+    // OUTWARD to cover the whole first and last touched segments (middle cues are
+    // already whole), so a coder physically cannot mark a fragment and both coders
+    // inherit the same units — boundary jitter cannot arise. A fallback segment (a
+    // rare multi-sentence turn the word-preservation gate kept raw) is one unit too,
+    // so it is coded whole, which matches David's "sentence OR multi-sentence" rule.
+    if (enforceWholeSentence) {
+      const lastLen = segTexts[segTexts.length - 1].length;
+      anchor = buildMultiAnchor(segTexts, 0, lastLen) ?? anchor;
     }
     setTextSel({
       startSegIdx: r.startSegIdx,
@@ -1079,7 +1097,7 @@ export default function SessionPlayer({
     }
     // COMMENT mode: the selection just sits (painted pending); typing opens the
     // marginalia composer via the keyboard handler below.
-  }, [segments, myAnnotations, mode, reanchoringId, refreshActiveAnnotations]);
+  }, [segments, myAnnotations, mode, reanchoringId, refreshActiveAnnotations, enforceWholeSentence]);
 
   // CLICK-TO-SEEK: a single click on plain cue text jumps the video to that cue
   // and plays. Click fires AFTER mouseup, so a drag-select arrives here with a
@@ -3554,14 +3572,18 @@ export default function SessionPlayer({
                   aria-pressed={transcriptVariant === 'cleaned'}
                   onClick={handleSelectCleaned}
                   disabled={versionBusy}
-                  title="A readable copy you can edit for navigation and quoting"
+                  title={
+                    secondaryVersion?.sentenceUnits
+                      ? 'Sentence-restored transcript — coding happens here, one sentence per line'
+                      : 'A readable copy you can edit for navigation and quoting'
+                  }
                   className={`px-2 py-1 first:rounded-l last:rounded-r disabled:opacity-50 ${
                     transcriptVariant === 'cleaned'
                       ? 'bg-foreground text-background'
                       : 'text-foreground/70 hover:text-foreground'
                   }`}
                 >
-                  Cleaned
+                  {secondaryVersion?.sentenceUnits ? 'Sentences' : 'Cleaned'}
                 </button>
               </div>
             )}
@@ -3968,55 +3990,46 @@ function TranscriptBody({
       {turns.map((turn, turnIdx) => {
         const firstSeg = segments[turn.segIndices[0]];
         const speaker = firstSeg?.speaker ?? null;
+        {/* One numbered LINE per segment (not per paragraph). Line number =
+            segment ORDINAL+1 (stable across regrouping; identical for both
+            coders). The speaker label shows only on the FIRST line of a turn —
+            consecutive same-speaker lines don't restate it. Blank/whitespace
+            segments are numbered too. Each segment keeps its own data-seg-idx
+            span, so annotation anchoring (segment_id + char offset) is
+            unchanged from the old inline-flow layout. */}
         const turnInner = (
-          <div className="flex items-start gap-1.5">
-            {/* Line number = the turn's first segment ORDINAL (1-based): stable
-                across turn regrouping and identical for both coders, so "look
-                at line 214" survives edits — a display count would not. */}
-            <span
-              aria-hidden
-              className="mt-px w-9 shrink-0 select-none text-right font-mono text-[10px] leading-5 text-foreground/25"
-            >
-              {(firstSeg?.idx ?? turn.segIndices[0]) + 1}
-            </span>
-            <button
-              type="button"
-              onClick={() => onSeek(turn.startMs)}
-              title="Seek to here"
-              className="mt-px shrink-0 font-mono text-xs text-foreground/40 hover:text-foreground hover:underline"
-            >
-              [{formatTime(turn.startMs)}]
-            </button>
-
-            {isCleanedActive && editing ? (
-              /* Continuous inline-editable cues (R6). */
-              <p className="flex-1 text-left">
-                {speaker && <span className="mr-1.5 font-semibold">{speaker}:</span>}
-                {turn.segIndices.map((si, posInTurn) => {
-                  const seg = segments[si];
-                  return (
-                    <span key={seg.id}>
-                      {posInTurn > 0 ? ' ' : null}
+          <div>
+            {turn.segIndices.map((si, posInTurn) => {
+              const seg = segments[si];
+              const highlights = highlightsBySegmentAll.get(seg.id) ?? [];
+              const active = si === activeIdx;
+              return (
+                <div key={seg.id} className="flex items-start gap-1.5">
+                  <span
+                    aria-hidden
+                    className="mt-px w-9 shrink-0 select-none text-right font-mono text-[10px] leading-5 text-foreground/25"
+                  >
+                    {(seg?.idx ?? si) + 1}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onSeek(seg.startMs)}
+                    title="Seek to this line"
+                    className="mt-px shrink-0 font-mono text-xs text-foreground/40 hover:text-foreground hover:underline"
+                  >
+                    [{formatTime(seg.startMs)}]
+                  </button>
+                  <p className="flex-1 select-text text-left">
+                    {posInTurn === 0 && speaker && (
+                      <span className="mr-1.5 font-semibold">{speaker}:</span>
+                    )}
+                    {isCleanedActive && editing ? (
                       <InlineCueEditor
                         key={`${seg.id}:${seg.text}`}
                         initialText={seg.text}
                         onCommit={(t) => onSegmentTextCommit(seg.id, t)}
                       />
-                    </span>
-                  );
-                })}
-              </p>
-            ) : (
-              /* Read/code: the turn's cues inline in one selectable `<p>`. */
-              <p className="flex-1 select-text text-left">
-                {speaker && <span className="mr-1.5 font-semibold">{speaker}:</span>}
-                {turn.segIndices.map((si, posInTurn) => {
-                  const seg = segments[si];
-                  const highlights = highlightsBySegmentAll.get(seg.id) ?? [];
-                  const active = si === activeIdx;
-                  return (
-                    <span key={seg.id}>
-                      {posInTurn > 0 ? ' ' : null}
+                    ) : (
                       <span
                         data-seg-idx={si}
                         ref={(el) => {
@@ -4038,11 +4051,11 @@ function TranscriptBody({
                             )
                           : seg.text}
                       </span>
-                    </span>
-                  );
-                })}
-              </p>
-            )}
+                    )}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         );
 

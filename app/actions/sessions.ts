@@ -435,10 +435,14 @@ export type SessionDetailCloud = {
   trackMode: string;
   /** The loaded version id — annotations anchor to it (version_id). */
   versionId: string | null;
-  /** The loaded version's kind ('original' | 'cleaned'); null for an empty session. */
-  versionKind: 'original' | 'cleaned' | null;
+  /** The loaded version's kind; null for an empty session. 'restored' = the
+   *  LLM sentence-restored version (one sentence per segment), the coding default. */
+  versionKind: 'original' | 'cleaned' | 'restored' | null;
   /** Whether the loaded version is verbatim (the original is; cleaned is not). */
   isVerbatim: boolean;
+  /** True when the loaded version's segments are sentence units (kind='restored').
+   *  Drives whole-sentence coding enforcement. */
+  sentenceUnits: boolean;
   segments: CloudSegment[];
 };
 
@@ -609,18 +613,24 @@ export async function getSessionCloud(
     }
     version = data ?? null;
   } else {
+    // Default (no explicit versionId): prefer the sentence-RESTORED version — that
+    // is where coding now happens (whole-sentence units). Fall back to the ORIGINAL
+    // verbatim version for sessions with no restored copy (the two already-coded
+    // sessions + pilots), preserving their prior behavior.
     const { data, error } = await sb
       .from('cb_transcript_versions')
       .select('id, kind, is_verbatim')
       .eq('session_id', id)
-      .eq('kind', 'original')
-      .maybeSingle();
+      .in('kind', ['restored', 'original'])
+      .order('kind', { ascending: true }) // 'original' < 'restored' alphabetically…
+      .limit(2);
     if (error) {
       throw new Error(
         `getSessionCloud: cb_transcript_versions select failed: ${error.message}`,
       );
     }
-    version = data ?? null;
+    // …so pick 'restored' explicitly when present, else 'original'.
+    version = (data ?? []).find((v) => v.kind === 'restored') ?? (data ?? [])[0] ?? null;
   }
 
   // Pull this version's segments in display order. No version (a pathological
@@ -664,8 +674,9 @@ export async function getSessionCloud(
     durationMs: session.duration_ms,
     trackMode: session.track_mode,
     versionId: version?.id ?? null,
-    versionKind: (version?.kind as 'original' | 'cleaned' | undefined) ?? null,
+    versionKind: (version?.kind as 'original' | 'cleaned' | 'restored' | undefined) ?? null,
     isVerbatim: version?.is_verbatim ?? false,
+    sentenceUnits: version?.kind === 'restored',
     segments,
   };
 }
@@ -673,15 +684,21 @@ export async function getSessionCloud(
 /** One transcript version in the session's version list (for the player's tabs). */
 export type SessionVersion = {
   id: string;
-  kind: 'original' | 'cleaned';
+  kind: 'original' | 'cleaned' | 'restored';
   isVerbatim: boolean;
+  /** True when this version's segments are sentence units (kind='restored') —
+   *  the player enables whole-sentence coding enforcement while it is active. */
+  sentenceUnits: boolean;
 };
 
 /**
  * List a session's transcript versions (the player's tab set): `original` first,
- * then `cleaned`. A session always has an `original`; the `cleaned` version
- * exists only after `ensureCleanedVersion` has run. Reads through the user
- * client; the `authenticated` RLS read policy admits the select.
+ * then the sentence-`restored` version (the coding default). A session always has
+ * an `original`; `restored` exists once the sentence-restoration pass has run. The
+ * intermediate `cleaned` (resegmented, deduped) version is kept in the DB for
+ * reversibility but HIDDEN from the tabs when a `restored` version exists, so the
+ * coder sees exactly two surfaces (verbatim original vs. sentence units). Reads
+ * through the user client; the `authenticated` RLS read policy admits the select.
  */
 export async function getSessionVersions(
   sessionId: string,
@@ -697,15 +714,21 @@ export async function getSessionVersions(
     throw new Error(`getSessionVersions: select failed: ${error.message}`);
   }
 
-  // Stable tab order: original before cleaned.
-  const order = (k: string) => (k === 'original' ? 0 : 1);
-  return (data ?? [])
-    .map((r) => ({
-      id: r.id,
-      kind: r.kind as 'original' | 'cleaned',
-      isVerbatim: r.is_verbatim,
-    }))
-    .sort((a, b) => order(a.kind) - order(b.kind));
+  const rows = (data ?? []).map((r) => ({
+    id: r.id,
+    kind: r.kind as 'original' | 'cleaned' | 'restored',
+    isVerbatim: r.is_verbatim,
+    sentenceUnits: r.kind === 'restored',
+  }));
+
+  // Hide the intermediate resegmented `cleaned` version when a `restored` one
+  // exists — it would read as a confusing near-duplicate tab.
+  const hasRestored = rows.some((r) => r.kind === 'restored');
+  const visible = hasRestored ? rows.filter((r) => r.kind !== 'cleaned') : rows;
+
+  // Stable tab order: original → restored → cleaned.
+  const order = (k: string) => (k === 'original' ? 0 : k === 'restored' ? 1 : 2);
+  return visible.sort((a, b) => order(a.kind) - order(b.kind));
 }
 
 /**

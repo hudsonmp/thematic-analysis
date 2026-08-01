@@ -173,6 +173,11 @@ export default async function SessionPage({
     observations.recordingStartedAt ??
     (await taskStartForPid(session.pidLabel));
 
+  // Whole-sentence coding enforcement is no longer a per-session flag: the player
+  // derives it from the ACTIVE transcript version (ON only while the sentence-
+  // restored version is showing). Sessions with no restored version (the two
+  // already-coded sessions + pilots) simply never enter that state.
+
   return (
     <SessionPlayer
       id={session.id}
