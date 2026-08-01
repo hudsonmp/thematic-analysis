@@ -306,10 +306,20 @@ export async function listCodebookTree(codebookId: string): Promise<CodebookTree
         .select('*')
         .eq('codebook_id', codebookId)
         .order('position', { ascending: true }),
+      // RETIRED codes are hidden here — this is the single spine every code
+      // surface reads (codebook view, coding picker, exports, drill), so one
+      // filter makes a merged/retired code disappear everywhere. `cb_merge_codes`
+      // re-points an absorbed code's references to the survivor and stamps it
+      // retired_at + status='merged' (kept, not deleted, for version-history &
+      // audit provenance) — but WITHOUT this filter the retired row kept showing,
+      // which reads as "the merge didn't delete it". Existing annotations coded
+      // with a now-retired code are unaffected: they carry their own joined
+      // mnemonic (listMyAnnotationsForVersion), not a lookup into this list.
       supabase
         .from('cb_codes')
         .select('*')
         .eq('codebook_id', codebookId)
+        .is('retired_at', null)
         .order('mnemonic', { ascending: true }),
       supabase.from('cb_citations').select('*').eq('codebook_id', codebookId),
       supabase
