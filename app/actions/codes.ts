@@ -738,3 +738,159 @@ async function listCodebookMnemonics(codebookId: string): Promise<Set<string>> {
   }
   return new Set((res.data ?? []).map((r) => r.mnemonic));
 }
+
+/**
+ * COMBINATORIAL DEFINITION (v2 spec): set a code's ordered AND items — bucket
+ * references and/or mandatory singleton codes, with contiguous interchange
+ * groups. Validated by the pure engine BEFORE any write: cycles (definitions
+ * must form a DAG), EFFECTIVE-empty buckets (slot forks count), non-contiguous
+ * groups and duplicate positions are all rejected here, at definition time.
+ * An empty `items` array makes the code primitive again.
+ *
+ * DIFF-UPDATE, not replace: rows are matched by `id`, so surviving items KEEP
+ * their identity — their per-slot forks (cb_bucket_forks.item_id) and the
+ * decomposition links pointing at them (cb_assignment_children.item_id)
+ * survive a reorder. A payload id must keep its stored target (bucket /
+ * singleton): changing WHAT a step is = remove + add, never mutate-in-place,
+ * or the old slot's fork would silently apply to a different bucket.
+ * Position updates run in two phases (offset, then final) because
+ * cb_code_bucket_items has UNIQUE(code_id, position) and PostgREST gives us
+ * no transaction to defer it in.
+ */
+export async function setCombinatorialDefinition(
+  codeId: string,
+  items: {
+    /** Existing row id — present ⇔ the step survives (identity preserved). */
+    id?: string | null;
+    bucketId?: string | null;
+    singletonCodeId?: string | null;
+    position: number;
+    interchangeGroup?: number | null;
+  }[],
+): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const { validateDefinition, resolveFork } = await import('@/lib/codebook/combinatorial');
+  type EngineDefItem = import('@/lib/codebook/combinatorial').DefItem;
+  type EngineForkDelta = import('@/lib/codebook/combinatorial').ForkDelta;
+  type EngineMember = import('@/lib/codebook/combinatorial').BucketMember;
+
+  // Existing rows — the diff baseline.
+  const existingRes = await cbFrom('cb_code_bucket_items').select('*').eq('code_id', codeId);
+  if (existingRes.error) {
+    throw new Error(`setCombinatorialDefinition failed: ${existingRes.error.message}`);
+  }
+  const existingById = new Map((existingRes.data ?? []).map((r) => [r.id, r]));
+
+  // Build the candidate def in engine shape. Kept rows carry their REAL id so
+  // slot forks resolve; new rows get synthetic ids.
+  const candidate = {
+    codeId,
+    items: items.map((it, i): EngineDefItem => {
+      const bucket = it.bucketId ?? null;
+      const single = it.singletonCodeId ?? null;
+      if ((bucket === null) === (single === null)) {
+        throw new Error('setCombinatorialDefinition: each item is EITHER a bucket OR a singleton code.');
+      }
+      if (it.id) {
+        const row = existingById.get(it.id);
+        if (!row) throw new Error('setCombinatorialDefinition: unknown item id — reload and retry.');
+        if (row.bucket_id !== bucket || row.singleton_code_id !== single) {
+          throw new Error(
+            'setCombinatorialDefinition: an existing step cannot change its target — remove it and add a new step.',
+          );
+        }
+      }
+      const id = it.id ?? `new-${i}`;
+      return bucket !== null
+        ? { id, position: it.position, interchangeGroup: it.interchangeGroup ?? null, kind: 'bucket', bucketId: bucket }
+        : { id, position: it.position, interchangeGroup: it.interchangeGroup ?? null, kind: 'singleton', codeId: single! };
+    }),
+  };
+
+  // Every existing definition + modular members + slot forks, for the
+  // DAG/effective-empty checks.
+  const [itemsRes, membersRes, forksRes] = await Promise.all([
+    cbFrom('cb_code_bucket_items').select('*'),
+    cbFrom('cb_bucket_codes').select('*'),
+    cbFrom('cb_bucket_forks').select('*'),
+  ]);
+  if (itemsRes.error || membersRes.error || forksRes.error) {
+    throw new Error(
+      `setCombinatorialDefinition failed: ${(itemsRes.error || membersRes.error || forksRes.error)!.message}`,
+    );
+  }
+  const defsById = new Map<string, { codeId: string; items: EngineDefItem[] }>();
+  for (const r of itemsRes.data ?? []) {
+    if (r.code_id === codeId) continue; // replaced by the candidate
+    const d = defsById.get(r.code_id) ?? { codeId: r.code_id, items: [] };
+    d.items.push(
+      r.bucket_id !== null
+        ? { id: r.id, position: r.position, interchangeGroup: r.interchange_group, kind: 'bucket', bucketId: r.bucket_id }
+        : { id: r.id, position: r.position, interchangeGroup: r.interchange_group, kind: 'singleton', codeId: r.singleton_code_id! },
+    );
+    defsById.set(r.code_id, d);
+  }
+  defsById.set(codeId, candidate);
+  const membersByBucket = new Map<string, EngineMember[]>();
+  for (const m of membersRes.data ?? []) {
+    const arr = membersByBucket.get(m.bucket_id) ?? [];
+    arr.push({ codeId: m.code_id, mandatory: m.mandatory });
+    membersByBucket.set(m.bucket_id, arr);
+  }
+  const forkByItem = new Map<string, EngineForkDelta>();
+  for (const f of forksRes.data ?? []) {
+    if (f.item_id) forkByItem.set(f.item_id, (f.delta ?? {}) as EngineForkDelta);
+  }
+  const membersOfItem = (item: EngineDefItem): EngineMember[] => {
+    if (item.kind !== 'bucket') return [];
+    const modular = membersByBucket.get(item.bucketId) ?? [];
+    const fork = forkByItem.get(item.id) ?? null; // synthetic new-N ids miss → modular
+    return resolveFork({ id: item.bucketId, name: '', caption: null, members: modular }, fork).members;
+  };
+
+  if (candidate.items.length > 0) {
+    const errors = validateDefinition(candidate, defsById, membersOfItem);
+    if (errors.length) throw new Error(`setCombinatorialDefinition rejected: ${errors.join('; ')}`);
+  }
+
+  // ---- Diff-apply. No transaction over PostgREST, so sequenced writes with
+  // the least destructive order: delete dropped → shift kept (phase 1) →
+  // finalize kept (phase 2) → insert new.
+  const keptIds = new Set(items.map((it) => it.id).filter((x): x is string => !!x));
+  const dropped = [...existingById.keys()].filter((id) => !keptIds.has(id));
+  if (dropped.length) {
+    const del = await cbFrom('cb_code_bucket_items').delete().in('id', dropped);
+    if (del.error) throw new Error(`setCombinatorialDefinition (delete) failed: ${del.error.message}`);
+  }
+  // Phase 1: move every kept row out of the target position range (UNIQUE
+  // (code_id, position) has no deferral over PostgREST; +1000 keeps rows
+  // mutually unique while the range clears).
+  for (const it of items) {
+    if (!it.id) continue;
+    const up = await cbFrom('cb_code_bucket_items')
+      .update({ position: it.position + 1000 })
+      .eq('id', it.id);
+    if (up.error) throw new Error(`setCombinatorialDefinition (shift) failed: ${up.error.message}`);
+  }
+  // Phase 2: final positions + interchange groups.
+  for (const it of items) {
+    if (!it.id) continue;
+    const up = await cbFrom('cb_code_bucket_items')
+      .update({ position: it.position, interchange_group: it.interchangeGroup ?? null })
+      .eq('id', it.id);
+    if (up.error) throw new Error(`setCombinatorialDefinition (finalize) failed: ${up.error.message}`);
+  }
+  const inserts = items.filter((it) => !it.id);
+  if (inserts.length) {
+    const ins = await cbFrom('cb_code_bucket_items').insert(
+      inserts.map((it) => ({
+        code_id: codeId,
+        bucket_id: it.bucketId ?? null,
+        singleton_code_id: it.singletonCodeId ?? null,
+        position: it.position,
+        interchange_group: it.interchangeGroup ?? null,
+      })),
+    );
+    if (ins.error) throw new Error(`setCombinatorialDefinition (insert) failed: ${ins.error.message}`);
+  }
+}

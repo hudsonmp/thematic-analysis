@@ -33,6 +33,20 @@ export type IrrSessionOption = {
   coders: CoderOption[];
 };
 
+/** Mnemonics of combinatorial codes (codes owning ≥1 AND item) — used for the
+ *  decomposition-rate descriptives and the audit sample. */
+async function combinatorialMnemonics(
+  sb: Awaited<ReturnType<typeof createUserServerClient>>,
+): Promise<Set<string>> {
+  const res = await sb.from('cb_code_bucket_items').select('cb_codes!cb_code_bucket_items_code_id_fkey(mnemonic)');
+  if (res.error) return new Set(); // descriptive only — never fail the report on it
+  const out = new Set<string>();
+  for (const r of (res.data ?? []) as unknown as { cb_codes: { mnemonic: string } | null }[]) {
+    if (r.cb_codes?.mnemonic) out.add(r.cb_codes.mnemonic);
+  }
+  return out;
+}
+
 /** Sessions with ≥2 coders who have code-kind annotations — the only sessions
  *  IRR can be computed on. */
 export async function listIrrSessions(): Promise<IrrSessionOption[]> {
@@ -126,6 +140,16 @@ export type IrrReport = {
   perCode: IrrPerCodeView[];
   cooccurrence: CooccurrenceView;
   note: string;
+  /** v2: >0 blocks IRR — pendings must resolve before cross-coder contact. */
+  pendingCount: number;
+  /** v2: the single snapshot the assignments share, else null. */
+  snapshotId: string | null;
+  /** v2: why snapshotId is null (straddling / pre-snapshot data). */
+  snapshotNote: string | null;
+  /** v2 descriptive: decomposition rate per (coder, code). */
+  decomposition: { coder: string; code: string; decomposed: number; total: number }[];
+  /** v2: deterministic ~15% audit sample to fully decompose. */
+  auditSample: { annotationId: string; code: string; coder: string }[];
 };
 
 /**
@@ -152,7 +176,7 @@ export async function computeIrr(input: {
     sb
       .from('cb_annotations')
       .select(
-        'id, coder_id, t_start_ms, t_end_ms, segment_id, end_segment_id, version_id, cb_annotation_codes(cb_codes(mnemonic, origin))',
+        'id, coder_id, t_start_ms, t_end_ms, segment_id, end_segment_id, version_id, cb_annotation_codes(status, snapshot_id, cb_codes(mnemonic, origin))',
       )
       .eq('session_id', input.sessionId)
       .eq('kind', 'code')
@@ -170,9 +194,42 @@ export async function computeIrr(input: {
     segment_id: string;
     end_segment_id: string | null;
     version_id: string;
-    cb_annotation_codes: { cb_codes: { mnemonic: string; origin: string } | null }[] | null;
+    cb_annotation_codes:
+      | {
+          status: string | null;
+          snapshot_id: string | null;
+          cb_codes: { mnemonic: string; origin: string } | null;
+        }[]
+      | null;
   };
   const allRows = (data ?? []) as Row[];
+
+  // v2 GATE: pending assignments are NOT assignments — the coder has not yet
+  // asserted. IRR is blocked until every pending on this session resolves
+  // (all pendings resolve before any cross-coder contact).
+  const pendingCount = allRows.reduce(
+    (n, r) => n + (r.cb_annotation_codes ?? []).filter((ac) => ac.status === 'pending').length,
+    0,
+  );
+
+  // v2 SNAPSHOT SCOPE: IRR is computed within a single snapshot and reported
+  // with its ID. Mixed/absent snapshot ids ⇒ calibration, not IRR.
+  const snapshotIds = new Set<string>();
+  let unsnapshotted = 0;
+  for (const r of allRows) {
+    for (const ac of r.cb_annotation_codes ?? []) {
+      if (ac.status === 'pending') continue;
+      if (ac.snapshot_id) snapshotIds.add(ac.snapshot_id);
+      else unsnapshotted++;
+    }
+  }
+  const snapshotId = snapshotIds.size === 1 && unsnapshotted === 0 ? [...snapshotIds][0] : null;
+  const snapshotNote =
+    snapshotIds.size > 1
+      ? 'assignments straddle snapshots — calibration, not IRR'
+      : unsnapshotted > 0
+        ? 'assignments predate snapshotting — calibration reading'
+        : null;
 
   // Both coders must be scored on the SAME version so their segment ordinals align.
   // Pick the modal version among the two coders' annotations; drop rows on others.
@@ -225,7 +282,11 @@ export async function computeIrr(input: {
       if (hi !== null && r.t_start_ms > hi) continue;
       const units = unitsOf(r);
       if (!units.length) continue;
+      // v2: agreement = same parent code on same segment, REGARDLESS of
+      // decomposition path or attested/decomposed status — but a pending row
+      // is not an assignment and is excluded.
       const codes = (r.cb_annotation_codes ?? [])
+        .filter((ac) => ac.status !== 'pending')
         .map((ac) => ac.cb_codes)
         .filter((c): c is { mnemonic: string; origin: string } => c !== null);
       for (const c of codes) {
@@ -237,6 +298,28 @@ export async function computeIrr(input: {
     }
     return out;
   };
+
+  // v2 DESCRIPTIVES: decomposition rate per code per coder + the ~15% audit
+  // sample of combinatorial assignments to fully decompose (deterministic:
+  // sorted by annotation id, every 7th — reproducible without a stored seed).
+  const comboCodes = await combinatorialMnemonics(sb);
+  const decompCount = new Map<string, { decomposed: number; total: number }>();
+  const auditPool: { annotationId: string; code: string; coder: string }[] = [];
+  for (const r of rows) {
+    for (const ac of r.cb_annotation_codes ?? []) {
+      if (ac.status === 'pending' || !ac.cb_codes) continue;
+      const key = `${r.coder_id}|${ac.cb_codes.mnemonic}`;
+      const cur = decompCount.get(key) ?? { decomposed: 0, total: 0 };
+      cur.total++;
+      if (ac.status === 'decomposed') cur.decomposed++;
+      decompCount.set(key, cur);
+      if (comboCodes.has(ac.cb_codes.mnemonic) && ac.status !== 'decomposed') {
+        auditPool.push({ annotationId: r.id, code: ac.cb_codes.mnemonic, coder: r.coder_id });
+      }
+    }
+  }
+  auditPool.sort((a, b) => a.annotationId.localeCompare(b.annotationId));
+  const auditSample = auditPool.filter((_, i) => i % 7 === 0);
 
   const presA = presenceFor(input.coderAId);
   const presB = presenceFor(input.coderBId);
@@ -288,6 +371,11 @@ export async function computeIrr(input: {
     `strict κ primary, overlap-relaxed (±1) secondary` +
     (droppedOtherVersion ? ` · ${droppedOtherVersion} annotation(s) on another version excluded` : '');
 
+  const decomposition = [...decompCount.entries()].map(([key, v]) => {
+    const [coder, code] = key.split('|');
+    return { coder: nameById.get(coder) ?? coder.slice(0, 8), code, ...v };
+  });
+
   return {
     sessionId: input.sessionId,
     pidLabel: sessRow?.pid_label ?? input.sessionId.slice(0, 8),
@@ -299,5 +387,13 @@ export async function computeIrr(input: {
     perCode,
     cooccurrence: { ...co, origin: codeOrigin, mergeCandidates: merges },
     note,
+    pendingCount,
+    snapshotId,
+    snapshotNote,
+    decomposition,
+    auditSample: auditSample.map((a) => ({
+      ...a,
+      coder: nameById.get(a.coder) ?? a.coder.slice(0, 8),
+    })),
   };
 }

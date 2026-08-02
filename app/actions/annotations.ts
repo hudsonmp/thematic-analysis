@@ -3,10 +3,34 @@
 import { after } from 'next/server';
 
 import { createUserServerClient } from '@/lib/supabase/user-server';
+import { cbFrom } from '@/lib/supabase/guard';
 import { pageAll } from '@/lib/supabase/pageAll';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { requireEditor } from '@/lib/auth/roles';
+import { logEvent } from '@/app/actions/buckets';
 import type { Tables } from '@/lib/types/cb-db';
+
+/**
+ * SNAPSHOT STAMPING (combinatorial v2): every assignment stores the codebook
+ * snapshot it was coded under — the provenance pin that makes within-snapshot
+ * IRR reportable. Resolved from the code's codebook → its latest snapshot;
+ * null (pre-first-snapshot coding) is legal and reads as calibration.
+ */
+async function latestSnapshotIdForCode(
+  sb: Awaited<ReturnType<typeof createUserServerClient>>,
+  codeId: string,
+): Promise<string | null> {
+  const cRes = await sb.from('cb_codes').select('codebook_id').eq('id', codeId).maybeSingle();
+  const codebookId = cRes.data?.codebook_id;
+  if (!codebookId) return null;
+  const sRes = await sb
+    .from('cb_codebook_snapshots')
+    .select('id')
+    .eq('codebook_id', codebookId)
+    .order('seq', { ascending: false })
+    .limit(1);
+  return sRes.data?.[0]?.id ?? null;
+}
 
 type Annotation = Tables<'cb_annotations'>;
 
@@ -29,7 +53,9 @@ export type MyAnnotationView = {
   tEndMs: number;
   /** 'code' (a coded span) or 'quote' (a flagged paper quote, no code). */
   kind: string;
-  codes: { id: string; mnemonic: string }[];
+  /** status/orderViolated ride per code-assignment (combinatorial v2):
+   *  attested | decomposed | pending; orderViolated warns, never blocks. */
+  codes: { id: string; mnemonic: string; status?: string; orderViolated?: boolean }[];
   /** How many comments are threaded on this annotation (#17/#18 indicator). */
   commentCount: number;
   createdAt: string;
@@ -153,8 +179,14 @@ export async function addAnnotation({
   // code would collide. Empty set is allowed (a bare quote anchor with no code).
   const uniqueCodeIds = [...new Set(codeIds)];
   if (uniqueCodeIds.length > 0) {
+    // Stamp the snapshot the assignment is coded under (v2 provenance pin).
+    const snapshotId = await latestSnapshotIdForCode(sb, uniqueCodeIds[0]);
     const linkRes = await sb.from('cb_annotation_codes').insert(
-      uniqueCodeIds.map((code_id) => ({ annotation_id: annotation.id, code_id })),
+      uniqueCodeIds.map((code_id) => ({
+        annotation_id: annotation.id,
+        code_id,
+        snapshot_id: snapshotId,
+      })),
     );
     if (linkRes.error) {
       // Unwind: drop the annotation so we never leave a code-less code anchor.
@@ -167,7 +199,19 @@ export async function addAnnotation({
     // Off the response path (next/server after): exemplar accumulation is 2 +
     // 2·|codes| sequential queries of derived convenience data — blocking the
     // assign on it made every popup interaction feel seconds heavy.
-    after(() => appendSpanExemplars(sb, uniqueCodeIds, quoteText, sessionId));
+    // Creation events (spec §Versioning: the log covers creations) ride along.
+    after(async () => {
+      await appendSpanExemplars(sb, uniqueCodeIds, quoteText, sessionId);
+      try {
+        await logEvent('assignment_created', {
+          annotationId: annotation.id,
+          codeIds: uniqueCodeIds,
+          snapshotId,
+        });
+      } catch {
+        // Non-fatal: the log must never break coding.
+      }
+    });
   }
 
   return annotation;
@@ -194,7 +238,7 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
     sb
       .from('cb_annotations')
       .select(
-        'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
+        'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, status, order_violated, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
       )
       .eq('session_id', sessionId)
       .eq('coder_id', user.id)
@@ -219,6 +263,8 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
     created_at: string;
     cb_annotation_codes: Array<{
       code_id: string;
+      status?: string | null;
+      order_violated?: boolean | null;
       cb_codes: { id: string; mnemonic: string } | null;
     }> | null;
     cb_annotation_comments: Array<{ id: string }> | null;
@@ -239,6 +285,8 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
       // code deleted out from under the junction would null `cb_codes`).
       id: link.cb_codes?.id ?? link.code_id,
       mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
+      status: link.status ?? 'attested',
+      orderViolated: link.order_violated ?? false,
     })),
     // Embedded comment rows counted client-side (read-all RLS admits the embed;
     // the player only needs the count to render a thread indicator on the mark).
@@ -268,7 +316,7 @@ export async function listMyAnnotationsForVersion(
     sb
       .from('cb_annotations')
       .select(
-        'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
+        'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, status, order_violated, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
       )
       .eq('session_id', sessionId)
       .eq('version_id', versionId)
@@ -296,6 +344,8 @@ export async function listMyAnnotationsForVersion(
     created_at: string;
     cb_annotation_codes: Array<{
       code_id: string;
+      status?: string | null;
+      order_violated?: boolean | null;
       cb_codes: { id: string; mnemonic: string } | null;
     }> | null;
     cb_annotation_comments: Array<{ id: string }> | null;
@@ -314,6 +364,8 @@ export async function listMyAnnotationsForVersion(
     codes: (r.cb_annotation_codes ?? []).map((link) => ({
       id: link.cb_codes?.id ?? link.code_id,
       mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
+      status: link.status ?? 'attested',
+      orderViolated: link.order_violated ?? false,
     })),
     commentCount: (r.cb_annotation_comments ?? []).length,
     createdAt: r.created_at,
@@ -426,10 +478,12 @@ export async function addCodeToAnnotation(
     throw new Error('addCodeToAnnotation: annotationId and codeId are required.');
   }
   const sb = await createUserServerClient();
+  // Stamp the snapshot the assignment is coded under (v2 provenance pin).
+  const snapshotId = await latestSnapshotIdForCode(sb, code);
   const { error } = await sb
     .from('cb_annotation_codes')
     .upsert(
-      { annotation_id: id, code_id: code },
+      { annotation_id: id, code_id: code, snapshot_id: snapshotId },
       { onConflict: 'annotation_id,code_id', ignoreDuplicates: true },
     );
   if (error) {
@@ -471,6 +525,12 @@ export async function addCodeToAnnotation(
     if (anchor.data) {
       await appendSpanExemplars(sb, [code], anchor.data.quote_text, anchor.data.session_id);
     }
+    try {
+      // Creation event (spec §Versioning: the log covers creations).
+      await logEvent('assignment_created', { annotationId: id, codeIds: [code], snapshotId });
+    } catch {
+      // Non-fatal: the log must never break coding.
+    }
   });
   return 'added';
 }
@@ -493,12 +553,75 @@ export async function removeCodeFromAnnotation(
   await requireAuthUser();
   await requireEditor(); // codes are editor-only (see addCodeToAnnotation)
   const sb = await createUserServerClient();
+
+  // COMBINATORIAL HYGIENE (v2): if this (annotation, code) pair serves as a
+  // CHILD in any decomposition, those evidence links die with it — and any
+  // parent left with ZERO links reverts to 'attested' with a flag event (spec:
+  // a failed decomposition is flagged, never silently deleted). Links where
+  // the pair is a PARENT are cleaned too (deleteAssignment mirrors this).
+  const childSide = await cbFrom('cb_assignment_children')
+    .select('id, parent_annotation_id, parent_code_id')
+    .eq('child_annotation_id', annotationId)
+    .eq('child_code_id', codeId);
+  if (childSide.error) {
+    throw new Error(`removeCodeFromAnnotation failed: ${childSide.error.message}`);
+  }
+  const affectedParents = [
+    ...new Map(
+      (childSide.data ?? []).map((r) => [
+        `${r.parent_annotation_id}|${r.parent_code_id}`,
+        { annotationId: r.parent_annotation_id, codeId: r.parent_code_id },
+      ]),
+    ).values(),
+  ];
+  if ((childSide.data ?? []).length > 0) {
+    const delChild = await cbFrom('cb_assignment_children')
+      .delete()
+      .eq('child_annotation_id', annotationId)
+      .eq('child_code_id', codeId);
+    if (delChild.error) {
+      throw new Error(`removeCodeFromAnnotation failed: ${delChild.error.message}`);
+    }
+  }
+  const delParent = await cbFrom('cb_assignment_children')
+    .delete()
+    .eq('parent_annotation_id', annotationId)
+    .eq('parent_code_id', codeId);
+  if (delParent.error) {
+    throw new Error(`removeCodeFromAnnotation failed: ${delParent.error.message}`);
+  }
+
   const del = await sb
     .from('cb_annotation_codes')
     .delete()
     .eq('annotation_id', annotationId)
     .eq('code_id', codeId);
   if (del.error) throw new Error(`removeCodeFromAnnotation failed: ${del.error.message}`);
+
+  // Parents that lost evidence: any now-empty decomposition reverts to
+  // 'attested' + a decomposition_broken flag in the append-only log.
+  for (const p of affectedParents) {
+    const left = await cbFrom('cb_assignment_children')
+      .select('id')
+      .eq('parent_annotation_id', p.annotationId)
+      .eq('parent_code_id', p.codeId)
+      .limit(1);
+    if (left.error || (left.data ?? []).length > 0) continue;
+    await cbFrom('cb_annotation_codes')
+      .update({ status: 'attested', order_violated: false })
+      .eq('annotation_id', p.annotationId)
+      .eq('code_id', p.codeId)
+      .eq('status', 'decomposed');
+    try {
+      await logEvent('decomposition_broken', {
+        parentAnnotationId: p.annotationId,
+        parentCodeId: p.codeId,
+        removedChild: { annotationId, codeId },
+      });
+    } catch {
+      // Non-fatal.
+    }
+  }
 }
 
 /**
@@ -612,7 +735,7 @@ export async function listAllAnnotations(
       // end_segment_id), so the embed MUST name its relationship — the bare
       // cb_segments(ordinal) form 500s with 'more than one relationship found'
       // (this silently broke /compare when multi-cue anchors landed).
-      'id, coder_id, segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments!cb_annotations_segment_id_fkey(ordinal), cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
+      'id, coder_id, segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments!cb_annotations_segment_id_fkey(ordinal), cb_annotation_codes(code_id, status, order_violated, cb_codes(id, mnemonic))',
     )
     .eq('session_id', sessionId)
     .order('id', { ascending: true })
@@ -633,6 +756,8 @@ export async function listAllAnnotations(
     cb_segments: { ordinal: number } | null;
     cb_annotation_codes: Array<{
       code_id: string;
+      status?: string | null;
+      order_violated?: boolean | null;
       cb_codes: { id: string; mnemonic: string } | null;
     }> | null;
   }>;
@@ -669,6 +794,8 @@ export async function listAllAnnotations(
     codes: (r.cb_annotation_codes ?? []).map((link) => ({
       id: link.cb_codes?.id ?? link.code_id,
       mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
+      status: link.status ?? 'attested',
+      orderViolated: link.order_violated ?? false,
     })),
   }));
 
@@ -812,8 +939,14 @@ export async function acceptIntoCanonical({
 
   const uniqueCodeIds = [...new Set(codeIds)];
   if (uniqueCodeIds.length > 0) {
+    // Canonical assignments carry the same snapshot provenance as coder ones.
+    const snapshotId = await latestSnapshotIdForCode(sb, uniqueCodeIds[0]);
     const linkRes = await sb.from('cb_annotation_codes').insert(
-      uniqueCodeIds.map((code_id) => ({ annotation_id: annotation.id, code_id })),
+      uniqueCodeIds.map((code_id) => ({
+        annotation_id: annotation.id,
+        code_id,
+        snapshot_id: snapshotId,
+      })),
     );
     if (linkRes.error) {
       // Unwind: drop the canonical anchor so we never leave a code-less canonical row.
@@ -843,7 +976,7 @@ export async function listCanonical(sessionId: string): Promise<CanonicalView[]>
     sb
       .from('cb_annotations')
       .select(
-        'id, segment_id, t_start_ms, t_end_ms, cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
+        'id, segment_id, t_start_ms, t_end_ms, cb_annotation_codes(code_id, status, order_violated, cb_codes(id, mnemonic))',
       )
       .eq('session_id', sessionId)
       .eq('is_canonical', true)
@@ -862,6 +995,8 @@ export async function listCanonical(sessionId: string): Promise<CanonicalView[]>
     t_end_ms: number;
     cb_annotation_codes: Array<{
       code_id: string;
+      status?: string | null;
+      order_violated?: boolean | null;
       cb_codes: { id: string; mnemonic: string } | null;
     }> | null;
   }>;
@@ -874,6 +1009,8 @@ export async function listCanonical(sessionId: string): Promise<CanonicalView[]>
     codes: (r.cb_annotation_codes ?? []).map((link) => ({
       id: link.cb_codes?.id ?? link.code_id,
       mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
+      status: link.status ?? 'attested',
+      orderViolated: link.order_violated ?? false,
     })),
   }));
 }

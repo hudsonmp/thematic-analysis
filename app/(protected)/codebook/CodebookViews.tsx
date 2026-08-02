@@ -41,7 +41,7 @@ export default function CodebookViews({ tree }: { tree: CodebookTree }) {
         ))}
         <span className="ml-3 text-xs text-foreground/40">
           {view === 'tree'
-            ? 'the structure of your constructs'
+            ? 'the structure of your constructs — steps live in each code’s drawer'
             : 'get many codes in fast — they land Unplaced'}
         </span>
       </div>

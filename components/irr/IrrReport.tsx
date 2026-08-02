@@ -211,8 +211,39 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
       </section>
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
 
-      {report && (
+      {/* v2 GATE: pendings are unasserted — IRR is blocked until every one
+          resolves (attest / decompose / delete), BEFORE any cross-coder contact. */}
+      {report && report.pendingCount > 0 && (
+        <section className="mt-6 border border-amber-600/60 bg-amber-500/10 p-4">
+          <p className="text-sm font-medium text-amber-900 dark:text-amber-300">
+            IRR blocked — {report.pendingCount} pending assignment
+            {report.pendingCount === 1 ? '' : 's'} on this session.
+          </p>
+          <p className="mt-1 max-w-2xl text-xs leading-relaxed text-amber-900/80 dark:text-amber-300/80">
+            A pending code is <i>not yet asserted</i>. Resolve every pending (attest, decompose,
+            or delete it in the session player) before computing agreement or any cross-coder
+            discussion of this session — otherwise the numbers describe half-made decisions.
+          </p>
+        </section>
+      )}
+
+      {report && report.pendingCount === 0 && (
         <>
+          {/* v2: snapshot scope — IRR is reported WITH its snapshot id. */}
+          <p className="mt-4 text-xs text-foreground/55">
+            {report.snapshotId ? (
+              <>
+                snapshot <span className="font-mono">{report.snapshotId.slice(0, 8)}</span> — all
+                assignments share it; this is reportable IRR.
+              </>
+            ) : (
+              <span className="text-amber-700">
+                {report.snapshotNote ?? 'no shared snapshot'} — read as calibration, not reportable
+                IRR (cut a snapshot on the Buckets page before the next IRR session).
+              </span>
+            )}
+          </p>
+
           {/* Code-subset selector */}
           <CodeFilter
             allCodes={report.allCodes}
@@ -254,6 +285,54 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
 
           <PerCodeTable report={report} />
           <CooccurrenceHeatmap co={report.cooccurrence} />
+
+          {/* v2 descriptives: child-level agreement is descriptive only —
+              decomposition RATE per coder×code + the ~15% audit sample. */}
+          {report.decomposition.length > 0 && (
+            <details className="mt-8 border border-foreground/15 px-4 py-3 text-sm">
+              <summary className="cursor-pointer font-medium text-foreground/80">
+                Decomposition rate{' '}
+                <span className="font-normal text-foreground/45">· per coder × code (descriptive)</span>
+              </summary>
+              <table className="mt-2 text-xs">
+                <tbody>
+                  {report.decomposition
+                    .filter((d) => d.total > 0)
+                    .sort((a, b) => a.code.localeCompare(b.code) || a.coder.localeCompare(b.coder))
+                    .map((d, i) => (
+                      <tr key={i} className="border-b border-foreground/10">
+                        <td className="py-1 pr-3 font-mono">{d.code}</td>
+                        <td className="py-1 pr-3 text-foreground/60">{d.coder}</td>
+                        <td className="py-1 pr-3 text-right font-mono">
+                          {d.decomposed}/{d.total}
+                        </td>
+                        <td className="py-1 text-right font-mono text-foreground/60">
+                          {Math.round((d.decomposed / d.total) * 100)}%
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </details>
+          )}
+          {report.auditSample.length > 0 && (
+            <details className="mt-3 border border-foreground/15 px-4 py-3 text-sm">
+              <summary className="cursor-pointer font-medium text-foreground/80">
+                Audit sample{' '}
+                <span className="font-normal text-foreground/45">
+                  · {report.auditSample.length} combinatorial assignment
+                  {report.auditSample.length === 1 ? '' : 's'} to fully decompose (~15%, deterministic)
+                </span>
+              </summary>
+              <ul className="mt-2 space-y-1 text-xs">
+                {report.auditSample.map((a, i) => (
+                  <li key={i} className="font-mono">
+                    {a.code} <span className="text-foreground/50">· {a.coder} · ann {a.annotationId.slice(0, 8)}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </>
       )}
     </main>
