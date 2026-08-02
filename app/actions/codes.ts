@@ -738,3 +738,16 @@ async function listCodebookMnemonics(codebookId: string): Promise<Set<string>> {
   }
   return new Set((res.data ?? []).map((r) => r.mnemonic));
 }
+
+/**
+ * Set a code's NOTES — free marginalia (comments + @slug links to other codes).
+ * Unversioned by design: notes are commentary ABOUT the code, not part of the
+ * versioned operational definition, so they commit cheaply (blur) like the slug.
+ */
+export async function setCodeNotes(codeId: string, notes: string): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const res = await cbFrom('cb_codes')
+    .update({ notes: notes.trim() === '' ? null : notes })
+    .eq('id', codeId);
+  if (res.error) throw new Error(`setCodeNotes failed: ${res.error.message}`);
+}

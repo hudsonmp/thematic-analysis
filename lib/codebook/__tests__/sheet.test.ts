@@ -13,6 +13,7 @@ function row(partial: Partial<Record<SheetColKey, string>>): Record<SheetColKey,
     excludeIf: '',
     exemplars: '',
     counter: '',
+  notes: '',
     meta: '',
   };
   return { ...base, ...partial };

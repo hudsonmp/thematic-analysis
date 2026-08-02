@@ -49,6 +49,7 @@ function code(id: string, mnemonic: string): Code {
     retired_at: null,
     status: 'active',
     study_label: null,
+    notes: null,
   };
 }
 

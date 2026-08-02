@@ -6,6 +6,7 @@ import { createCodebookMemo } from '@/app/actions/codebook-memos';
 import { splitDefinition } from '@/lib/codebook/definition';
 import { normalizeSlug } from '@/lib/codebook/mnemonic';
 import { fuzzyRank } from '@/lib/transcript/fuzzy';
+import NoteText from '@/components/codebook/NoteText';
 
 /** What the popup knows about a code — enough to assign it AND to read it before
  *  assigning (definition/origin expand on click). */
@@ -22,6 +23,8 @@ export type PopupCode = {
    *  deliberately EXCLUDED from search: matching a code by text it explicitly
    *  does not cover would rank exactly the wrong codes. */
   counterExample: string | null;
+  /** Free marginalia (comments + @slug links) — shown in the expanded row. */
+  notes?: string | null;
 };
 
 const POPUP_W = 400;
@@ -583,6 +586,14 @@ export default function CodingPopup({
                           not:{' '}
                         </span>
                         {c.counterExample}
+                      </p>
+                    )}
+                    {c.notes && (
+                      <p className="mt-1 text-foreground/70">
+                        <span className="text-[11px] uppercase tracking-wide text-sky-700/60 dark:text-sky-400/60">
+                          notes:{' '}
+                        </span>
+                        <NoteText text={c.notes} />
                       </p>
                     )}
                     <p className="mt-0.5 text-[11px] uppercase tracking-wide text-foreground/35">

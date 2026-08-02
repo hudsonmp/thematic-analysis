@@ -26,6 +26,7 @@ export type SheetColKey =
   | 'excludeIf'
   | 'exemplars'
   | 'counter'
+  | 'notes'
   | 'meta';
 
 export const SHEET_COL_HEADERS: Record<SheetColKey, string> = {
@@ -35,6 +36,7 @@ export const SHEET_COL_HEADERS: Record<SheetColKey, string> = {
   excludeIf: 'Exclude if',
   exemplars: 'Exemplars',
   counter: 'Counter-example',
+  notes: 'Notes',
   meta: 'Answers · Sources',
 };
 
@@ -45,6 +47,7 @@ export const SHEET_COL_ORDER: SheetColKey[] = [
   'excludeIf',
   'exemplars',
   'counter',
+  'notes',
   'meta',
 ];
 
