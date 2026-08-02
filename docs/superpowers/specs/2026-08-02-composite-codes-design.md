@@ -1,93 +1,111 @@
-# Composite codes: named buckets, human-in-the-loop parent assignment
+# Combinatorial Codebook Specification (v2 — consolidated)
 
-2026-08-02 · settled with Hudson via brainstorming (bucket locality, parent presence, optional buckets)
+2026-08-02 · v2 authored by Hudson, supersedes the v1 "composite codes" draft in full.
+Implementation notes (marked ⌘) record decisions the spec left open; everything else is the spec verbatim.
 
-## Purpose
+## Buckets and codes
 
-Make the codebook dimensional: a parent code (e.g. `experiment-driven-change`) is
-*composed of* named buckets of child codes. Two coders who pick different members
-of the same bucket disagree at the child level but agree at the parent level, so
-the composite layer absorbs which-member disagreement the way sentence
-restoration absorbed which-boundary disagreement → measurable IRR lift
-(child-κ vs parent-κ, side by side).
+There is a running list of modular buckets; buckets house codes. A bucket represents a general
+action (e.g., Review). A bucket is fulfilled when at least one of its member codes is assigned;
+multiple may be selected, one is required. Some codes within a bucket may be marked `mandatory`
+(infrequent). Buckets carry a caption/short description with the same push/pull behavior as other
+attributes.
 
-## Model
+Codes are **primitive** (no children — all current codes) or **combinatorial**: an ordered AND of
+buckets, plus optional mandatory singleton codes that stand in place of a one-code bucket. There is
+no OR in the grammar; apparent disjunction is handled by subsumption (below). Code definitions must
+form a DAG — cycles are rejected at definition time.
 
-- A code is **composite** iff it owns ≥1 **bucket**. A bucket has a `name`
-  ("scenario step"), a `position`, a `required` flag (default true), and a set
-  of member child codes. Any code can be a member; a member that is itself
-  composite is evaluated bottom-up on the same annotation → grandchildren work
-  with no special case (cycle-guarded).
-- **Fulfilled on an annotation** = the annotation's own code set covers every
-  **required** bucket (≥1 member each; OR within bucket, AND across buckets).
-  Optional buckets never block; their filled members still display as children.
-- Validation: a composite must have ≥1 required bucket (all-optional rejected
-  at build time).
-- **The parent is a code-link on the same annotation as its children** — never
-  a separate annotation. Eligibility is per-annotation (one highlight carries
-  the children). Cost, accepted: children split across two separate highlights
-  don't fire the parent. Benefit: IRR and co-occurrence consume the parent as
-  an ordinary code with zero new plumbing.
+## Ordering
 
-## Lifecycle (human-in-the-loop, no drift)
+Bucket numbering (1, 2, 3…) is a sequence constraint. Contiguous positions may be marked
+**interchangeable**, yielding a series-parallel order (e.g., {1,2} ≺ 3 ≺ 4); arbitrary partial
+orders are out of scope. Order is evaluated by **first evidence**: min sentence index of bucket i ≤
+min of bucket i+1, ties permitted. Out-of-order fulfillment saves with an `order-violated` flag —
+warn, never block. Substitution targets (below) must be an interchangeable group.
 
-| Event | Behavior |
-|---|---|
-| Annotation's codes newly satisfy a composite | Prompt: "Codes here fulfill «parent» — add it?" Add → write parent link. Deny → suppress (ephemeral, component state; re-prompts only if the code set changes again) |
-| Remove a child; a **required** bucket drops to 0 members | Parent link auto-removed |
-| Remove a child; bucket still has another member, or bucket is optional | Parent stays |
-| Manually delete the parent link | Children untouched (no cascade) |
+## Subsumption (substitution)
 
-## Schema (additive)
+A code c₁ may substitute for a subset S of a parent c₂'s buckets iff, for every bucket in S, every
+code admissible in c₁'s version of that bucket is also admissible in c₂'s version. Consequently:
+**a fork may substitute into standard-bucket slots only after all fork-added codes have been pushed
+to the modular bucket** (mandatory flags may stay fork-local). Implement as entailment, not stored
+lists: when the popup opens and an in-span assignment of a subsuming code exists, auto-check the
+covered buckets with provenance recorded ("via c₁"). Subsumption is transitive; the DAG guard
+covers chains. Remaining buckets are fulfilled manually; the subsuming code's span counts toward
+the parent span and its sentences may double-serve as evidence for other buckets.
 
-```
-cb_code_buckets         (id, parent_code_id → cb_codes, name, required bool default true, position)
-cb_code_bucket_members  (bucket_id → cb_code_buckets, code_id → cb_codes, position, PK(bucket_id, code_id))
-```
+## Forks and sync
 
-No change to `cb_annotations` / `cb_annotation_codes`. `parent_code_id`
-(existing display hierarchy) is untouched and independent.
+A fork is an overlay: fork = modular + Δ, where Δ records only explicitly changed attributes
+(added codes, mandatory flags, caption). **Pull** is automatic for any attribute not in Δ;
+overridden attributes stay fork-local. **Push** (double-confirm) mutates the modular bucket; other
+forks receive it as a pull under the same override rule. Conflicting pushes: last-write-wins at
+modular, logged; overrides insulate forks that care. **Deletions never auto-pull** — flag for
+manual resolution. Pulls apply in batches between coding sessions only, each recorded in the
+version log.
 
-## Engine
+> ⌘ Fork ownership: a fork is per-coder (`owner = auth.uid()`), one live fork per (coder, bucket).
+> ⌘ "Pull in batches between sessions" is operationalized through snapshots: the effective fork
+> view is computed at read time, but every assignment stores the snapshot ID it was coded under,
+> and snapshots are cut at the mandated boundaries — so an in-flight session's provenance is
+> pinned even though reads are live. Deviation documented here, not silent.
 
-`lib/codebook/composition.ts` — pure, no DB/DOM:
+## Assignments and statuses
 
-```ts
-evaluate(codeIds: Set<string>, defs: CompositeDef[]) → {
-  fulfilled: string[]                    // composite ids satisfied (recursive, bottom-up)
-  partial: { id, missingBuckets[] }[]    // for popup progress display
-}
-```
+Assigning a combinatorial code opens a skippable popup (buckets, candidate children, mandatory
+items). Statuses:
 
-Cycle guard: a composite encountered while its own evaluation is in progress
-counts as unfulfilled. Unit tests: AND/OR truth table, optional buckets,
-grandchild recursion, cycles, two-fill-one-stays retraction predicate.
+- **Attested** — coder asserts the parent holds; no/partial evidence documented. Valid; counts for
+  IRR; implicitly asserts mandatory codes and ordering. Partial decomposition is
+  attested-with-some-evidence, not a lesser validity class.
+- **Decomposed** (partial/full) — children linked with sub-spans. Popups are skippable per level;
+  decomposition of nested combinatorial children is opt-in.
+- **Pending** — coder has *not yet asserted* (uncertain the code applies). Not an assignment.
+  Resolves to attested/decomposed or deletion; deletions log the partially fulfilled buckets. All
+  pendings resolve **before any cross-coder contact** about that session; IRR is blocked until
+  then.
 
-## UI
+Attested and decomposed assignments are stored distinguishably. If later decomposition of an
+attested assignment fails, flag it — do not silently delete.
 
-1. **Tree page (`CodeEditor`)** — bucket builder: add/rename/reorder buckets,
-   toggle required, pick member codes; delete bucket. Composite badge on the code.
-2. **Coding popup, top-down** — pick a composite → its buckets expand → choose
-   ≥1 member per required bucket → Assign writes children + parent in one save.
-3. **Coding popup, bottom-up** — tag children normally; when the pending set
-   satisfies a composite, inline Add/Deny prompt appears.
-4. **Coded spans** — chips render parent with nested children (both levels
-   visible while coding).
-5. **IRR page** — composite codes labeled; per-code table shows child-κ and
-   parent-κ adjacent so the convergence lift is readable.
+## Spans
 
-## Non-goals (v1)
+Child spans ⊆ parent span. One sentence may evidence multiple buckets and multiple parents
+simultaneously. Child spans need not cover the parent span. Child and parent spans may be
+non-contiguous; parents may overlap/interleave (UI renders parallel lanes — do not force
+serialization). For decomposed assignments the parent span is **derived** (union of child spans,
+coder-extendable); attested assignments use a drawn span. Decomposition may extend a parent span;
+log the edit.
 
-Persisted denials; episode-window eligibility; parent spanning multiple
-annotations; auto-assign without prompt; migration of existing annotations.
+## Bottom-up promotion
 
-## Delivery
+Existing child assignments may be promoted into a new parent under the same constraints. Promotion
+**links** existing assignments (never copies). Where multiple in-span candidates could fill a
+bucket, the coder selects which. Popup pre-fills by entailment in both workflows. No auto-suggested
+promotions until reliability is established.
 
-Branch `feat/composite-codes`, stacked PRs, each gated by
-tsc + eslint + vitest + build, left unmerged for Hudson:
+## Versioning
 
-1. Migrations + `composition.ts` + tests
-2. Bucket builder on tree page
-3. Popup top-down assign + parent/child chips
-4. Bottom-up prompt + retraction lifecycle
-5. IRR labeling + child-vs-parent κ readout
+Two mechanisms:
+
+1. **Codebook snapshots** — immutable serialized JSON of full state (codes, buckets, forks/Δ,
+   captions), monotonic integer + timestamp, append-only. Cut mandatorily before: any IRR session,
+   any batch pull, any push to modular. Every assignment stores its snapshot ID.
+2. **Assignment event log** — append-only: creations, status transitions, span extensions,
+   promotions, deletions-with-partial-state, and sentence indices per bucket-fulfillment.
+
+## IRR
+
+Defined a priori: agreement = same parent code on same segment, regardless of decomposition path,
+sub-spans, or attested/decomposed status. Child-level agreement is descriptive only. IRR is
+computed within a single snapshot and reported with its ID; a session straddling a snapshot
+boundary is calibration, not IRR. Codes intended to become combinatorial are converted **before**
+IRR sessions. Log decomposition rate per code per coder; fully decompose a random ~15% audit
+sample.
+
+## Guards and out-of-grammar
+
+Reject configurations where a parent references an empty bucket (via fork removals or modular
+edits). Negation is not in the grammar; EXCLUDE IF conditions remain coder judgment, documented as
+such.
