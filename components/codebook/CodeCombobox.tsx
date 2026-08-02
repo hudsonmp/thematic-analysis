@@ -1,14 +1,28 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { fuzzyRank } from '@/lib/transcript/fuzzy';
+import { splitDefinition } from '@/lib/codebook/definition';
+
+/** What a row knows — the coding popup's PopupCode shape. The metadata fields
+ *  are optional so id+mnemonic callers still work, but every real surface
+ *  passes them: the hover expansion is the point of this picker. */
+export type ComboCode = {
+  id: string;
+  mnemonic: string;
+  origin?: string;
+  definition?: string | null;
+  exemplars?: string[];
+  counterExample?: string | null;
+};
 
 /**
- * The coding screen's code-picker pattern, extracted: type-to-search over the
- * mnemonics (fuzzy, same ranker as CodingPopup), ↑/↓ + ⏎ to pick, Esc closes.
- * A native <select> over a 60-code list makes the coder scan; search makes
- * them recall — the popup taught that lesson, so bucket membership and
- * singleton picking reuse it instead of re-learning it.
+ * The coding screen's code picker, copied faithfully (CodingPopup rows):
+ *   · SEARCH matches slug + APPLIED definition + exemplars — the code's
+ *     meaning, not just its name (find a code by recalling an instance).
+ *   · HOVER a row → its metadata expands in place: applied definition,
+ *     exemplars, the "not:" counter-example, origin. Reading before picking.
+ *   · ↑/↓ move, ⏎ picks, Esc closes; mousedown-picks so blur can't eat it.
  */
 export default function CodeCombobox({
   options,
@@ -16,7 +30,7 @@ export default function CodeCombobox({
   disabled,
   onPick,
 }: {
-  options: { id: string; mnemonic: string }[];
+  options: ComboCode[];
   placeholder: string;
   disabled?: boolean;
   onPick: (id: string) => void;
@@ -24,10 +38,18 @@ export default function CodeCombobox({
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const [cursor, setCursor] = useState(0);
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
 
   const ranked = useMemo(
-    () => fuzzyRank(query, options, (o) => o.mnemonic).map((m) => m.item).slice(0, 12),
+    () =>
+      fuzzyRank(
+        query,
+        options,
+        (c) =>
+          `${c.mnemonic} ${splitDefinition(c.definition ?? null).applied} ${(c.exemplars ?? []).join(' ')}`,
+      )
+        .map((m) => m.item)
+        .slice(0, 50),
     [query, options],
   );
   const safeCursor = Math.min(cursor, Math.max(0, ranked.length - 1));
@@ -37,10 +59,11 @@ export default function CodeCombobox({
     setQuery('');
     setOpen(false);
     setCursor(0);
+    setHoveredId(null);
   };
 
   return (
-    <div ref={rootRef} className="relative">
+    <div className="relative">
       <input
         value={query}
         disabled={disabled}
@@ -71,27 +94,69 @@ export default function CodeCombobox({
             setOpen(false);
           }
         }}
-        className="w-56 border border-foreground/25 bg-background px-2 py-1 text-xs text-foreground focus:border-foreground focus:outline-none"
+        className="w-64 border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground focus:border-foreground focus:outline-none"
       />
       {open && ranked.length > 0 && (
-        <div className="absolute left-0 top-full z-30 mt-0.5 max-h-64 w-72 overflow-y-auto border border-foreground/25 bg-background shadow-xl">
-          {ranked.map((o, i) => (
-            <button
-              key={o.id}
-              type="button"
-              // mousedown, not click: fires before the input's blur closes the list.
-              onMouseDown={(e) => {
-                e.preventDefault();
-                pick(o.id);
-              }}
-              onMouseEnter={() => setCursor(i)}
-              className={`block w-full px-2 py-1 text-left font-mono text-xs ${
-                i === safeCursor ? 'bg-foreground/[0.08]' : ''
-              }`}
-            >
-              {o.mnemonic}
-            </button>
-          ))}
+        <div className="absolute left-0 top-full z-30 mt-0.5 max-h-[420px] w-[400px] overflow-y-auto border border-foreground/25 bg-background py-1 shadow-2xl">
+          {ranked.map((c, i) => {
+            const focused = i === safeCursor;
+            // Same reveal contract as the coding popup: hover is transient,
+            // and the focused row (keyboard) expands too.
+            const expanded = hoveredId === c.id || (hoveredId === null && focused);
+            return (
+              <div
+                key={c.id}
+                onMouseEnter={() => {
+                  setHoveredId(c.id);
+                  setCursor(i);
+                }}
+                onMouseLeave={() => setHoveredId((h) => (h === c.id ? null : h))}
+              >
+                <button
+                  type="button"
+                  // mousedown, not click: fires before the input's blur closes the list.
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pick(c.id);
+                  }}
+                  className={`block w-full px-3 py-1 text-left ${focused ? 'bg-foreground/[0.06]' : ''}`}
+                >
+                  <span className="font-mono text-[15px] font-medium text-foreground">
+                    {c.mnemonic}
+                  </span>
+                </button>
+                {expanded && (
+                  <div className="mx-3 mb-1 border-l-2 border-foreground/15 py-0.5 pl-2 text-[13px] text-foreground/80">
+                    <p>
+                      {splitDefinition(c.definition ?? null).applied || <em>No definition yet.</em>}
+                    </p>
+                    {(c.exemplars ?? []).length > 0 && (
+                      <ul className="mt-1 list-disc space-y-0.5 pl-4 text-foreground/70">
+                        {(c.exemplars ?? []).map((ex, j) => (
+                          <li key={j} className="italic">
+                            “{ex}”
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {c.counterExample && (
+                      <p className="mt-1 text-foreground/70">
+                        <span className="text-[11px] uppercase tracking-wide text-red-700/60 dark:text-red-400/60">
+                          not:{' '}
+                        </span>
+                        {c.counterExample}
+                      </p>
+                    )}
+                    {c.origin && (
+                      <p className="mt-0.5 text-[11px] uppercase tracking-wide text-foreground/35">
+                        {c.origin.replace('_', ' ')}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { setCombinatorialDefinition } from '@/app/actions/codes';
 import type { BucketView } from '@/app/actions/buckets';
 import { stagesOf, type DefItem } from '@/lib/codebook/combinatorial';
-import CodeCombobox from '@/components/codebook/CodeCombobox';
+import CodeCombobox, { type ComboCode } from '@/components/codebook/CodeCombobox';
 
 /**
  * The combinatorial-definition editor on a code's page (v2): the ordered AND
@@ -33,7 +33,7 @@ export default function CombinatorialDef({
   codeId: string;
   items: DefItem[];
   buckets: BucketView[];
-  allCodes: { id: string; mnemonic: string }[];
+  allCodes: ComboCode[];
   readOnly: boolean;
 }) {
   const router = useRouter();

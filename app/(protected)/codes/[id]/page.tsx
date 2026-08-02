@@ -7,6 +7,7 @@ import { getProtocolEpisodes } from '@/app/actions/protocol';
 import { getMyRole } from '@/lib/auth/roles';
 import CodeCard from '@/components/code/CodeCard';
 import CombinatorialDef from '@/components/code/CombinatorialDef';
+import { toComboCodes } from '@/lib/codebook/comboCodes';
 
 /**
  * The code-anatomy page. Next 16: `params` is a Promise, so we await it. We
@@ -40,7 +41,7 @@ export default async function CodePage({ params }: { params: Promise<{ id: strin
     // Non-fatal.
   }
 
-  const allCodes = tree.codes.map((c) => ({ id: c.id, mnemonic: c.mnemonic }));
+  const allCodes = toComboCodes(tree.codes);
 
   return (
     <>

@@ -6,6 +6,7 @@ import FacetCanvas from '@/components/codebook/tree/FacetCanvas';
 import CompositionView from './CompositionView';
 import type { CodebookTree } from '@/app/actions/codebook';
 import type { CombinatorialContext } from '@/app/actions/buckets';
+import { toComboCodes } from '@/lib/codebook/comboCodes';
 
 /**
  * The Codebook page has two views of ONE instrument, and they answer different
@@ -82,7 +83,7 @@ export default function CodebookViews({
         <CompositionView
           codebookId={tree.codebook.id}
           ctx={combinatorial}
-          codeOptions={tree.codes.map((c) => ({ id: c.id, mnemonic: c.mnemonic }))}
+          codeOptions={toComboCodes(tree.codes)}
         />
       ) : null}
     </div>

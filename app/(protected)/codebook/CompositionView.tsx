@@ -4,7 +4,7 @@ import { useState } from 'react';
 import type { CombinatorialContext } from '@/app/actions/buckets';
 import BucketManager from '@/components/buckets/BucketManager';
 import CombinatorialDef from '@/components/code/CombinatorialDef';
-import CodeCombobox from '@/components/codebook/CodeCombobox';
+import CodeCombobox, { type ComboCode } from '@/components/codebook/CodeCombobox';
 
 /**
  * The BUCKETS view of the codebook page — the set/subset authoring surface the
@@ -24,7 +24,7 @@ export default function CompositionView({
 }: {
   codebookId: string;
   ctx: CombinatorialContext;
-  codeOptions: { id: string; mnemonic: string }[];
+  codeOptions: ComboCode[];
 }) {
   const [selectedCodeId, setSelectedCodeId] = useState<string | null>(null);
 

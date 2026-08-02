@@ -2,6 +2,7 @@ import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
 import { getCombinatorialContext } from '@/app/actions/buckets';
 import { getMyRole } from '@/lib/auth/roles';
 import BucketManager from '@/components/buckets/BucketManager';
+import { toComboCodes } from '@/lib/codebook/comboCodes';
 
 /**
  * The MODULAR BUCKETS manager (combinatorial codebook v2): the running list of
@@ -18,7 +19,7 @@ export default async function BucketsPage() {
     getMyRole(),
   ]);
 
-  const codeOptions = tree.codes.map((c) => ({ id: c.id, mnemonic: c.mnemonic }));
+  const codeOptions = toComboCodes(tree.codes);
 
   return (
     <BucketManager

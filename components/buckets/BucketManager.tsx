@@ -13,7 +13,7 @@ import {
   type BucketView,
 } from '@/app/actions/buckets';
 import type { DefItem, ForkDelta } from '@/lib/codebook/combinatorial';
-import CodeCombobox from '@/components/codebook/CodeCombobox';
+import CodeCombobox, { type ComboCode } from '@/components/codebook/CodeCombobox';
 
 /**
  * Modular-bucket manager (v2). Two edit SCOPES per bucket, chosen explicitly:
@@ -41,7 +41,7 @@ export default function BucketManager({
   buckets: BucketView[];
   defs: Record<string, DefItem[]>;
   latestSnapshotId: string | null;
-  codeOptions: { id: string; mnemonic: string }[];
+  codeOptions: ComboCode[];
   readOnly: boolean;
   /** True when rendered INSIDE another page (the /codebook Buckets tab) —
    *  section semantics instead of a page <main>. */
@@ -187,7 +187,7 @@ function BucketCard({
 }: {
   bucket: BucketView;
   usedBy: string[];
-  codeOptions: { id: string; mnemonic: string }[];
+  codeOptions: ComboCode[];
   codebookId: string;
   busy: boolean;
   readOnly: boolean;
