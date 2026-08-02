@@ -271,10 +271,17 @@ export function checkFulfillment(
     const itemLinks = byItem.get(it.id) ?? [];
     let admissible: ChildLink[];
     if (it.kind === 'singleton') {
+      // Exact code only — subsumption substitutes into BUCKET slots, never a
+      // mandatory singleton.
       admissible = itemLinks.filter((l) => l.childCodeId === it.codeId);
     } else {
       const memberIds = new Set(membersOf(it.bucketId).map((x) => x.codeId));
-      admissible = itemLinks.filter((l) => memberIds.has(l.childCodeId));
+      // A link is admissible when its child is a bucket member OR it carries
+      // subsumption provenance (via c₁): the subsuming code covers the slot by
+      // entailment even though it is not itself a member. The CALLER verifies
+      // the entailment before persisting (setAssignmentChildren) — the engine
+      // trusts the provenance it is handed.
+      admissible = itemLinks.filter((l) => memberIds.has(l.childCodeId) || l.via != null);
       // mandatory check only applies when the bucket item is being fulfilled
       if (admissible.length > 0) {
         const assigned = new Set(admissible.map((l) => l.childCodeId));

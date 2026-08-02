@@ -7,8 +7,11 @@ import { logEvent } from '@/app/actions/buckets';
 import {
   checkFulfillment,
   evaluateOrder,
+  resolveFork,
+  subsumption,
   type ChildLink,
   type DefItem,
+  type ForkDelta,
 } from '@/lib/codebook/combinatorial';
 import type { Json } from '@/lib/types/cb-db';
 
@@ -78,16 +81,52 @@ async function defItemsOf(codeId: string): Promise<DefItem[]> {
   );
 }
 
-async function membersFn(): Promise<(bucketId: string) => { codeId: string; mandatory: boolean }[]> {
-  const res = await cbFrom('cb_bucket_codes').select('*');
-  if (res.error) throw new Error(`membersFn failed: ${res.error.message}`);
-  const byBucket = new Map<string, { codeId: string; mandatory: boolean }[]>();
-  for (const m of res.data ?? []) {
-    const arr = byBucket.get(m.bucket_id) ?? [];
+/**
+ * Two member views, both needed:
+ *   fork    — the CODER'S effective view (modular + their Δ): the admissibility
+ *             the popup offered, so fulfillment is judged by what the coder saw.
+ *   modular — the canonical view: subsumption's PARENT side (unpushed fork
+ *             codes must not substitute into standard slots).
+ */
+async function memberViews(userId: string): Promise<{
+  fork: (bucketId: string) => { codeId: string; mandatory: boolean }[];
+  modular: (bucketId: string) => { codeId: string; mandatory: boolean }[];
+}> {
+  const [mRes, fRes, bRes] = await Promise.all([
+    cbFrom('cb_bucket_codes').select('*'),
+    cbFrom('cb_bucket_forks').select('*').eq('owner_id', userId),
+    cbFrom('cb_buckets').select('id, name, caption'),
+  ]);
+  const err = mRes.error || fRes.error || bRes.error;
+  if (err) throw new Error(`memberViews failed: ${err.message}`);
+  const modularBy = new Map<string, { codeId: string; mandatory: boolean }[]>();
+  for (const m of mRes.data ?? []) {
+    const arr = modularBy.get(m.bucket_id) ?? [];
     arr.push({ codeId: m.code_id, mandatory: m.mandatory });
-    byBucket.set(m.bucket_id, arr);
+    modularBy.set(m.bucket_id, arr);
   }
-  return (b) => byBucket.get(b) ?? [];
+  const deltaBy = new Map<string, ForkDelta>(
+    (fRes.data ?? []).map((f) => [f.bucket_id, (f.delta ?? {}) as ForkDelta]),
+  );
+  const metaBy = new Map((bRes.data ?? []).map((b) => [b.id, b]));
+  const forkCache = new Map<string, { codeId: string; mandatory: boolean }[]>();
+  const fork = (bucketId: string) => {
+    const hit = forkCache.get(bucketId);
+    if (hit) return hit;
+    const meta = metaBy.get(bucketId);
+    const eff = resolveFork(
+      {
+        id: bucketId,
+        name: meta?.name ?? bucketId,
+        caption: meta?.caption ?? null,
+        members: modularBy.get(bucketId) ?? [],
+      },
+      deltaBy.get(bucketId) ?? null,
+    ).members;
+    forkCache.set(bucketId, eff);
+    return eff;
+  };
+  return { fork, modular: (b) => modularBy.get(b) ?? [] };
 }
 
 /**
@@ -105,6 +144,40 @@ export async function setAssignmentChildren(input: {
 }): Promise<{ orderViolated: boolean; complete: boolean; missingItemIds: string[] }> {
   await requireEditor();
   const user = await requireAuthUser();
+
+  const items = await defItemsOf(input.parentCodeId);
+  const views = await memberViews(user.id);
+
+  // VERIFY subsumption provenance BEFORE any write: a via-link claims its
+  // child (the subsuming code c₁) covers the target item by entailment. Rerun
+  // the entailment server-side — sub under the CODER'S fork view, parent under
+  // MODULAR — and reject links whose claimed item is not in the mapping. This
+  // is what makes the engine's trust of `via` sound.
+  const viaLinks = input.links.filter((l) => l.viaCodeId);
+  if (viaLinks.length) {
+    const viaCodeIds = [...new Set(viaLinks.map((l) => l.viaCodeId!))];
+    const viaDefs = new Map<string, DefItem[]>();
+    for (const vc of viaCodeIds) viaDefs.set(vc, await defItemsOf(vc));
+    for (const l of viaLinks) {
+      if (l.childCodeId !== l.viaCodeId) {
+        throw new Error('setAssignmentChildren: a subsumption link must carry the subsuming code itself.');
+      }
+      const subItems = viaDefs.get(l.viaCodeId!) ?? [];
+      const mapping = subItems.length
+        ? subsumption(
+            { codeId: l.viaCodeId!, items: subItems },
+            { codeId: input.parentCodeId, items },
+            views.fork,
+            views.modular,
+          )
+        : null;
+      if (!mapping || !mapping.some((m) => m.parentItemId === l.itemId)) {
+        throw new Error(
+          `setAssignmentChildren: subsumption via ${l.viaCodeId} no longer covers that step — reopen the panel.`,
+        );
+      }
+    }
+  }
 
   // Replace links.
   const del = await cbFrom('cb_assignment_children')
@@ -126,8 +199,8 @@ export async function setAssignmentChildren(input: {
     if (ins.error) throw new Error(`setAssignmentChildren failed: ${ins.error.message}`);
   }
 
-  // Evaluate fulfillment + order by first evidence (engine).
-  const items = await defItemsOf(input.parentCodeId);
+  // Evaluate fulfillment + order by first evidence (engine). Admissibility is
+  // judged under the CODER'S fork view — the same member set the popup offered.
   const ords = await ordinalsFor(input.links.map((l) => l.childAnnotationId));
   const engineLinks: ChildLink[] = input.links.map((l) => ({
     itemId: l.itemId,
@@ -135,8 +208,7 @@ export async function setAssignmentChildren(input: {
     sentences: ords.get(l.childAnnotationId) ?? [],
     via: l.viaCodeId ?? null,
   }));
-  const members = await membersFn();
-  const ful = checkFulfillment({ codeId: input.parentCodeId, items }, engineLinks, members);
+  const ful = checkFulfillment({ codeId: input.parentCodeId, items }, engineLinks, views.fork);
   const order = evaluateOrder(items, ful.firstEvidence);
 
   const status: AssignmentStatus = input.links.length > 0 ? 'decomposed' : 'attested';
@@ -205,11 +277,42 @@ export async function deleteAssignment(input: {
     .maybeSingle();
   if (cur.error) throw new Error(`deleteAssignment failed: ${cur.error.message}`);
 
+  // Capture the partially fulfilled buckets BEFORE destroying the links —
+  // spec: deletions log the partial state (which items had which children).
+  const parentLinks = await cbFrom('cb_assignment_children')
+    .select('item_id, child_annotation_id, child_code_id, via_code_id')
+    .eq('parent_annotation_id', input.annotationId)
+    .eq('parent_code_id', input.codeId);
+  if (parentLinks.error) throw new Error(`deleteAssignment failed: ${parentLinks.error.message}`);
+
   const delLinks = await cbFrom('cb_assignment_children')
     .delete()
     .eq('parent_annotation_id', input.annotationId)
     .eq('parent_code_id', input.codeId);
   if (delLinks.error) throw new Error(`deleteAssignment failed: ${delLinks.error.message}`);
+
+  // Mirror of removeCodeFromAnnotation: where this assignment served as a
+  // CHILD elsewhere, drop those evidence links and flag any parent left empty.
+  const childSide = await cbFrom('cb_assignment_children')
+    .select('parent_annotation_id, parent_code_id')
+    .eq('child_annotation_id', input.annotationId)
+    .eq('child_code_id', input.codeId);
+  if (childSide.error) throw new Error(`deleteAssignment failed: ${childSide.error.message}`);
+  const affectedParents = [
+    ...new Map(
+      (childSide.data ?? []).map((r) => [
+        `${r.parent_annotation_id}|${r.parent_code_id}`,
+        { annotationId: r.parent_annotation_id, codeId: r.parent_code_id },
+      ]),
+    ).values(),
+  ];
+  if ((childSide.data ?? []).length > 0) {
+    const delChild = await cbFrom('cb_assignment_children')
+      .delete()
+      .eq('child_annotation_id', input.annotationId)
+      .eq('child_code_id', input.codeId);
+    if (delChild.error) throw new Error(`deleteAssignment failed: ${delChild.error.message}`);
+  }
 
   const del = await cbFrom('cb_annotation_codes')
     .delete()
@@ -217,12 +320,36 @@ export async function deleteAssignment(input: {
     .eq('code_id', input.codeId);
   if (del.error) throw new Error(`deleteAssignment failed: ${del.error.message}`);
 
+  for (const p of affectedParents) {
+    const left = await cbFrom('cb_assignment_children')
+      .select('id')
+      .eq('parent_annotation_id', p.annotationId)
+      .eq('parent_code_id', p.codeId)
+      .limit(1);
+    if (left.error || (left.data ?? []).length > 0) continue;
+    await cbFrom('cb_annotation_codes')
+      .update({ status: 'attested', order_violated: false })
+      .eq('annotation_id', p.annotationId)
+      .eq('code_id', p.codeId)
+      .eq('status', 'decomposed');
+    await logEvent('decomposition_broken', {
+      parentAnnotationId: p.annotationId,
+      parentCodeId: p.codeId,
+      removedChild: { annotationId: input.annotationId, codeId: input.codeId },
+    });
+  }
+
   await logEvent('assignment_deleted', {
     by: user.id,
     annotationId: input.annotationId,
     codeId: input.codeId,
     priorStatus: cur.data?.status ?? null,
-    partialState: (input.partialState ?? null) as Json,
+    // The linked children at deletion time — the spec's partial-state record —
+    // merged with whatever in-progress bucket fills the popup passed.
+    partialState: {
+      linkedChildren: parentLinks.data ?? [],
+      ...(input.partialState ?? {}),
+    } as Json,
   });
 }
 

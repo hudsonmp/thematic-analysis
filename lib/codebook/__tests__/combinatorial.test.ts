@@ -291,6 +291,31 @@ describe('checkFulfillment', () => {
     expect(r.mandatoryMissing).toEqual([{ itemId: 'i2', codeIds: ['edit-b'] }]);
   });
 
+  it('a SUBSUMPTION link (via set) fulfills a bucket item even though the subsuming code is not a member', () => {
+    const r = checkFulfillment(
+      parent,
+      [
+        // c1 subsumes B1's slot: childCodeId is the combinatorial c1, NOT a member.
+        { itemId: 'i1', childCodeId: 'c1', sentences: [2], via: 'c1' },
+        { itemId: 'i2', childCodeId: 'edit-a', sentences: [5] },
+        { itemId: 'i3', childCodeId: 'must-have', sentences: [6] },
+      ],
+      membersOf(buckets),
+    );
+    expect(r.missingItemIds).toEqual([]);
+    expect(r.complete).toBe(true);
+    expect(r.firstEvidence.get('i1')).toBe(2);
+  });
+
+  it('a via link does NOT satisfy a singleton item (exact code required)', () => {
+    const r = checkFulfillment(
+      parent,
+      [{ itemId: 'i3', childCodeId: 'c1', sentences: [1], via: 'c1' }],
+      membersOf(buckets),
+    );
+    expect(r.missingItemIds).toContain('i3');
+  });
+
   it('first evidence per item = min sentence across its links (double-serving allowed)', () => {
     const r = checkFulfillment(
       parent,

@@ -3978,6 +3978,7 @@ export default function SessionPlayer({
           combBuckets={combinatorial?.buckets ?? null}
           inSpan={inSpanForPopup}
           assignedMeta={assignedCodeMeta}
+          annotationId={assignedAnnId}
           onDecompose={handleDecompose}
           onSetAssignStatus={handleSetAssignStatus}
           onClose={clearSelection}

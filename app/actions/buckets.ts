@@ -188,12 +188,68 @@ export async function deleteBucket(bucketId: string): Promise<void> {
   await logEvent('bucket_deleted', { bucketId });
 }
 
-/** Replace the MODULAR member list (position-ordered, mandatory flags). */
+/** Replace the MODULAR member list (position-ordered, mandatory flags).
+ *
+ *  GRAMMAR GUARD (spec §Guards): a bucket referenced by any combinatorial
+ *  definition must stay valid under the NEW member list — emptying it, or
+ *  adding a member that closes a cycle through a referencing parent, is the
+ *  out-of-grammar configuration the spec rejects. Enforced by re-running the
+ *  engine's validateDefinition for every referencing code with the new list
+ *  substituted, BEFORE any write. */
 export async function setBucketMembers(
   bucketId: string,
   members: { codeId: string; mandatory: boolean }[],
 ): Promise<void> {
   await requireEditor();
+
+  const refs = await cbFrom('cb_code_bucket_items').select('*').eq('bucket_id', bucketId);
+  if (refs.error) throw new Error(`setBucketMembers failed: ${refs.error.message}`);
+  const referencingCodes = [...new Set((refs.data ?? []).map((r) => r.code_id))];
+  if (referencingCodes.length > 0) {
+    if (members.length === 0) {
+      throw new Error(
+        'setBucketMembers: this bucket is referenced by a combinatorial code — it cannot be emptied (detach it there first).',
+      );
+    }
+    const { validateDefinition } = await import('@/lib/codebook/combinatorial');
+    const [allItemsRes, allMembersRes] = await Promise.all([
+      cbFrom('cb_code_bucket_items').select('*'),
+      cbFrom('cb_bucket_codes').select('*'),
+    ]);
+    if (allItemsRes.error || allMembersRes.error) {
+      throw new Error(
+        `setBucketMembers failed: ${(allItemsRes.error || allMembersRes.error)!.message}`,
+      );
+    }
+    const defsById = new Map<string, { codeId: string; items: DefItem[] }>();
+    for (const r of allItemsRes.data ?? []) {
+      const d = defsById.get(r.code_id) ?? { codeId: r.code_id, items: [] };
+      d.items.push(
+        r.bucket_id !== null
+          ? { id: r.id, position: r.position, interchangeGroup: r.interchange_group, kind: 'bucket', bucketId: r.bucket_id }
+          : { id: r.id, position: r.position, interchangeGroup: r.interchange_group, kind: 'singleton', codeId: r.singleton_code_id! },
+      );
+      defsById.set(r.code_id, d);
+    }
+    const membersBy = new Map<string, BucketMember[]>();
+    for (const m of allMembersRes.data ?? []) {
+      const arr = membersBy.get(m.bucket_id) ?? [];
+      arr.push({ codeId: m.code_id, mandatory: m.mandatory });
+      membersBy.set(m.bucket_id, arr);
+    }
+    membersBy.set(bucketId, members); // the CANDIDATE list under test
+    for (const codeId of referencingCodes) {
+      const d = defsById.get(codeId);
+      if (!d) continue;
+      const errors = validateDefinition(d, defsById, (b) => membersBy.get(b) ?? []);
+      if (errors.length) {
+        throw new Error(
+          `setBucketMembers rejected — it would break the definition of a referencing code: ${errors.join('; ')}`,
+        );
+      }
+    }
+  }
+
   const del = await cbFrom('cb_bucket_codes').delete().eq('bucket_id', bucketId);
   if (del.error) throw new Error(`setBucketMembers failed: ${del.error.message}`);
   if (members.length) {
@@ -209,10 +265,39 @@ export async function setBucketMembers(
 // Forks
 // ---------------------------------------------------------------------------
 
-/** Upsert MY fork's Δ for a bucket. Owner scoping is app-side (service role). */
+/** Upsert MY fork's Δ for a bucket. Owner scoping is app-side (service role).
+ *  GRAMMAR GUARD: a Δ whose removals empty the EFFECTIVE view of a bucket some
+ *  combinatorial code references is rejected (spec §Guards: empty-via-fork). */
 export async function saveMyForkDelta(bucketId: string, delta: ForkDelta): Promise<void> {
   await requireEditor();
   const user = await requireAuthUser();
+
+  if ((delta.removedCodeIds?.length ?? 0) > 0) {
+    const [refs, mRes, bRes] = await Promise.all([
+      cbFrom('cb_code_bucket_items').select('id').eq('bucket_id', bucketId).limit(1),
+      cbFrom('cb_bucket_codes').select('*').eq('bucket_id', bucketId),
+      cbFrom('cb_buckets').select('id, name, caption').eq('id', bucketId).single(),
+    ]);
+    const err = refs.error || mRes.error || bRes.error;
+    if (err) throw new Error(`saveMyForkDelta failed: ${err.message}`);
+    if ((refs.data ?? []).length > 0) {
+      const eff = resolveFork(
+        {
+          id: bucketId,
+          name: bRes.data.name,
+          caption: bRes.data.caption,
+          members: (mRes.data ?? []).map((m) => ({ codeId: m.code_id, mandatory: m.mandatory })),
+        },
+        delta,
+      );
+      if (eff.members.length === 0) {
+        throw new Error(
+          'saveMyForkDelta rejected: your removals would empty a bucket a combinatorial code references.',
+        );
+      }
+    }
+  }
+
   const res = await cbFrom('cb_bucket_forks').upsert(
     {
       bucket_id: bucketId,
@@ -268,7 +353,11 @@ export async function pushForkToModular(codebookId: string, bucketId: string): P
     if (up.error) throw new Error(`pushForkToModular failed: ${up.error.message}`);
   }
   const existing = new Set(modularMembers.map((x) => x.codeId));
-  const adds = (delta.addedCodes ?? []).filter((a) => !existing.has(a.codeId));
+  // A mandatory override targeting a fork-ADDED code has no modular row to
+  // UPDATE — fold it into the insert instead, or the flip is silently lost.
+  const adds = (delta.addedCodes ?? [])
+    .filter((a) => !existing.has(a.codeId))
+    .map((a) => ({ codeId: a.codeId, mandatory: overrides[a.codeId] ?? a.mandatory }));
   if (adds.length) {
     const ins = await cbFrom('cb_bucket_codes').insert(
       adds.map((a, i) => ({
@@ -282,12 +371,22 @@ export async function pushForkToModular(codebookId: string, bucketId: string): P
   }
 
   // My Δ shrinks to what stays fork-local (removals) + refreshed seen.
+  // UNRESOLVED MODULAR DELETIONS must survive the refresh: a seen-member gone
+  // from modular that I neither removed nor re-added stays in `seen`, or the
+  // pending-deletion flag would vanish without manual resolution (the spec's
+  // hard "deletions never auto-pull" rule).
+  const addIds = new Set(adds.map((a) => a.codeId));
+  const removedSet = new Set(delta.removedCodeIds ?? []);
+  const unresolvedDeletions = (delta.seen ?? []).filter(
+    (m) => !existing.has(m.codeId) && !removedSet.has(m.codeId) && !addIds.has(m.codeId),
+  );
   const nextSeen = [
     ...modularMembers.map((x) => ({
       codeId: x.codeId,
       mandatory: overrides[x.codeId] ?? x.mandatory,
     })),
     ...adds,
+    ...unresolvedDeletions,
   ];
   const nextDelta: ForkDelta = {
     ...(delta.removedCodeIds?.length ? { removedCodeIds: delta.removedCodeIds } : {}),
@@ -333,7 +432,17 @@ export async function batchPullMyForks(codebookId: string): Promise<{ pulled: nu
   for (const f of forksRes.data ?? []) {
     if (!inBook.has(f.bucket_id)) continue;
     const delta = (f.delta ?? {}) as ForkDelta;
-    const nextDelta: ForkDelta = { ...delta, seen: byBucket.get(f.bucket_id) ?? [] };
+    // Refresh seen to the current modular list, but PRESERVE unresolved
+    // modular deletions (seen-members gone from modular, not removed by this
+    // fork): overwriting them would silently apply the deletion — exactly the
+    // auto-pull the spec forbids. They stay until keep/accept on /buckets.
+    const modularNow = byBucket.get(f.bucket_id) ?? [];
+    const modularIds = new Set(modularNow.map((m) => m.codeId));
+    const removedSet = new Set(delta.removedCodeIds ?? []);
+    const unresolvedDeletions = (delta.seen ?? []).filter(
+      (m) => !modularIds.has(m.codeId) && !removedSet.has(m.codeId),
+    );
+    const nextDelta: ForkDelta = { ...delta, seen: [...modularNow, ...unresolvedDeletions] };
     await saveMyForkDelta(f.bucket_id, nextDelta);
     pulled++;
   }

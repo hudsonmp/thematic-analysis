@@ -75,6 +75,7 @@ export default function CodingPopup({
   combBuckets = null,
   inSpan = [],
   assignedMeta = {},
+  annotationId = null,
   onDecompose = null,
   onSetAssignStatus = null,
 }: {
@@ -122,6 +123,9 @@ export default function CodingPopup({
   inSpan?: InSpanAssignment[];
   /** Per assigned code: its status + order flag (chips render them). */
   assignedMeta?: Record<string, { status?: string; orderViolated?: boolean }>;
+  /** The current selection's annotation id (null while an assign is in flight)
+   *  — the decomposition panel loads its SAVED links from it on reopen. */
+  annotationId?: string | null;
   /** Persist decomposition links ('SELF' child = this annotation, resolved by
    *  the player). Returns the order/completeness verdict for the panel. */
   onDecompose?:
@@ -685,6 +689,7 @@ export default function CodingPopup({
             return (
               <CombinatorialPanel
                 parentCode={parent}
+                parentAnnotationId={annotationId}
                 items={combDefs![panelCodeId]}
                 buckets={combBuckets}
                 defs={combDefs!}

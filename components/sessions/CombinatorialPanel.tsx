@@ -1,8 +1,8 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { BucketView } from '@/app/actions/buckets';
-import type { AssignmentChildInput } from '@/app/actions/assignments';
+import { listAssignmentChildren, type AssignmentChildInput } from '@/app/actions/assignments';
 import { subsumption, type DefItem } from '@/lib/codebook/combinatorial';
 import type { PopupCode } from './CodingPopup';
 
@@ -36,6 +36,7 @@ type PickKey = string; // `${annotationId|self}|${codeId}`
 
 export default function CombinatorialPanel({
   parentCode,
+  parentAnnotationId,
   items,
   buckets,
   defs,
@@ -48,6 +49,9 @@ export default function CombinatorialPanel({
   onPending,
 }: {
   parentCode: PopupCode;
+  /** The annotation the parent is assigned on — null while the assign is still
+   *  in flight. Present ⇒ the SAVED decomposition (if any) seeds the picks. */
+  parentAnnotationId: string | null;
   items: DefItem[];
   buckets: BucketView[];
   defs: Record<string, DefItem[]>;
@@ -124,6 +128,43 @@ export default function CombinatorialPanel({
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ orderViolated: boolean; complete: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadedSaved, setLoadedSaved] = useState(false);
+
+  // REOPENING a decomposed assignment: the STORED links are the truth, not the
+  // prefill — a coder who deliberately unticked an entailed candidate must not
+  // see it silently re-checked (Save REPLACES links). Prefill only seeds a
+  // never-decomposed assignment.
+  useEffect(() => {
+    let cancelled = false;
+    if (!parentAnnotationId) return;
+    void listAssignmentChildren([parentAnnotationId]).then((rows) => {
+      if (cancelled) return;
+      const mine = rows.filter(
+        (r) => r.parentAnnotationId === parentAnnotationId && r.parentCodeId === parentCode.id,
+      );
+      if (mine.length === 0) {
+        setLoadedSaved(true);
+        return;
+      }
+      const fromSaved = new Map<string, Set<PickKey>>();
+      for (const r of mine) {
+        if (!r.itemId) continue;
+        const key: PickKey = `${
+          r.childAnnotationId === parentAnnotationId ? 'self' : r.childAnnotationId
+        }|${r.childCodeId}`;
+        const s = fromSaved.get(r.itemId) ?? new Set<PickKey>();
+        s.add(key);
+        fromSaved.set(r.itemId, s);
+      }
+      setPicked(fromSaved);
+      setLoadedSaved(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // parentAnnotationId/parentCode identify the assignment; loading once per open.
+  }, [parentAnnotationId, parentCode.id]);
+  void loadedSaved;
 
   const toggle = (itemId: string, key: PickKey) => {
     setPicked((prev) => {

@@ -3,10 +3,34 @@
 import { after } from 'next/server';
 
 import { createUserServerClient } from '@/lib/supabase/user-server';
+import { cbFrom } from '@/lib/supabase/guard';
 import { pageAll } from '@/lib/supabase/pageAll';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { requireEditor } from '@/lib/auth/roles';
+import { logEvent } from '@/app/actions/buckets';
 import type { Tables } from '@/lib/types/cb-db';
+
+/**
+ * SNAPSHOT STAMPING (combinatorial v2): every assignment stores the codebook
+ * snapshot it was coded under — the provenance pin that makes within-snapshot
+ * IRR reportable. Resolved from the code's codebook → its latest snapshot;
+ * null (pre-first-snapshot coding) is legal and reads as calibration.
+ */
+async function latestSnapshotIdForCode(
+  sb: Awaited<ReturnType<typeof createUserServerClient>>,
+  codeId: string,
+): Promise<string | null> {
+  const cRes = await sb.from('cb_codes').select('codebook_id').eq('id', codeId).maybeSingle();
+  const codebookId = cRes.data?.codebook_id;
+  if (!codebookId) return null;
+  const sRes = await sb
+    .from('cb_codebook_snapshots')
+    .select('id')
+    .eq('codebook_id', codebookId)
+    .order('seq', { ascending: false })
+    .limit(1);
+  return sRes.data?.[0]?.id ?? null;
+}
 
 type Annotation = Tables<'cb_annotations'>;
 
@@ -155,8 +179,14 @@ export async function addAnnotation({
   // code would collide. Empty set is allowed (a bare quote anchor with no code).
   const uniqueCodeIds = [...new Set(codeIds)];
   if (uniqueCodeIds.length > 0) {
+    // Stamp the snapshot the assignment is coded under (v2 provenance pin).
+    const snapshotId = await latestSnapshotIdForCode(sb, uniqueCodeIds[0]);
     const linkRes = await sb.from('cb_annotation_codes').insert(
-      uniqueCodeIds.map((code_id) => ({ annotation_id: annotation.id, code_id })),
+      uniqueCodeIds.map((code_id) => ({
+        annotation_id: annotation.id,
+        code_id,
+        snapshot_id: snapshotId,
+      })),
     );
     if (linkRes.error) {
       // Unwind: drop the annotation so we never leave a code-less code anchor.
@@ -169,7 +199,19 @@ export async function addAnnotation({
     // Off the response path (next/server after): exemplar accumulation is 2 +
     // 2·|codes| sequential queries of derived convenience data — blocking the
     // assign on it made every popup interaction feel seconds heavy.
-    after(() => appendSpanExemplars(sb, uniqueCodeIds, quoteText, sessionId));
+    // Creation events (spec §Versioning: the log covers creations) ride along.
+    after(async () => {
+      await appendSpanExemplars(sb, uniqueCodeIds, quoteText, sessionId);
+      try {
+        await logEvent('assignment_created', {
+          annotationId: annotation.id,
+          codeIds: uniqueCodeIds,
+          snapshotId,
+        });
+      } catch {
+        // Non-fatal: the log must never break coding.
+      }
+    });
   }
 
   return annotation;
@@ -436,10 +478,12 @@ export async function addCodeToAnnotation(
     throw new Error('addCodeToAnnotation: annotationId and codeId are required.');
   }
   const sb = await createUserServerClient();
+  // Stamp the snapshot the assignment is coded under (v2 provenance pin).
+  const snapshotId = await latestSnapshotIdForCode(sb, code);
   const { error } = await sb
     .from('cb_annotation_codes')
     .upsert(
-      { annotation_id: id, code_id: code },
+      { annotation_id: id, code_id: code, snapshot_id: snapshotId },
       { onConflict: 'annotation_id,code_id', ignoreDuplicates: true },
     );
   if (error) {
@@ -481,6 +525,12 @@ export async function addCodeToAnnotation(
     if (anchor.data) {
       await appendSpanExemplars(sb, [code], anchor.data.quote_text, anchor.data.session_id);
     }
+    try {
+      // Creation event (spec §Versioning: the log covers creations).
+      await logEvent('assignment_created', { annotationId: id, codeIds: [code], snapshotId });
+    } catch {
+      // Non-fatal: the log must never break coding.
+    }
   });
   return 'added';
 }
@@ -503,12 +553,75 @@ export async function removeCodeFromAnnotation(
   await requireAuthUser();
   await requireEditor(); // codes are editor-only (see addCodeToAnnotation)
   const sb = await createUserServerClient();
+
+  // COMBINATORIAL HYGIENE (v2): if this (annotation, code) pair serves as a
+  // CHILD in any decomposition, those evidence links die with it — and any
+  // parent left with ZERO links reverts to 'attested' with a flag event (spec:
+  // a failed decomposition is flagged, never silently deleted). Links where
+  // the pair is a PARENT are cleaned too (deleteAssignment mirrors this).
+  const childSide = await cbFrom('cb_assignment_children')
+    .select('id, parent_annotation_id, parent_code_id')
+    .eq('child_annotation_id', annotationId)
+    .eq('child_code_id', codeId);
+  if (childSide.error) {
+    throw new Error(`removeCodeFromAnnotation failed: ${childSide.error.message}`);
+  }
+  const affectedParents = [
+    ...new Map(
+      (childSide.data ?? []).map((r) => [
+        `${r.parent_annotation_id}|${r.parent_code_id}`,
+        { annotationId: r.parent_annotation_id, codeId: r.parent_code_id },
+      ]),
+    ).values(),
+  ];
+  if ((childSide.data ?? []).length > 0) {
+    const delChild = await cbFrom('cb_assignment_children')
+      .delete()
+      .eq('child_annotation_id', annotationId)
+      .eq('child_code_id', codeId);
+    if (delChild.error) {
+      throw new Error(`removeCodeFromAnnotation failed: ${delChild.error.message}`);
+    }
+  }
+  const delParent = await cbFrom('cb_assignment_children')
+    .delete()
+    .eq('parent_annotation_id', annotationId)
+    .eq('parent_code_id', codeId);
+  if (delParent.error) {
+    throw new Error(`removeCodeFromAnnotation failed: ${delParent.error.message}`);
+  }
+
   const del = await sb
     .from('cb_annotation_codes')
     .delete()
     .eq('annotation_id', annotationId)
     .eq('code_id', codeId);
   if (del.error) throw new Error(`removeCodeFromAnnotation failed: ${del.error.message}`);
+
+  // Parents that lost evidence: any now-empty decomposition reverts to
+  // 'attested' + a decomposition_broken flag in the append-only log.
+  for (const p of affectedParents) {
+    const left = await cbFrom('cb_assignment_children')
+      .select('id')
+      .eq('parent_annotation_id', p.annotationId)
+      .eq('parent_code_id', p.codeId)
+      .limit(1);
+    if (left.error || (left.data ?? []).length > 0) continue;
+    await cbFrom('cb_annotation_codes')
+      .update({ status: 'attested', order_violated: false })
+      .eq('annotation_id', p.annotationId)
+      .eq('code_id', p.codeId)
+      .eq('status', 'decomposed');
+    try {
+      await logEvent('decomposition_broken', {
+        parentAnnotationId: p.annotationId,
+        parentCodeId: p.codeId,
+        removedChild: { annotationId, codeId },
+      });
+    } catch {
+      // Non-fatal.
+    }
+  }
 }
 
 /**
@@ -826,8 +939,14 @@ export async function acceptIntoCanonical({
 
   const uniqueCodeIds = [...new Set(codeIds)];
   if (uniqueCodeIds.length > 0) {
+    // Canonical assignments carry the same snapshot provenance as coder ones.
+    const snapshotId = await latestSnapshotIdForCode(sb, uniqueCodeIds[0]);
     const linkRes = await sb.from('cb_annotation_codes').insert(
-      uniqueCodeIds.map((code_id) => ({ annotation_id: annotation.id, code_id })),
+      uniqueCodeIds.map((code_id) => ({
+        annotation_id: annotation.id,
+        code_id,
+        snapshot_id: snapshotId,
+      })),
     );
     if (linkRes.error) {
       // Unwind: drop the canonical anchor so we never leave a code-less canonical row.
