@@ -13,16 +13,16 @@ function row(partial: Partial<Record<SheetColKey, string>>): Record<SheetColKey,
     excludeIf: '',
     exemplars: '',
     counter: '',
-  notes: '',
+    notes: '',
     meta: '',
   };
   return { ...base, ...partial };
 }
 
 describe('computeSheetColumns', () => {
-  it('always keeps code and definition, even with no rows', () => {
+  it('always keeps code, definition and notes, even with no rows', () => {
     const cols = computeSheetColumns([]);
-    expect(cols.map((c) => c.key)).toEqual(['code', 'definition']);
+    expect(cols.map((c) => c.key)).toEqual(['code', 'definition', 'notes']);
   });
 
   it('drops columns that are empty across every row', () => {
@@ -30,7 +30,7 @@ describe('computeSheetColumns', () => {
       row({ code: 'a-b', definition: 'x', exemplars: 'quoted text' }),
       row({ code: 'c-d', definition: 'y' }),
     ]);
-    expect(cols.map((c) => c.key)).toEqual(['code', 'definition', 'exemplars']);
+    expect(cols.map((c) => c.key)).toEqual(['code', 'definition', 'exemplars', 'notes']);
   });
 
   it('keeps a column present in ANY row (whitespace-only counts as empty)', () => {
