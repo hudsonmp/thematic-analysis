@@ -1,5 +1,6 @@
 import { getSessionCloud, getSessionVersions } from '@/app/actions/sessions';
 import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
+import { getCombinatorialContext } from '@/app/actions/buckets';
 import {
   listMyAnnotationsForVersion,
   listAnnotationComments,
@@ -137,6 +138,17 @@ export default async function SessionPage({
   // marked by hand, so the player needs no preset list.
   const tree = await listCodebookTree(codebook.id);
 
+  // Combinatorial context (v2): buckets (effective fork views for THIS coder) +
+  // code definitions. NON-FATAL — a load failure must not break coding; the
+  // player then simply behaves as before the combinatorial feature.
+  let combinatorial: Awaited<ReturnType<typeof getCombinatorialContext>> | null = null;
+  try {
+    const ctx = await getCombinatorialContext(codebook.id);
+    combinatorial = ctx.buckets.length > 0 || Object.keys(ctx.defs).length > 0 ? ctx : null;
+  } catch {
+    // Non-fatal: no combinatorial layer rather than a broken page.
+  }
+
   // Flatten the codebook tree to what the coding popup consumes: the picker's
   // identity fields PLUS origin/definition — a row click EXPANDS metadata (reading
   // is not assigning), so the popup must know what the code means, not just its name.
@@ -200,6 +212,7 @@ export default async function SessionPage({
       codebookId={codebook.id}
       collection={session.collection ?? null}
       compareHref={`/sessions/${session.id}/compare`}
+      combinatorial={combinatorial}
     />
   );
 }

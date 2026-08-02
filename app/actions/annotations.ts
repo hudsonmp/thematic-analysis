@@ -29,7 +29,9 @@ export type MyAnnotationView = {
   tEndMs: number;
   /** 'code' (a coded span) or 'quote' (a flagged paper quote, no code). */
   kind: string;
-  codes: { id: string; mnemonic: string }[];
+  /** status/orderViolated ride per code-assignment (combinatorial v2):
+   *  attested | decomposed | pending; orderViolated warns, never blocks. */
+  codes: { id: string; mnemonic: string; status?: string; orderViolated?: boolean }[];
   /** How many comments are threaded on this annotation (#17/#18 indicator). */
   commentCount: number;
   createdAt: string;
@@ -194,7 +196,7 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
     sb
       .from('cb_annotations')
       .select(
-        'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
+        'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, status, order_violated, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
       )
       .eq('session_id', sessionId)
       .eq('coder_id', user.id)
@@ -219,6 +221,8 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
     created_at: string;
     cb_annotation_codes: Array<{
       code_id: string;
+      status?: string | null;
+      order_violated?: boolean | null;
       cb_codes: { id: string; mnemonic: string } | null;
     }> | null;
     cb_annotation_comments: Array<{ id: string }> | null;
@@ -239,6 +243,8 @@ export async function listMyAnnotations(sessionId: string): Promise<MyAnnotation
       // code deleted out from under the junction would null `cb_codes`).
       id: link.cb_codes?.id ?? link.code_id,
       mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
+      status: link.status ?? 'attested',
+      orderViolated: link.order_violated ?? false,
     })),
     // Embedded comment rows counted client-side (read-all RLS admits the embed;
     // the player only needs the count to render a thread indicator on the mark).
@@ -268,7 +274,7 @@ export async function listMyAnnotationsForVersion(
     sb
       .from('cb_annotations')
       .select(
-        'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
+        'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_annotation_codes(code_id, status, order_violated, cb_codes(id, mnemonic)), cb_annotation_comments(id)',
       )
       .eq('session_id', sessionId)
       .eq('version_id', versionId)
@@ -296,6 +302,8 @@ export async function listMyAnnotationsForVersion(
     created_at: string;
     cb_annotation_codes: Array<{
       code_id: string;
+      status?: string | null;
+      order_violated?: boolean | null;
       cb_codes: { id: string; mnemonic: string } | null;
     }> | null;
     cb_annotation_comments: Array<{ id: string }> | null;
@@ -314,6 +322,8 @@ export async function listMyAnnotationsForVersion(
     codes: (r.cb_annotation_codes ?? []).map((link) => ({
       id: link.cb_codes?.id ?? link.code_id,
       mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
+      status: link.status ?? 'attested',
+      orderViolated: link.order_violated ?? false,
     })),
     commentCount: (r.cb_annotation_comments ?? []).length,
     createdAt: r.created_at,
@@ -612,7 +622,7 @@ export async function listAllAnnotations(
       // end_segment_id), so the embed MUST name its relationship — the bare
       // cb_segments(ordinal) form 500s with 'more than one relationship found'
       // (this silently broke /compare when multi-cue anchors landed).
-      'id, coder_id, segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments!cb_annotations_segment_id_fkey(ordinal), cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
+      'id, coder_id, segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments!cb_annotations_segment_id_fkey(ordinal), cb_annotation_codes(code_id, status, order_violated, cb_codes(id, mnemonic))',
     )
     .eq('session_id', sessionId)
     .order('id', { ascending: true })
@@ -633,6 +643,8 @@ export async function listAllAnnotations(
     cb_segments: { ordinal: number } | null;
     cb_annotation_codes: Array<{
       code_id: string;
+      status?: string | null;
+      order_violated?: boolean | null;
       cb_codes: { id: string; mnemonic: string } | null;
     }> | null;
   }>;
@@ -669,6 +681,8 @@ export async function listAllAnnotations(
     codes: (r.cb_annotation_codes ?? []).map((link) => ({
       id: link.cb_codes?.id ?? link.code_id,
       mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
+      status: link.status ?? 'attested',
+      orderViolated: link.order_violated ?? false,
     })),
   }));
 
@@ -843,7 +857,7 @@ export async function listCanonical(sessionId: string): Promise<CanonicalView[]>
     sb
       .from('cb_annotations')
       .select(
-        'id, segment_id, t_start_ms, t_end_ms, cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
+        'id, segment_id, t_start_ms, t_end_ms, cb_annotation_codes(code_id, status, order_violated, cb_codes(id, mnemonic))',
       )
       .eq('session_id', sessionId)
       .eq('is_canonical', true)
@@ -862,6 +876,8 @@ export async function listCanonical(sessionId: string): Promise<CanonicalView[]>
     t_end_ms: number;
     cb_annotation_codes: Array<{
       code_id: string;
+      status?: string | null;
+      order_violated?: boolean | null;
       cb_codes: { id: string; mnemonic: string } | null;
     }> | null;
   }>;
@@ -874,6 +890,8 @@ export async function listCanonical(sessionId: string): Promise<CanonicalView[]>
     codes: (r.cb_annotation_codes ?? []).map((link) => ({
       id: link.cb_codes?.id ?? link.code_id,
       mnemonic: link.cb_codes?.mnemonic ?? '(deleted code)',
+      status: link.status ?? 'attested',
+      orderViolated: link.order_violated ?? false,
     })),
   }));
 }

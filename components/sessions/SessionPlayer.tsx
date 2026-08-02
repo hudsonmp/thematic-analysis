@@ -62,6 +62,15 @@ import {
   type RetroQuestion,
 } from '@/app/actions/retro-memos';
 import CodingPopup, { type PopupCode } from './CodingPopup';
+import type { InSpanAssignment } from './CombinatorialPanel';
+import {
+  deleteAssignment,
+  setAssignmentChildren,
+  setAssignmentStatus,
+  type AssignmentChildInput,
+  type AssignmentStatus,
+} from '@/app/actions/assignments';
+import type { CombinatorialContext } from '@/app/actions/buckets';
 import { splitDefinition } from '@/lib/codebook/definition';
 import ChatReplayPane from './ChatReplayPane';
 import SpecReplay from './SpecReplay';
@@ -292,6 +301,7 @@ export default function SessionPlayer({
   codebookId,
   collection,
   compareHref = null,
+  combinatorial = null,
 }: {
   id: string;
   pidLabel: string;
@@ -335,6 +345,9 @@ export default function SessionPlayer({
   collection: string | null;
   /** Link to the post-hoc, read-only Compare tab. */
   compareHref?: string | null;
+  /** Combinatorial codebook context (v2): buckets (effective fork views) + code
+   *  defs. Null when the codebook has no combinatorial structure yet. */
+  combinatorial?: CombinatorialContext | null;
 }) {
   const router = useRouter();
 
@@ -1399,13 +1412,59 @@ export default function SessionPlayer({
       setApplying(true);
       setError(null);
       try {
-        await removeCodeFromAnnotation(assignedAnnId, codeId);
+        if ((combinatorial?.defs[codeId]?.length ?? 0) > 0) {
+          // Combinatorial parent: delete the assignment + its child LINKS —
+          // the child assignments themselves stay (no cascade, per spec).
+          await deleteAssignment({ annotationId: assignedAnnId, codeId });
+        } else {
+          await removeCodeFromAnnotation(assignedAnnId, codeId);
+        }
         await afterAnnotationMutation();
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to remove the code.');
       } finally {
         setApplying(false);
       }
+    },
+    [assignedAnnId, afterAnnotationMutation, combinatorial],
+  );
+
+  // --- Combinatorial (v2): decomposition links + status transitions --------
+
+  /** Persist the panel's bucket picks: assign missing same-annotation children
+   *  first, resolve 'SELF' links to this annotation, then link (never copy). */
+  const handleDecompose = useCallback(
+    async (parentCodeId: string, links: AssignmentChildInput[], assignFirstCodeIds: string[]) => {
+      if (!assignedAnnId) {
+        throw new Error('The parent assignment is still saving — try again in a moment.');
+      }
+      setApplying(true);
+      try {
+        for (const cid of assignFirstCodeIds) {
+          await addCodeToAnnotation(assignedAnnId, cid);
+        }
+        const resolved = links.map((l) =>
+          l.childAnnotationId === 'SELF' ? { ...l, childAnnotationId: assignedAnnId } : l,
+        );
+        const r = await setAssignmentChildren({
+          parentAnnotationId: assignedAnnId,
+          parentCodeId,
+          links: resolved,
+        });
+        await afterAnnotationMutation();
+        return { orderViolated: r.orderViolated, complete: r.complete };
+      } finally {
+        setApplying(false);
+      }
+    },
+    [assignedAnnId, afterAnnotationMutation],
+  );
+
+  const handleSetAssignStatus = useCallback(
+    async (codeId: string, status: AssignmentStatus) => {
+      if (!assignedAnnId) return;
+      await setAssignmentStatus({ annotationId: assignedAnnId, codeId, status });
+      await afterAnnotationMutation();
     },
     [assignedAnnId, afterAnnotationMutation],
   );
@@ -2707,6 +2766,46 @@ export default function SessionPlayer({
     [assignedAnn, popupCodeById],
   );
 
+  // Combinatorial (v2): per-assigned-code status/order meta for the chips, and
+  // the OTHER in-span assignments (their spans ⊆ this annotation's span) the
+  // decomposition panel offers as promotion candidates (LINKED, never copied).
+  const assignedCodeMeta = useMemo(() => {
+    const out: Record<string, { status?: string; orderViolated?: boolean }> = {};
+    for (const c of assignedAnn?.codes ?? []) {
+      out[c.id] = { status: c.status, orderViolated: c.orderViolated };
+    }
+    return out;
+  }, [assignedAnn]);
+  const inSpanForPopup = useMemo<InSpanAssignment[]>(() => {
+    if (!assignedAnn || !combinatorial) return [];
+    const ps = segIndexById.get(assignedAnn.segmentId);
+    if (ps === undefined) return [];
+    const peRaw = assignedAnn.endSegmentId ? segIndexById.get(assignedAnn.endSegmentId) : ps;
+    const pe = peRaw ?? ps;
+    const lo = Math.min(ps, pe);
+    const hi = Math.max(ps, pe);
+    const out: InSpanAssignment[] = [];
+    for (const a of myAnnotations) {
+      if (a.id === assignedAnn.id || a.kind !== 'code') continue;
+      const s = segIndexById.get(a.segmentId);
+      if (s === undefined) continue;
+      const eRaw = a.endSegmentId ? segIndexById.get(a.endSegmentId) : s;
+      const e = eRaw ?? s;
+      // Child spans ⊆ parent span (spec) — anything poking outside is out.
+      if (Math.min(s, e) < lo || Math.max(s, e) > hi) continue;
+      for (const c of a.codes) {
+        out.push({
+          annotationId: a.id,
+          codeId: c.id,
+          mnemonic: c.mnemonic,
+          startOrd: Math.min(s, e),
+          quote: a.quoteText ?? '',
+        });
+      }
+    }
+    return out;
+  }, [assignedAnn, myAnnotations, segIndexById, combinatorial]);
+
   // Lay the WHOLE gutter out IMPERATIVELY: measure cue spans, pack comment
   // marginalia + code chip-blocks together (they share the gutter), write styles
   // straight to the DOM. No setState — measurement-driven state would either loop
@@ -3875,6 +3974,12 @@ export default function SessionPlayer({
           studyLabel={collection ?? 'uncategorized'}
           onAssign={(cid) => void handleAssignCode(cid)}
           onUnassign={(cid) => void handleUnassignCode(cid)}
+          combDefs={combinatorial?.defs ?? null}
+          combBuckets={combinatorial?.buckets ?? null}
+          inSpan={inSpanForPopup}
+          assignedMeta={assignedCodeMeta}
+          onDecompose={handleDecompose}
+          onSetAssignStatus={handleSetAssignStatus}
           onClose={clearSelection}
           onCodeCreated={(cid) => {
             // A code born in retro context lives in the RETRO codebook — the

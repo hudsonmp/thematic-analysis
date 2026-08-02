@@ -3,9 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createCode, type CodeOrigin } from '@/app/actions/codes';
 import { createCodebookMemo } from '@/app/actions/codebook-memos';
+import type { AssignmentChildInput, AssignmentStatus } from '@/app/actions/assignments';
+import type { BucketView } from '@/app/actions/buckets';
 import { splitDefinition } from '@/lib/codebook/definition';
 import { normalizeSlug } from '@/lib/codebook/mnemonic';
+import type { DefItem } from '@/lib/codebook/combinatorial';
 import { fuzzyRank } from '@/lib/transcript/fuzzy';
+import CombinatorialPanel, { type InSpanAssignment } from './CombinatorialPanel';
 
 /** What the popup knows about a code — enough to assign it AND to read it before
  *  assigning (definition/origin expand on click). */
@@ -67,6 +71,12 @@ export default function CodingPopup({
   bookmarked = false,
   onOpenNotes = null,
   onAddSpanNote = null,
+  combDefs = null,
+  combBuckets = null,
+  inSpan = [],
+  assignedMeta = {},
+  onDecompose = null,
+  onSetAssignStatus = null,
 }: {
   pos: { x: number; y: number };
   quote: string;
@@ -103,6 +113,26 @@ export default function CodingPopup({
    *  ✎ memo deliberately does something else (a missing-code lead), so both
    *  exist side by side with distinct labels. */
   onAddSpanNote?: ((body: string) => Promise<void>) | null;
+  /** Combinatorial context (v2): code id → its ordered AND items. Assigning a
+   *  code with items opens the SKIPPABLE decomposition panel. */
+  combDefs?: Record<string, DefItem[]> | null;
+  /** Effective fork views of the modular buckets (candidates per step). */
+  combBuckets?: BucketView[] | null;
+  /** Other in-span assignments (spans ⊆ this selection) — promotion links. */
+  inSpan?: InSpanAssignment[];
+  /** Per assigned code: its status + order flag (chips render them). */
+  assignedMeta?: Record<string, { status?: string; orderViolated?: boolean }>;
+  /** Persist decomposition links ('SELF' child = this annotation, resolved by
+   *  the player). Returns the order/completeness verdict for the panel. */
+  onDecompose?:
+    | ((
+        parentCodeId: string,
+        links: AssignmentChildInput[],
+        assignFirstCodeIds: string[],
+      ) => Promise<{ orderViolated: boolean; complete: boolean }>)
+    | null;
+  /** Status transition on an assignment of this annotation (pending etc.). */
+  onSetAssignStatus?: ((codeId: string, status: AssignmentStatus) => Promise<void>) | null;
 }) {
   const [query, setQuery] = useState('');
   // Rows 0/1 are the pinned Bookmark and Quote options; codes occupy 2..N+1.
@@ -116,9 +146,14 @@ export default function CodingPopup({
   // Local flag, not `assigned.length` — the prop only updates after the
   // server refetch, and a quick assign-then-flick must still close.
   const [hasAssigned, setHasAssigned] = useState(false);
+  // Combinatorial: assigning a code that owns AND items opens the SKIPPABLE
+  // decomposition panel for it (v2 spec) — the assign itself already landed
+  // (status 'attested'); the panel upgrades it to 'decomposed' on save.
+  const [panelCodeId, setPanelCodeId] = useState<string | null>(null);
   const assign = (codeId: string) => {
     setHasAssigned(true);
     onAssign(codeId);
+    if ((combDefs?.[codeId]?.length ?? 0) > 0) setPanelCodeId(codeId);
   };
   const [showNew, setShowNew] = useState(false);
 
@@ -322,12 +357,19 @@ export default function CodingPopup({
         aria-label="Assign codes to the selection"
         data-comment-card
         className="fixed z-50 flex flex-col border border-foreground/25 bg-background shadow-2xl"
-        style={{ left: Math.max(8, left), top: Math.max(8, top), width: POPUP_W, maxHeight: POPUP_MAX_H }}
+        style={{
+          left: Math.max(8, left),
+          top: Math.max(8, top),
+          width: POPUP_W,
+          // The decomposition panel needs vertical room for its step buckets.
+          maxHeight: panelCodeId !== null ? 640 : POPUP_MAX_H,
+        }}
         onMouseLeave={() => {
           // Leave-to-close, armed by the first assign. Not before: the popup
           // spawns under a moving cursor, and closing on a stray pass-through
-          // would kill the picker before it was ever used.
-          if (hasAssigned && !busy) onClose();
+          // would kill the picker before it was ever used. Suspended while the
+          // decomposition panel is open — bucket ticking is multi-gesture work.
+          if (hasAssigned && !busy && panelCodeId === null) onClose();
         }}
         onKeyDown={(e) => {
           // ⌘⏎ assigns from anywhere in the card EXCEPT text fields — those own
@@ -371,23 +413,58 @@ export default function CodingPopup({
               annotation survives until its last code goes. */}
           {assigned.length > 0 && (
             <div className="mt-1.5 flex flex-wrap gap-1">
-              {assigned.map((c) => (
-                <span
-                  key={c.id}
-                  className="inline-flex items-center gap-1 border border-emerald-600/40 bg-emerald-500/10 px-1.5 py-0.5 text-xs"
-                >
-                  <span className="font-mono font-medium text-foreground">{c.mnemonic}</span>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => onUnassign(c.id)}
-                    aria-label={`Remove ${c.mnemonic} from this selection`}
-                    className="text-foreground/40 hover:text-red-600"
+              {assigned.map((c) => {
+                const meta = assignedMeta[c.id];
+                const isCombinatorial = (combDefs?.[c.id]?.length ?? 0) > 0;
+                const pending = meta?.status === 'pending';
+                return (
+                  <span
+                    key={c.id}
+                    className={`inline-flex items-center gap-1 border px-1.5 py-0.5 text-xs ${
+                      pending
+                        ? 'border-dashed border-amber-600/60 bg-amber-500/10'
+                        : 'border-emerald-600/40 bg-emerald-500/10'
+                    }`}
                   >
-                    ×
-                  </button>
-                </span>
-              ))}
+                    <span className="font-mono font-medium text-foreground">{c.mnemonic}</span>
+                    {pending && <span title="pending — not yet asserted; blocks IRR">⏳</span>}
+                    {meta?.status === 'decomposed' && (
+                      <span className="text-emerald-700" title="decomposed — children linked">
+                        ⌗
+                      </span>
+                    )}
+                    {meta?.orderViolated && (
+                      <span className="text-amber-700" title="order-violated: first evidence runs against the step order">
+                        ⚠
+                      </span>
+                    )}
+                    {isCombinatorial && (
+                      <button
+                        type="button"
+                        onClick={() => setPanelCodeId(c.id)}
+                        title="Open the step buckets (decompose / review children)"
+                        className="text-sky-700 hover:text-sky-500"
+                      >
+                        ⧉
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onUnassign(c.id)}
+                      aria-label={`Remove ${c.mnemonic} from this selection`}
+                      title={
+                        isCombinatorial
+                          ? 'Delete this parent assignment — its children stay (no cascade)'
+                          : undefined
+                      }
+                      className="text-foreground/40 hover:text-red-600"
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
             </div>
           )}
 
@@ -594,6 +671,39 @@ export default function CodingPopup({
             );
           })}
         </div>
+
+        {/* Combinatorial decomposition panel — SKIPPABLE per the v2 spec.
+            Opens on assigning a code with AND items, or via a chip's ⧉. */}
+        {panelCodeId !== null &&
+          combBuckets &&
+          (combDefs?.[panelCodeId]?.length ?? 0) > 0 &&
+          (() => {
+            const parent =
+              codes.find((c) => c.id === panelCodeId) ?? assigned.find((c) => c.id === panelCodeId);
+            if (!parent) return null;
+            const codesByIdMap = new Map(codes.map((c) => [c.id, c]));
+            return (
+              <CombinatorialPanel
+                parentCode={parent}
+                items={combDefs![panelCodeId]}
+                buckets={combBuckets}
+                defs={combDefs!}
+                codesById={codesByIdMap}
+                assignedCodeIds={assigned.map((c) => c.id)}
+                inSpan={inSpan}
+                busy={busy}
+                onSave={async (links, assignFirst) => {
+                  if (!onDecompose) return;
+                  return onDecompose(panelCodeId, links, assignFirst);
+                }}
+                onSkip={() => setPanelCodeId(null)}
+                onPending={() => {
+                  void onSetAssignStatus?.(panelCodeId, 'pending');
+                  setPanelCodeId(null);
+                }}
+              />
+            );
+          })()}
 
         <div className="border-t border-foreground/15 px-3 py-2">
           {!showNew && composerKind !== 'note' ? (
