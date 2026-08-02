@@ -10,6 +10,9 @@
  *    there to be written IN, on paper); every other column is DROPPED when no
  *    code has content for it — an empty "Counter-example" column is pure
  *    width tax.
+ *  - Include-/exclude-if are NOT sheet columns: the printed lookup table
+ *    trades them for a usable Notes margin (they remain in the editor, the
+ *    coding popup and the LaTeX export).
  *  - Remaining width splits proportional to sqrt(headerLen + mean content
  *    length). sqrt dampens outliers: one code with a paragraph-long counter-
  *    example widens its column a little, not catastrophically.
@@ -25,8 +28,6 @@
 export type SheetColKey =
   | 'code'
   | 'definition'
-  | 'includeIf'
-  | 'excludeIf'
   | 'exemplars'
   | 'counter'
   | 'notes'
@@ -35,8 +36,6 @@ export type SheetColKey =
 export const SHEET_COL_HEADERS: Record<SheetColKey, string> = {
   code: 'Code',
   definition: 'Definition',
-  includeIf: 'Include if',
-  excludeIf: 'Exclude if',
   exemplars: 'Exemplars',
   counter: 'Counter-example',
   notes: 'Notes',
@@ -46,8 +45,6 @@ export const SHEET_COL_HEADERS: Record<SheetColKey, string> = {
 export const SHEET_COL_ORDER: SheetColKey[] = [
   'code',
   'definition',
-  'includeIf',
-  'excludeIf',
   'exemplars',
   'counter',
   'notes',
@@ -72,6 +69,12 @@ export function computeSheetColumns(
       rows.length === 0 ? 0 : rows.reduce((s, r) => s + r[k].length, 0) / rows.length;
     return Math.sqrt(SHEET_COL_HEADERS[k].length + mean);
   });
+  // NOTES is a WRITE-IN margin: its width is fixed to the definition column's,
+  // not to its (usually empty) content — an empty margin sized by content would
+  // collapse to the floor, defeating its purpose on paper.
+  const defIdx = visible.indexOf('definition');
+  const notesIdx = visible.indexOf('notes');
+  if (defIdx >= 0 && notesIdx >= 0) weights[notesIdx] = weights[defIdx];
 
   const n = visible.length;
   // Feasibility: n columns must be able to sum to 100 inside [lo, hi].

@@ -9,8 +9,6 @@ function row(partial: Partial<Record<SheetColKey, string>>): Record<SheetColKey,
   const base: Record<SheetColKey, string> = {
     code: '',
     definition: '',
-    includeIf: '',
-    excludeIf: '',
     exemplars: '',
     counter: '',
     notes: '',
@@ -46,8 +44,6 @@ describe('computeSheetColumns', () => {
       row({
         code: 'behavior-reason-identified',
         definition: 'Participants identify the cause of specific behaviors.',
-        includeIf: 'names a cause',
-        excludeIf: 'mere description',
         exemplars: 'Sees that ASCEND is a central location so there should be one.',
         counter: 'restates the behavior',
         meta: 'Origin: a priori · smith2021',
@@ -80,8 +76,6 @@ describe('computeSheetColumns', () => {
       row({
         code: 'a-b',
         definition: 'a middling definition of the code',
-        includeIf: 'names a cause',
-        excludeIf: 'mere description',
         exemplars:
           'a noticeably longer exemplar cell with several quoted utterances in it, ' +
           'the kind that accumulates from live coding sessions over time',

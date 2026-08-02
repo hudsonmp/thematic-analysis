@@ -57,8 +57,6 @@ function cellText(
     code: code.mnemonic,
     definition:
       (showLit && def.literature !== null ? `${def.literature} ` : '') + def.applied,
-    includeIf: asStrings(v?.include_if).join(' '),
-    excludeIf: asStrings(v?.exclude_if).join(' '),
     // Only the SHORTEST exemplar renders (see CodeRow), so measure only it — else
     // the exemplar column is sized for text that never appears.
     exemplars: shortestExemplar(asExemplarText(v?.exemplars)) ?? '',
@@ -158,7 +156,7 @@ export default function CodebookViewDocument({
           and legacy property, on the ROW, because Chrome's print pipeline has
           historically honored one or the other depending on version. */}
       <style>{`
-        @page { size: letter landscape; margin: 0.5in; }
+        @page { size: letter landscape; margin: 0.4in 0.15in; }
         /* A token wider than its fixed column must not overflow the grid. Two
            rules together: hyphens:auto inserts a real hyphen where the word has a
            valid break point (needs lang, set on <main>); overflow-wrap:anywhere
@@ -394,8 +392,6 @@ function CodeRow({
 }) {
   const v = code.current;
   const def = splitDefinition(v?.definition);
-  const includeIf = asStrings(v?.include_if);
-  const excludeIf = asStrings(v?.exclude_if);
   const exemplars = asExemplarText(v?.exemplars);
 
   const cell = (key: ColKey): React.ReactNode => {
@@ -425,10 +421,6 @@ function CodeRow({
             {def.applied !== '' && <p>{def.applied}</p>}
           </>
         );
-      case 'includeIf':
-        return <CellList items={includeIf} />;
-      case 'excludeIf':
-        return <CellList items={excludeIf} />;
       case 'exemplars': {
         // One exemplar only — the SHORTEST. A codebook consulted mid-coding wants
         // the tightest anchor that still shows the pattern, not an exhaustive list.
@@ -471,21 +463,7 @@ function Td({ children }: { children: React.ReactNode }) {
   return <td className="border border-foreground/15 px-2 py-1.5 align-top">{children}</td>;
 }
 
-function CellList({ items }: { items: string[] }) {
-  if (items.length === 0) return null;
-  return (
-    <ul className="list-disc space-y-0.5 pl-3.5">
-      {items.map((it, i) => (
-        <li key={i}>{it}</li>
-      ))}
-    </ul>
-  );
-}
 
-/** Versioned columns round-trip through Json, so they arrive as `unknown`. */
-function asStrings(j: unknown): string[] {
-  return Array.isArray(j) ? j.filter((x): x is string => typeof x === 'string') : [];
-}
 function asExemplarText(j: unknown): string[] {
   if (!Array.isArray(j)) return [];
   return j
