@@ -18,14 +18,23 @@ export type Database = {
         Row: {
           annotation_id: string
           code_id: string
+          order_violated: boolean
+          snapshot_id: string | null
+          status: string
         }
         Insert: {
           annotation_id: string
           code_id: string
+          order_violated?: boolean
+          snapshot_id?: string | null
+          status?: string
         }
         Update: {
           annotation_id?: string
           code_id?: string
+          order_violated?: boolean
+          snapshot_id?: string | null
+          status?: string
         }
         Relationships: [
           {
@@ -40,6 +49,13 @@ export type Database = {
             columns: ["code_id"]
             isOneToOne: false
             referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_annotation_codes_snapshot_fk"
+            columns: ["snapshot_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebook_snapshots"
             referencedColumns: ["id"]
           },
         ]
@@ -139,6 +155,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "cb_annotations_end_segment_id_fkey"
+            columns: ["end_segment_id"]
+            isOneToOne: false
+            referencedRelation: "cb_segments"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "cb_annotations_segment_id_fkey"
             columns: ["segment_id"]
             isOneToOne: false
@@ -157,6 +180,209 @@ export type Database = {
             columns: ["version_id"]
             isOneToOne: false
             referencedRelation: "cb_transcript_versions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_assignment_children: {
+        Row: {
+          child_annotation_id: string
+          child_code_id: string
+          created_at: string
+          id: string
+          item_id: string | null
+          parent_annotation_id: string
+          parent_code_id: string
+          via_code_id: string | null
+        }
+        Insert: {
+          child_annotation_id: string
+          child_code_id: string
+          created_at?: string
+          id?: string
+          item_id?: string | null
+          parent_annotation_id: string
+          parent_code_id: string
+          via_code_id?: string | null
+        }
+        Update: {
+          child_annotation_id?: string
+          child_code_id?: string
+          created_at?: string
+          id?: string
+          item_id?: string | null
+          parent_annotation_id?: string
+          parent_code_id?: string
+          via_code_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_assignment_children_child_annotation_id_fkey"
+            columns: ["child_annotation_id"]
+            isOneToOne: false
+            referencedRelation: "cb_annotations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_assignment_children_child_code_id_fkey"
+            columns: ["child_code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_assignment_children_item_id_fkey"
+            columns: ["item_id"]
+            isOneToOne: false
+            referencedRelation: "cb_code_bucket_items"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_assignment_children_parent_annotation_id_fkey"
+            columns: ["parent_annotation_id"]
+            isOneToOne: false
+            referencedRelation: "cb_annotations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_assignment_children_parent_code_id_fkey"
+            columns: ["parent_code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_assignment_children_via_code_id_fkey"
+            columns: ["via_code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_assignment_events: {
+        Row: {
+          actor_id: string | null
+          at: string
+          id: string
+          kind: string
+          payload: Json
+        }
+        Insert: {
+          actor_id?: string | null
+          at?: string
+          id?: string
+          kind: string
+          payload?: Json
+        }
+        Update: {
+          actor_id?: string | null
+          at?: string
+          id?: string
+          kind?: string
+          payload?: Json
+        }
+        Relationships: []
+      }
+      cb_bucket_codes: {
+        Row: {
+          bucket_id: string
+          code_id: string
+          mandatory: boolean
+          position: number
+        }
+        Insert: {
+          bucket_id: string
+          code_id: string
+          mandatory?: boolean
+          position?: number
+        }
+        Update: {
+          bucket_id?: string
+          code_id?: string
+          mandatory?: boolean
+          position?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_bucket_codes_bucket_id_fkey"
+            columns: ["bucket_id"]
+            isOneToOne: false
+            referencedRelation: "cb_buckets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_bucket_codes_code_id_fkey"
+            columns: ["code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_bucket_forks: {
+        Row: {
+          bucket_id: string
+          delta: Json
+          id: string
+          owner_id: string
+          updated_at: string
+        }
+        Insert: {
+          bucket_id: string
+          delta?: Json
+          id?: string
+          owner_id: string
+          updated_at?: string
+        }
+        Update: {
+          bucket_id?: string
+          delta?: Json
+          id?: string
+          owner_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_bucket_forks_bucket_id_fkey"
+            columns: ["bucket_id"]
+            isOneToOne: false
+            referencedRelation: "cb_buckets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_buckets: {
+        Row: {
+          caption: string | null
+          codebook_id: string
+          created_at: string
+          created_by: string | null
+          id: string
+          name: string
+        }
+        Insert: {
+          caption?: string | null
+          codebook_id: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          name: string
+        }
+        Update: {
+          caption?: string | null
+          codebook_id?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          name?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_buckets_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
             referencedColumns: ["id"]
           },
         ]
@@ -207,6 +433,55 @@ export type Database = {
             columns: ["codebook_id"]
             isOneToOne: false
             referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_code_bucket_items: {
+        Row: {
+          bucket_id: string | null
+          code_id: string
+          id: string
+          interchange_group: number | null
+          position: number
+          singleton_code_id: string | null
+        }
+        Insert: {
+          bucket_id?: string | null
+          code_id: string
+          id?: string
+          interchange_group?: number | null
+          position: number
+          singleton_code_id?: string | null
+        }
+        Update: {
+          bucket_id?: string | null
+          code_id?: string
+          id?: string
+          interchange_group?: number | null
+          position?: number
+          singleton_code_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_code_bucket_items_bucket_id_fkey"
+            columns: ["bucket_id"]
+            isOneToOne: false
+            referencedRelation: "cb_buckets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_code_bucket_items_code_id_fkey"
+            columns: ["code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_code_bucket_items_singleton_code_id_fkey"
+            columns: ["singleton_code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
             referencedColumns: ["id"]
           },
         ]
@@ -426,6 +701,41 @@ export type Database = {
           },
         ]
       }
+      cb_codebook_memos: {
+        Row: {
+          author_id: string
+          body: string
+          codebook_id: string
+          created_at: string
+          id: string
+          resolved_at: string | null
+        }
+        Insert: {
+          author_id: string
+          body: string
+          codebook_id: string
+          created_at?: string
+          id?: string
+          resolved_at?: string | null
+        }
+        Update: {
+          author_id?: string
+          body?: string
+          codebook_id?: string
+          created_at?: string
+          id?: string
+          resolved_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_codebook_memos_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_codebook_notes: {
         Row: {
           body: string
@@ -447,6 +757,44 @@ export type Database = {
             foreignKeyName: "cb_codebook_notes_codebook_id_fkey"
             columns: ["codebook_id"]
             isOneToOne: true
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_codebook_snapshots: {
+        Row: {
+          codebook_id: string
+          created_at: string
+          created_by: string | null
+          id: string
+          payload: Json
+          reason: string
+          seq: number
+        }
+        Insert: {
+          codebook_id: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          payload: Json
+          reason: string
+          seq: number
+        }
+        Update: {
+          codebook_id?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          payload?: Json
+          reason?: string
+          seq?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_codebook_snapshots_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
             referencedRelation: "cb_codebooks"
             referencedColumns: ["id"]
           },
@@ -525,212 +873,8 @@ export type Database = {
           {
             foreignKeyName: "cb_codebooks_study_id_fkey"
             columns: ["study_id"]
-            isOneToOne: true
+            isOneToOne: false
             referencedRelation: "studies"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      cb_codebook_memos: {
-        Row: {
-          author_id: string
-          body: string
-          codebook_id: string
-          created_at: string
-          id: string
-          resolved_at: string | null
-        }
-        Insert: {
-          author_id: string
-          body: string
-          codebook_id: string
-          created_at?: string
-          id?: string
-          resolved_at?: string | null
-        }
-        Update: {
-          author_id?: string
-          body?: string
-          codebook_id?: string
-          created_at?: string
-          id?: string
-          resolved_at?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cb_codebook_memos_codebook_id_fkey"
-            columns: ["codebook_id"]
-            isOneToOne: false
-            referencedRelation: "cb_codebooks"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      cb_retro_questions: {
-        Row: {
-          codebook_id: string
-          created_at: string
-          id: string
-          parent_id: string | null
-          position: number
-          source_key: string | null
-          text: string
-        }
-        Insert: {
-          codebook_id: string
-          created_at?: string
-          id?: string
-          parent_id?: string | null
-          position?: number
-          source_key?: string | null
-          text: string
-        }
-        Update: {
-          codebook_id?: string
-          created_at?: string
-          id?: string
-          parent_id?: string | null
-          position?: number
-          source_key?: string | null
-          text?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cb_retro_questions_codebook_id_fkey"
-            columns: ["codebook_id"]
-            isOneToOne: false
-            referencedRelation: "cb_codebooks"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cb_retro_questions_parent_id_fkey"
-            columns: ["parent_id"]
-            isOneToOne: false
-            referencedRelation: "cb_retro_questions"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      cb_retro_memos: {
-        Row: {
-          author_id: string
-          body: string
-          id: string
-          question_id: string
-          session_id: string
-          updated_at: string
-        }
-        Insert: {
-          author_id: string
-          body?: string
-          id?: string
-          question_id: string
-          session_id: string
-          updated_at?: string
-        }
-        Update: {
-          author_id?: string
-          body?: string
-          id?: string
-          question_id?: string
-          session_id?: string
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cb_retro_memos_question_id_fkey"
-            columns: ["question_id"]
-            isOneToOne: false
-            referencedRelation: "cb_retro_questions"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      cb_drill_states: {
-        Row: {
-          card_type: string
-          code_id: string
-          due: string
-          fsrs: Json
-          id: string
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          card_type?: string
-          code_id: string
-          due?: string
-          fsrs: Json
-          id?: string
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          card_type?: string
-          code_id?: string
-          due?: string
-          fsrs?: Json
-          id?: string
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cb_drill_states_code_id_fkey"
-            columns: ["code_id"]
-            isOneToOne: false
-            referencedRelation: "cb_codes"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      cb_drill_reviews: {
-        Row: {
-          card_type: string
-          chosen_code_id: string | null
-          code_id: string
-          correct: boolean
-          elapsed_ms: number | null
-          id: string
-          rating: number
-          reviewed_at: string
-          user_id: string
-        }
-        Insert: {
-          card_type: string
-          chosen_code_id?: string | null
-          code_id: string
-          correct: boolean
-          elapsed_ms?: number | null
-          id?: string
-          rating: number
-          reviewed_at?: string
-          user_id: string
-        }
-        Update: {
-          card_type?: string
-          chosen_code_id?: string | null
-          code_id?: string
-          correct?: boolean
-          elapsed_ms?: number | null
-          id?: string
-          rating?: number
-          reviewed_at?: string
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cb_drill_reviews_code_id_fkey"
-            columns: ["code_id"]
-            isOneToOne: false
-            referencedRelation: "cb_codes"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cb_drill_reviews_chosen_code_id_fkey"
-            columns: ["chosen_code_id"]
-            isOneToOne: false
-            referencedRelation: "cb_codes"
             referencedColumns: ["id"]
           },
         ]
@@ -837,6 +981,95 @@ export type Database = {
           },
         ]
       }
+      cb_drill_reviews: {
+        Row: {
+          card_type: string
+          chosen_code_id: string | null
+          code_id: string
+          correct: boolean
+          elapsed_ms: number | null
+          id: string
+          rating: number
+          reviewed_at: string
+          user_id: string
+        }
+        Insert: {
+          card_type: string
+          chosen_code_id?: string | null
+          code_id: string
+          correct: boolean
+          elapsed_ms?: number | null
+          id?: string
+          rating: number
+          reviewed_at?: string
+          user_id: string
+        }
+        Update: {
+          card_type?: string
+          chosen_code_id?: string | null
+          code_id?: string
+          correct?: boolean
+          elapsed_ms?: number | null
+          id?: string
+          rating?: number
+          reviewed_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_drill_reviews_chosen_code_id_fkey"
+            columns: ["chosen_code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_drill_reviews_code_id_fkey"
+            columns: ["code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_drill_states: {
+        Row: {
+          card_type: string
+          code_id: string
+          due: string
+          fsrs: Json
+          id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          card_type?: string
+          code_id: string
+          due?: string
+          fsrs: Json
+          id?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          card_type?: string
+          code_id?: string
+          due?: string
+          fsrs?: Json
+          id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_drill_states_code_id_fkey"
+            columns: ["code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_episodes: {
         Row: {
           codebook_id: string
@@ -914,6 +1147,13 @@ export type Database = {
             referencedRelation: "cb_facets"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "cb_facet_values_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "cb_facet_values"
+            referencedColumns: ["id"]
+          },
         ]
       }
       cb_facets: {
@@ -960,6 +1200,35 @@ export type Database = {
           },
         ]
       }
+      cb_familiarization: {
+        Row: {
+          added_by: string | null
+          created_at: string
+          position: number
+          session_id: string
+        }
+        Insert: {
+          added_by?: string | null
+          created_at?: string
+          position?: number
+          session_id: string
+        }
+        Update: {
+          added_by?: string | null
+          created_at?: string
+          position?: number
+          session_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_familiarization_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: true
+            referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_flag_types: {
         Row: {
           codebook_id: string
@@ -994,27 +1263,6 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
-      }
-      cb_familiarization: {
-        Row: {
-          added_by: string | null
-          created_at: string
-          position: number
-          session_id: string
-        }
-        Insert: {
-          added_by?: string | null
-          created_at?: string
-          position?: number
-          session_id: string
-        }
-        Update: {
-          added_by?: string | null
-          created_at?: string
-          position?: number
-          session_id?: string
-        }
-        Relationships: []
       }
       cb_invites: {
         Row: {
@@ -1199,24 +1447,24 @@ export type Database = {
           created_at: string
           display_name: string | null
           initials: string | null
-          user_id: string
           role: string
+          user_id: string
         }
         Insert: {
           codes_seen_at?: string
           created_at?: string
           display_name?: string | null
           initials?: string | null
-          user_id: string
           role?: string
+          user_id: string
         }
         Update: {
           codes_seen_at?: string
           created_at?: string
           display_name?: string | null
           initials?: string | null
-          user_id?: string
           role?: string
+          user_id?: string
         }
         Relationships: []
       }
@@ -1332,6 +1580,93 @@ export type Database = {
             columns: ["scope_facet_value_id"]
             isOneToOne: false
             referencedRelation: "cb_facet_values"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_retro_memos: {
+        Row: {
+          author_id: string
+          body: string
+          id: string
+          question_id: string
+          session_id: string
+          updated_at: string
+        }
+        Insert: {
+          author_id: string
+          body?: string
+          id?: string
+          question_id: string
+          session_id: string
+          updated_at?: string
+        }
+        Update: {
+          author_id?: string
+          body?: string
+          id?: string
+          question_id?: string
+          session_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_retro_memos_question_id_fkey"
+            columns: ["question_id"]
+            isOneToOne: false
+            referencedRelation: "cb_retro_questions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_retro_memos_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_retro_questions: {
+        Row: {
+          codebook_id: string
+          created_at: string
+          id: string
+          parent_id: string | null
+          position: number
+          source_key: string | null
+          text: string
+        }
+        Insert: {
+          codebook_id: string
+          created_at?: string
+          id?: string
+          parent_id?: string | null
+          position?: number
+          source_key?: string | null
+          text: string
+        }
+        Update: {
+          codebook_id?: string
+          created_at?: string
+          id?: string
+          parent_id?: string | null
+          position?: number
+          source_key?: string | null
+          text?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_retro_questions_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_retro_questions_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "cb_retro_questions"
             referencedColumns: ["id"]
           },
         ]
@@ -1532,6 +1867,7 @@ export type Database = {
           id: string
           is_verbatim: boolean
           kind: string
+          purpose: string | null
           session_id: string
         }
         Insert: {
@@ -1541,6 +1877,7 @@ export type Database = {
           id?: string
           is_verbatim?: boolean
           kind: string
+          purpose?: string | null
           session_id: string
         }
         Update: {
@@ -1550,6 +1887,7 @@ export type Database = {
           id?: string
           is_verbatim?: boolean
           kind?: string
+          purpose?: string | null
           session_id?: string
         }
         Relationships: [
@@ -2196,7 +2534,11 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      cb_is_editor: { Args: never; Returns: boolean }
+      cb_merge_codes: {
+        Args: { p_absorbed: string[]; p_survivor: string; p_version: Json }
+        Returns: undefined
+      }
     }
     Enums: {
       onboarding_field_type:
