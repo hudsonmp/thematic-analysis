@@ -738,3 +738,91 @@ async function listCodebookMnemonics(codebookId: string): Promise<Set<string>> {
   }
   return new Set((res.data ?? []).map((r) => r.mnemonic));
 }
+
+/**
+ * COMBINATORIAL DEFINITION (v2 spec): replace a code's ordered AND items —
+ * bucket references and/or mandatory singleton codes, with contiguous
+ * interchange groups. Validated by the pure engine BEFORE any write: cycles
+ * (definitions must form a DAG), empty buckets, non-contiguous groups and
+ * duplicate positions are all rejected here, at definition time. An empty
+ * `items` array makes the code primitive again (clears the definition).
+ */
+export async function setCombinatorialDefinition(
+  codeId: string,
+  items: {
+    bucketId?: string | null;
+    singletonCodeId?: string | null;
+    position: number;
+    interchangeGroup?: number | null;
+  }[],
+): Promise<void> {
+  await requireEditor(); // viewers are read-only; service-role writes bypass RLS, so gate here
+  const { validateDefinition } = await import('@/lib/codebook/combinatorial');
+  type EngineDefItem = import('@/lib/codebook/combinatorial').DefItem;
+
+  // Build the candidate def in engine shape (ids are synthetic pre-insert).
+  const candidate = {
+    codeId,
+    items: items.map((it, i): EngineDefItem => {
+      const bucket = it.bucketId ?? null;
+      const single = it.singletonCodeId ?? null;
+      if ((bucket === null) === (single === null)) {
+        throw new Error('setCombinatorialDefinition: each item is EITHER a bucket OR a singleton code.');
+      }
+      return bucket !== null
+        ? { id: `new-${i}`, position: it.position, interchangeGroup: it.interchangeGroup ?? null, kind: 'bucket', bucketId: bucket }
+        : { id: `new-${i}`, position: it.position, interchangeGroup: it.interchangeGroup ?? null, kind: 'singleton', codeId: single! };
+    }),
+  };
+
+  // Load every existing definition + modular members for the DAG/empty checks.
+  const [itemsRes, membersRes] = await Promise.all([
+    cbFrom('cb_code_bucket_items').select('*'),
+    cbFrom('cb_bucket_codes').select('*'),
+  ]);
+  if (itemsRes.error || membersRes.error) {
+    throw new Error(
+      `setCombinatorialDefinition failed: ${(itemsRes.error || membersRes.error)!.message}`,
+    );
+  }
+  const defsById = new Map<string, { codeId: string; items: EngineDefItem[] }>();
+  for (const r of itemsRes.data ?? []) {
+    if (r.code_id === codeId) continue; // replaced by the candidate
+    const d = defsById.get(r.code_id) ?? { codeId: r.code_id, items: [] };
+    d.items.push(
+      r.bucket_id !== null
+        ? { id: r.id, position: r.position, interchangeGroup: r.interchange_group, kind: 'bucket', bucketId: r.bucket_id }
+        : { id: r.id, position: r.position, interchangeGroup: r.interchange_group, kind: 'singleton', codeId: r.singleton_code_id! },
+    );
+    defsById.set(r.code_id, d);
+  }
+  defsById.set(codeId, candidate);
+  const membersByBucket = new Map<string, { codeId: string; mandatory: boolean }[]>();
+  for (const m of membersRes.data ?? []) {
+    const arr = membersByBucket.get(m.bucket_id) ?? [];
+    arr.push({ codeId: m.code_id, mandatory: m.mandatory });
+    membersByBucket.set(m.bucket_id, arr);
+  }
+
+  if (candidate.items.length > 0) {
+    const errors = validateDefinition(candidate, defsById, (b) => membersByBucket.get(b) ?? []);
+    if (errors.length) throw new Error(`setCombinatorialDefinition rejected: ${errors.join('; ')}`);
+  }
+
+  // Replace (delete + insert): no transaction over PostgREST, same policy as
+  // the other sequenced writes in this file.
+  const del = await cbFrom('cb_code_bucket_items').delete().eq('code_id', codeId);
+  if (del.error) throw new Error(`setCombinatorialDefinition (delete) failed: ${del.error.message}`);
+  if (items.length) {
+    const ins = await cbFrom('cb_code_bucket_items').insert(
+      items.map((it) => ({
+        code_id: codeId,
+        bucket_id: it.bucketId ?? null,
+        singleton_code_id: it.singletonCodeId ?? null,
+        position: it.position,
+        interchange_group: it.interchangeGroup ?? null,
+      })),
+    );
+    if (ins.error) throw new Error(`setCombinatorialDefinition (insert) failed: ${ins.error.message}`);
+  }
+}
