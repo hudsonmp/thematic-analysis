@@ -6,50 +6,66 @@ import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import {
   resolveFork,
   serializeSnapshot,
+  validateDefinition,
   type BucketMember,
+  type CodeDef,
   type DefItem,
   type ForkDelta,
 } from '@/lib/codebook/combinatorial';
+import type { ComboCode } from '@/components/codebook/CodeCombobox';
 import type { Json } from '@/lib/types/cb-db';
 
 /**
- * Modular buckets + per-coder forks + snapshots (combinatorial codebook v2).
+ * Modular buckets + PER-SLOT forks + snapshots (combinatorial codebook v2).
  *
- * The modular bucket is the shared canonical; a coder's fork is an overlay
- * (fork = modular + Δ). Pull is AUTOMATIC for any attribute not in Δ because
- * the effective view is computed at read time (resolveFork); the explicit
- * "batch pull" records the member list into Δ.seen — the deletion detector —
- * and cuts a snapshot. Push (double-confirmed in the UI) mutates the modular
- * bucket, clears the pushed attrs from the pusher's Δ, cuts a snapshot, and
- * logs; conflicts are last-write-wins at modular, visible in the event log.
+ * The modular bucket is the shared canonical list. A FORK is an overlay on ONE
+ * combinatorial code's step slot (a cb_code_bucket_items row): fork = modular
+ * + Δ, resolved at read time, so pull is automatic for anything the slot never
+ * overrode. Hudson's example: code `experimental-identification`'s Structure
+ * slot APPENDS queue-added-to-structure (mandatory) — that slot MUST include
+ * it, the modular Structure bucket is untouched, and pushing later adds the
+ * code to modular NON-mandatory (the mandatory flag stays slot-local).
  *
- * All writes go through cbFrom (cb_ prefix guard) after requireEditor; fork
- * rows are additionally pinned to the caller's uid app-side (service role
- * bypasses RLS, so the .eq/insert owner scoping here is the real gate).
+ * The slot belongs to the shared instrument, so any editor edits any slot fork
+ * (RLS editor-scoped; owner_id is provenance only). Deletions at modular never
+ * auto-pull into slots — they surface as pending-deletion flags with explicit
+ * keep/accept resolution in the code editor's STEPS section.
+ *
+ * All writes go through cbFrom (cb_ prefix guard) after requireEditor.
  */
 
 // ---------------------------------------------------------------------------
 // Types the UI consumes
 // ---------------------------------------------------------------------------
 
+/** The MODULAR bucket, as a reference view (no fork math). */
 export type BucketView = {
   id: string;
   name: string;
   caption: string | null;
-  /** Effective members under MY fork (modular when I have no fork). */
   members: BucketMember[];
-  /** Modular members (the canonical list — subsumption parent-side view). */
-  modularMembers: BucketMember[];
-  /** My Δ, null when I code straight off the modular bucket. */
-  myDelta: ForkDelta | null;
-  /** Members deleted at modular since my last pull (never auto-pulled). */
+};
+
+/** One step slot of a combinatorial code, ready to render: the DefItem plus
+ *  its slot fork and the RESOLVED effective member set. Assignable wherever
+ *  DefItem[] is expected, so the engine consumes these rows directly. */
+export type SlotItem = DefItem & {
+  fork: ForkDelta | null;
+  /** modular + this slot's Δ (empty for singleton items). */
+  effectiveMembers: BucketMember[];
+  /** Modular deletions this slot has not resolved (kept in effectiveMembers). */
   pendingDeletions: BucketMember[];
+  /** Display conveniences (bucket items only). */
+  bucketName?: string;
+  bucketCaption?: string | null;
 };
 
 export type CombinatorialContext = {
   buckets: BucketView[];
-  /** code id → ordered AND items (present ⇔ combinatorial). */
-  defs: Record<string, DefItem[]>;
+  /** code id → ordered step slots (present ⇔ combinatorial). */
+  defs: Record<string, SlotItem[]>;
+  /** The codebook's live codes with picker metadata (search + hover expand). */
+  codes: ComboCode[];
   latestSnapshotId: string | null;
 };
 
@@ -78,69 +94,125 @@ function toDefItem(r: ItemRow): DefItem {
       };
 }
 
-/** Everything the coding popup + bucket manager need, in one call. */
-export async function getCombinatorialContext(codebookId: string): Promise<CombinatorialContext> {
-  const user = await requireAuthUser();
+/** Defensive exemplar-text extraction (jsonb `{ text, … }[]`) — same policy as
+ *  the session page: a malformed row must not throw. */
+function exemplarTexts(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((e) =>
+      e && typeof e === 'object' && typeof (e as { text?: unknown }).text === 'string'
+        ? (e as { text: string }).text
+        : '',
+    )
+    .filter((t) => t !== '');
+}
 
-  const [bucketsRes, membersRes, forksRes, itemsRes, snapRes] = await Promise.all([
+/** Everything the STEPS section, coding popup and /buckets page need. */
+export async function getCombinatorialContext(codebookId: string): Promise<CombinatorialContext> {
+  await requireAuthUser();
+
+  const [bucketsRes, membersRes, forksRes, itemsRes, snapRes, codesRes] = await Promise.all([
     cbFrom('cb_buckets').select('*').eq('codebook_id', codebookId).order('name'),
     cbFrom('cb_bucket_codes').select('*').order('position'),
-    cbFrom('cb_bucket_forks').select('*').eq('owner_id', user.id),
+    cbFrom('cb_bucket_forks').select('*'),
     cbFrom('cb_code_bucket_items').select('*').order('position'),
     cbFrom('cb_codebook_snapshots')
       .select('id, seq')
       .eq('codebook_id', codebookId)
       .order('seq', { ascending: false })
       .limit(1),
+    cbFrom('cb_codes')
+      .select('id, mnemonic, origin, current_version_id')
+      .eq('codebook_id', codebookId)
+      .is('retired_at', null)
+      .order('mnemonic'),
   ]);
-  const err = bucketsRes.error || membersRes.error || forksRes.error || itemsRes.error || snapRes.error;
+  const err =
+    bucketsRes.error || membersRes.error || forksRes.error || itemsRes.error || snapRes.error || codesRes.error;
   if (err) throw new Error(`getCombinatorialContext failed: ${err.message}`);
 
   const bucketRows = bucketsRes.data ?? [];
   const bucketIds = new Set(bucketRows.map((b) => b.id));
+  const bucketMeta = new Map(bucketRows.map((b) => [b.id, b]));
   const membersByBucket = new Map<string, BucketMember[]>();
-  for (const m of membersRes.data ?? []) {
-    if (!bucketIds.has(m.bucket_id)) continue;
-    const arr = membersByBucket.get(m.bucket_id) ?? [];
-    arr.push({ codeId: m.code_id, mandatory: m.mandatory });
-    membersByBucket.set(m.bucket_id, arr);
+  for (const mem of membersRes.data ?? []) {
+    if (!bucketIds.has(mem.bucket_id)) continue;
+    const arr = membersByBucket.get(mem.bucket_id) ?? [];
+    arr.push({ codeId: mem.code_id, mandatory: mem.mandatory });
+    membersByBucket.set(mem.bucket_id, arr);
   }
-  const deltaByBucket = new Map<string, ForkDelta>();
+  const forkByItem = new Map<string, ForkDelta>();
   for (const f of forksRes.data ?? []) {
-    if (bucketIds.has(f.bucket_id)) deltaByBucket.set(f.bucket_id, (f.delta ?? {}) as ForkDelta);
+    if (f.item_id) forkByItem.set(f.item_id, (f.delta ?? {}) as ForkDelta);
   }
 
-  const buckets: BucketView[] = bucketRows.map((b) => {
-    const modularMembers = membersByBucket.get(b.id) ?? [];
-    const delta = deltaByBucket.get(b.id) ?? null;
-    const eff = resolveFork(
-      { id: b.id, name: b.name, caption: b.caption, members: modularMembers },
-      delta,
-    );
-    return {
-      id: b.id,
-      name: b.name,
-      caption: eff.caption,
-      members: eff.members,
-      modularMembers,
-      myDelta: delta,
-      pendingDeletions: eff.pendingDeletions,
-    };
-  });
+  const buckets: BucketView[] = bucketRows.map((b) => ({
+    id: b.id,
+    name: b.name,
+    caption: b.caption,
+    members: membersByBucket.get(b.id) ?? [],
+  }));
 
-  // Defs: restrict to codes of this codebook's buckets OR any code with items.
-  const defs: Record<string, DefItem[]> = {};
+  // Defs: each item resolved through ITS OWN slot fork.
+  const defs: Record<string, SlotItem[]> = {};
   for (const r of (itemsRes.data ?? []) as ItemRow[]) {
-    (defs[r.code_id] ??= []).push(toDefItem(r));
+    const base = toDefItem(r);
+    let slot: SlotItem;
+    if (base.kind === 'bucket') {
+      const meta = bucketMeta.get(base.bucketId);
+      const fork = forkByItem.get(r.id) ?? null;
+      const eff = resolveFork(
+        {
+          id: base.bucketId,
+          name: meta?.name ?? base.bucketId,
+          caption: meta?.caption ?? null,
+          members: membersByBucket.get(base.bucketId) ?? [],
+        },
+        fork,
+      );
+      slot = {
+        ...base,
+        fork,
+        effectiveMembers: eff.members,
+        pendingDeletions: eff.pendingDeletions,
+        bucketName: meta?.name ?? '(bucket)',
+        bucketCaption: fork?.caption !== undefined ? fork.caption : meta?.caption ?? null,
+      };
+    } else {
+      slot = { ...base, fork: null, effectiveMembers: [], pendingDeletions: [] };
+    }
+    (defs[r.code_id] ??= []).push(slot);
   }
   for (const k of Object.keys(defs)) defs[k].sort((a, b) => a.position - b.position);
 
-  return { buckets, defs, latestSnapshotId: snapRes.data?.[0]?.id ?? null };
+  // Picker metadata (search + hover expand) from the codes' CURRENT versions.
+  const codeRows = codesRes.data ?? [];
+  const versionIds = codeRows.map((c) => c.current_version_id).filter((x): x is string => !!x);
+  const versionsRes = versionIds.length
+    ? await cbFrom('cb_code_versions')
+        .select('id, definition, exemplars, disconfirming_pattern')
+        .in('id', versionIds)
+    : { data: [], error: null };
+  if (versionsRes.error) throw new Error(`getCombinatorialContext failed: ${versionsRes.error.message}`);
+  const vById = new Map((versionsRes.data ?? []).map((v) => [v.id, v]));
+  const codes: ComboCode[] = codeRows.map((c) => {
+    const v = c.current_version_id ? vById.get(c.current_version_id) : undefined;
+    return {
+      id: c.id,
+      mnemonic: c.mnemonic,
+      origin: c.origin,
+      definition: v?.definition ?? null,
+      exemplars: exemplarTexts(v?.exemplars),
+      counterExample: v?.disconfirming_pattern ?? null,
+    };
+  });
+
+  return { buckets, defs, codes, latestSnapshotId: snapRes.data?.[0]?.id ?? null };
 }
 
 // ---------------------------------------------------------------------------
-// Modular bucket CRUD (direct editing of the canonical; forks pull it
-// automatically unless overridden)
+// Modular bucket CRUD (the canonical; every slot that never overrode an
+// attribute pulls modular edits automatically at read time)
 // ---------------------------------------------------------------------------
 
 export async function upsertBucket(input: {
@@ -193,9 +265,9 @@ export async function deleteBucket(bucketId: string): Promise<void> {
  *  GRAMMAR GUARD (spec §Guards): a bucket referenced by any combinatorial
  *  definition must stay valid under the NEW member list — emptying it, or
  *  adding a member that closes a cycle through a referencing parent, is the
- *  out-of-grammar configuration the spec rejects. Enforced by re-running the
- *  engine's validateDefinition for every referencing code with the new list
- *  substituted, BEFORE any write. */
+ *  out-of-grammar configuration the spec rejects. Re-validated per referencing
+ *  code with the candidate list substituted UNDER EACH SLOT'S FORK, before any
+ *  write. */
 export async function setBucketMembers(
   bucketId: string,
   members: { codeId: string; mandatory: boolean }[],
@@ -211,37 +283,41 @@ export async function setBucketMembers(
         'setBucketMembers: this bucket is referenced by a combinatorial code — it cannot be emptied (detach it there first).',
       );
     }
-    const { validateDefinition } = await import('@/lib/codebook/combinatorial');
-    const [allItemsRes, allMembersRes] = await Promise.all([
+    const [allItemsRes, allMembersRes, forksRes] = await Promise.all([
       cbFrom('cb_code_bucket_items').select('*'),
       cbFrom('cb_bucket_codes').select('*'),
+      cbFrom('cb_bucket_forks').select('*'),
     ]);
-    if (allItemsRes.error || allMembersRes.error) {
-      throw new Error(
-        `setBucketMembers failed: ${(allItemsRes.error || allMembersRes.error)!.message}`,
-      );
-    }
-    const defsById = new Map<string, { codeId: string; items: DefItem[] }>();
-    for (const r of allItemsRes.data ?? []) {
+    const err = allItemsRes.error || allMembersRes.error || forksRes.error;
+    if (err) throw new Error(`setBucketMembers failed: ${err.message}`);
+
+    const defsById = new Map<string, CodeDef>();
+    for (const r of (allItemsRes.data ?? []) as ItemRow[]) {
       const d = defsById.get(r.code_id) ?? { codeId: r.code_id, items: [] };
-      d.items.push(
-        r.bucket_id !== null
-          ? { id: r.id, position: r.position, interchangeGroup: r.interchange_group, kind: 'bucket', bucketId: r.bucket_id }
-          : { id: r.id, position: r.position, interchangeGroup: r.interchange_group, kind: 'singleton', codeId: r.singleton_code_id! },
-      );
+      d.items.push(toDefItem(r));
       defsById.set(r.code_id, d);
     }
     const membersBy = new Map<string, BucketMember[]>();
-    for (const m of allMembersRes.data ?? []) {
-      const arr = membersBy.get(m.bucket_id) ?? [];
-      arr.push({ codeId: m.code_id, mandatory: m.mandatory });
-      membersBy.set(m.bucket_id, arr);
+    for (const mem of allMembersRes.data ?? []) {
+      const arr = membersBy.get(mem.bucket_id) ?? [];
+      arr.push({ codeId: mem.code_id, mandatory: mem.mandatory });
+      membersBy.set(mem.bucket_id, arr);
     }
     membersBy.set(bucketId, members); // the CANDIDATE list under test
+    const forkByItem = new Map<string, ForkDelta>();
+    for (const f of forksRes.data ?? []) {
+      if (f.item_id) forkByItem.set(f.item_id, (f.delta ?? {}) as ForkDelta);
+    }
+    const membersOfItem = (item: DefItem): BucketMember[] => {
+      if (item.kind !== 'bucket') return [];
+      const modular = membersBy.get(item.bucketId) ?? [];
+      const fork = forkByItem.get(item.id) ?? null;
+      return resolveFork({ id: item.bucketId, name: '', caption: null, members: modular }, fork).members;
+    };
     for (const codeId of referencingCodes) {
       const d = defsById.get(codeId);
       if (!d) continue;
-      const errors = validateDefinition(d, defsById, (b) => membersBy.get(b) ?? []);
+      const errors = validateDefinition(d, defsById, membersOfItem);
       if (errors.length) {
         throw new Error(
           `setBucketMembers rejected — it would break the definition of a referencing code: ${errors.join('; ')}`,
@@ -262,200 +338,169 @@ export async function setBucketMembers(
 }
 
 // ---------------------------------------------------------------------------
-// Forks
+// Slot forks
 // ---------------------------------------------------------------------------
 
-/** Upsert MY fork's Δ for a bucket. Owner scoping is app-side (service role).
- *  GRAMMAR GUARD: a Δ whose removals empty the EFFECTIVE view of a bucket some
- *  combinatorial code references is rejected (spec §Guards: empty-via-fork). */
-export async function saveMyForkDelta(bucketId: string, delta: ForkDelta): Promise<void> {
+/** The item row + its bucket's modular members — shared by the fork writes. */
+async function loadSlot(itemId: string): Promise<{
+  item: ItemRow;
+  bucket: { id: string; codebook_id: string; name: string; caption: string | null };
+  modularMembers: BucketMember[];
+}> {
+  const itemRes = await cbFrom('cb_code_bucket_items').select('*').eq('id', itemId).single();
+  if (itemRes.error) throw new Error(`loadSlot failed: ${itemRes.error.message}`);
+  const item = itemRes.data as ItemRow;
+  if (item.bucket_id === null) {
+    throw new Error('loadSlot: singleton steps carry no fork — only bucket slots do.');
+  }
+  const [bRes, mRes] = await Promise.all([
+    cbFrom('cb_buckets').select('id, codebook_id, name, caption').eq('id', item.bucket_id).single(),
+    cbFrom('cb_bucket_codes').select('*').eq('bucket_id', item.bucket_id).order('position'),
+  ]);
+  if (bRes.error || mRes.error) throw new Error(`loadSlot failed: ${(bRes.error || mRes.error)!.message}`);
+  return {
+    item,
+    bucket: bRes.data,
+    modularMembers: (mRes.data ?? []).map((x) => ({ codeId: x.code_id, mandatory: x.mandatory })),
+  };
+}
+
+/** True when a Δ changes nothing — the fork row can be dropped. */
+function deltaIsEmpty(delta: ForkDelta, pendingDeletions: BucketMember[]): boolean {
+  return (
+    (delta.addedCodes?.length ?? 0) === 0 &&
+    (delta.removedCodeIds?.length ?? 0) === 0 &&
+    Object.keys(delta.mandatoryOverrides ?? {}).length === 0 &&
+    delta.caption === undefined &&
+    pendingDeletions.length === 0
+  );
+}
+
+/**
+ * Upsert a SLOT's fork Δ (any editor — the slot belongs to the shared
+ * instrument; owner_id records who touched it last, provenance only).
+ * GRAMMAR GUARD: removals may not empty the slot's effective view. A Δ that
+ * changes nothing deletes the fork row instead of storing noise.
+ */
+export async function saveItemForkDelta(itemId: string, delta: ForkDelta): Promise<void> {
   await requireEditor();
   const user = await requireAuthUser();
+  const { item, bucket, modularMembers } = await loadSlot(itemId);
 
-  if ((delta.removedCodeIds?.length ?? 0) > 0) {
-    const [refs, mRes, bRes] = await Promise.all([
-      cbFrom('cb_code_bucket_items').select('id').eq('bucket_id', bucketId).limit(1),
-      cbFrom('cb_bucket_codes').select('*').eq('bucket_id', bucketId),
-      cbFrom('cb_buckets').select('id, name, caption').eq('id', bucketId).single(),
-    ]);
-    const err = refs.error || mRes.error || bRes.error;
-    if (err) throw new Error(`saveMyForkDelta failed: ${err.message}`);
-    if ((refs.data ?? []).length > 0) {
-      const eff = resolveFork(
-        {
-          id: bucketId,
-          name: bRes.data.name,
-          caption: bRes.data.caption,
-          members: (mRes.data ?? []).map((m) => ({ codeId: m.code_id, mandatory: m.mandatory })),
-        },
-        delta,
-      );
-      if (eff.members.length === 0) {
-        throw new Error(
-          'saveMyForkDelta rejected: your removals would empty a bucket a combinatorial code references.',
-        );
-      }
+  // First fork on this slot: seed `seen` with the current modular list so
+  // future modular deletions are detectable. An existing `seen` is preserved
+  // verbatim — refreshing it here would clobber unresolved deletion flags.
+  const existing = await cbFrom('cb_bucket_forks').select('id, delta').eq('item_id', itemId).maybeSingle();
+  if (existing.error) throw new Error(`saveItemForkDelta failed: ${existing.error.message}`);
+  const next: ForkDelta = { ...delta };
+  if (next.seen === undefined) {
+    const prior = (existing.data?.delta ?? null) as ForkDelta | null;
+    next.seen = prior?.seen ?? modularMembers;
+  }
+
+  const eff = resolveFork(
+    { id: bucket.id, name: bucket.name, caption: bucket.caption, members: modularMembers },
+    next,
+  );
+  if (eff.members.length === 0) {
+    throw new Error('saveItemForkDelta rejected: the removals would empty this step — a slot cannot reference an empty bucket.');
+  }
+
+  if (deltaIsEmpty(next, eff.pendingDeletions)) {
+    if (existing.data) {
+      const del = await cbFrom('cb_bucket_forks').delete().eq('item_id', itemId);
+      if (del.error) throw new Error(`saveItemForkDelta failed: ${del.error.message}`);
     }
+    return;
   }
 
   const res = await cbFrom('cb_bucket_forks').upsert(
     {
-      bucket_id: bucketId,
+      item_id: itemId,
+      bucket_id: item.bucket_id!,
       owner_id: user.id,
-      delta: delta as unknown as Json,
+      delta: next as unknown as Json,
       updated_at: new Date().toISOString(),
     },
-    { onConflict: 'bucket_id,owner_id' },
+    { onConflict: 'item_id' },
   );
-  if (res.error) throw new Error(`saveMyForkDelta failed: ${res.error.message}`);
+  if (res.error) throw new Error(`saveItemForkDelta failed: ${res.error.message}`);
 }
 
 /**
- * PUSH my fork to the modular bucket (UI double-confirms first). Applies my Δ's
- * addedCodes / mandatoryOverrides / caption to modular, clears them from my Δ
- * (they are now the canonical), refreshes Δ.seen, cuts a 'push' snapshot, and
- * logs prior modular state (last-write-wins is visible, not silent).
+ * PUSH a slot fork's ADDED codes to the modular bucket (UI double-confirms).
+ * Hudson's rule: the code lands at modular NON-mandatory — the mandatory flag
+ * is meaning local to THIS slot, so it converts into a slot-local
+ * mandatoryOverride. Cuts a 'push' snapshot first; logs prior state
+ * (last-write-wins is visible, not silent). Unresolved deletion flags survive
+ * the seen-refresh.
  */
-export async function pushForkToModular(codebookId: string, bucketId: string): Promise<void> {
+export async function pushItemForkToModular(itemId: string): Promise<void> {
   await requireEditor();
   const user = await requireAuthUser();
+  const { item, bucket, modularMembers } = await loadSlot(itemId);
 
-  const [bRes, mRes, fRes] = await Promise.all([
-    cbFrom('cb_buckets').select('*').eq('id', bucketId).single(),
-    cbFrom('cb_bucket_codes').select('*').eq('bucket_id', bucketId).order('position'),
-    cbFrom('cb_bucket_forks').select('*').eq('bucket_id', bucketId).eq('owner_id', user.id).maybeSingle(),
-  ]);
-  if (bRes.error || mRes.error || fRes.error) {
-    throw new Error(`pushForkToModular failed: ${(bRes.error || mRes.error || fRes.error)!.message}`);
-  }
-  if (!fRes.data) throw new Error('pushForkToModular: you have no fork on this bucket.');
+  const fRes = await cbFrom('cb_bucket_forks').select('*').eq('item_id', itemId).maybeSingle();
+  if (fRes.error) throw new Error(`pushItemForkToModular failed: ${fRes.error.message}`);
+  if (!fRes.data) throw new Error('pushItemForkToModular: this step has no fork to push.');
   const delta = (fRes.data.delta ?? {}) as ForkDelta;
-  const modularMembers: BucketMember[] = (mRes.data ?? []).map((x) => ({
-    codeId: x.code_id,
-    mandatory: x.mandatory,
-  }));
+  const modularIds = new Set(modularMembers.map((x) => x.codeId));
+  const adds = (delta.addedCodes ?? []).filter((a) => !modularIds.has(a.codeId));
+  if (adds.length === 0) {
+    throw new Error('pushItemForkToModular: the fork adds no new codes — nothing to push.');
+  }
 
   // Snapshot BEFORE the push (mandated boundary).
-  await cutSnapshot(codebookId, 'push');
+  await cutSnapshot(bucket.codebook_id, 'push');
 
-  // Apply: caption + member adds + mandatory flips.
-  const priorState = { caption: bRes.data.caption, members: modularMembers };
-  if (delta.caption !== undefined) {
-    const up = await cbFrom('cb_buckets').update({ caption: delta.caption }).eq('id', bucketId);
-    if (up.error) throw new Error(`pushForkToModular failed: ${up.error.message}`);
-  }
-  const overrides = delta.mandatoryOverrides ?? {};
-  for (const [codeId, mandatory] of Object.entries(overrides)) {
-    const up = await cbFrom('cb_bucket_codes')
-      .update({ mandatory })
-      .eq('bucket_id', bucketId)
-      .eq('code_id', codeId);
-    if (up.error) throw new Error(`pushForkToModular failed: ${up.error.message}`);
-  }
-  const existing = new Set(modularMembers.map((x) => x.codeId));
-  // A mandatory override targeting a fork-ADDED code has no modular row to
-  // UPDATE — fold it into the insert instead, or the flip is silently lost.
-  const adds = (delta.addedCodes ?? [])
-    .filter((a) => !existing.has(a.codeId))
-    .map((a) => ({ codeId: a.codeId, mandatory: overrides[a.codeId] ?? a.mandatory }));
-  if (adds.length) {
-    const ins = await cbFrom('cb_bucket_codes').insert(
-      adds.map((a, i) => ({
-        bucket_id: bucketId,
-        code_id: a.codeId,
-        mandatory: a.mandatory,
-        position: modularMembers.length + i,
-      })),
-    );
-    if (ins.error) throw new Error(`pushForkToModular failed: ${ins.error.message}`);
-  }
-
-  // My Δ shrinks to what stays fork-local (removals) + refreshed seen.
-  // UNRESOLVED MODULAR DELETIONS must survive the refresh: a seen-member gone
-  // from modular that I neither removed nor re-added stays in `seen`, or the
-  // pending-deletion flag would vanish without manual resolution (the spec's
-  // hard "deletions never auto-pull" rule).
-  const addIds = new Set(adds.map((a) => a.codeId));
-  const removedSet = new Set(delta.removedCodeIds ?? []);
-  const unresolvedDeletions = (delta.seen ?? []).filter(
-    (m) => !existing.has(m.codeId) && !removedSet.has(m.codeId) && !addIds.has(m.codeId),
-  );
-  const nextSeen = [
-    ...modularMembers.map((x) => ({
-      codeId: x.codeId,
-      mandatory: overrides[x.codeId] ?? x.mandatory,
+  const ins = await cbFrom('cb_bucket_codes').insert(
+    adds.map((a, i) => ({
+      bucket_id: item.bucket_id!,
+      code_id: a.codeId,
+      // NON-mandatory at modular — the mandatory meaning stays slot-local.
+      mandatory: false,
+      position: modularMembers.length + i,
     })),
-    ...adds,
-    ...unresolvedDeletions,
-  ];
+  );
+  if (ins.error) throw new Error(`pushItemForkToModular failed: ${ins.error.message}`);
+
+  // Δ shrinks: pushed adds leave addedCodes; a slot-mandatory add becomes a
+  // mandatoryOverride on the (now-modular) member. Unresolved deletions stay.
+  const overrides = { ...(delta.mandatoryOverrides ?? {}) };
+  for (const a of adds) if (a.mandatory) overrides[a.codeId] = true;
+  const removedSet = new Set(delta.removedCodeIds ?? []);
+  const addIds = new Set(adds.map((a) => a.codeId));
+  const unresolvedDeletions = (delta.seen ?? []).filter(
+    (x) => !modularIds.has(x.codeId) && !removedSet.has(x.codeId) && !addIds.has(x.codeId),
+  );
   const nextDelta: ForkDelta = {
     ...(delta.removedCodeIds?.length ? { removedCodeIds: delta.removedCodeIds } : {}),
-    seen: nextSeen,
+    ...(Object.keys(overrides).length ? { mandatoryOverrides: overrides } : {}),
+    ...(delta.caption !== undefined ? { caption: delta.caption } : {}),
+    seen: [
+      ...modularMembers,
+      ...adds.map((a) => ({ codeId: a.codeId, mandatory: false })),
+      ...unresolvedDeletions,
+    ],
   };
-  await saveMyForkDelta(bucketId, nextDelta);
+  await saveItemForkDelta(itemId, nextDelta);
 
-  await logEvent('bucket_push', { bucketId, by: user.id, pushed: delta, prior: priorState });
-}
-
-/**
- * BATCH PULL all my forks in a codebook (between coding sessions): refresh
- * every Δ.seen to the current modular member list (deletion flags derive from
- * the gap), cut a 'pull' snapshot, log. Overridden attributes stay fork-local.
- */
-export async function batchPullMyForks(codebookId: string): Promise<{ pulled: number }> {
-  await requireEditor();
-  const user = await requireAuthUser();
-
-  const [bucketsRes, membersRes, forksRes] = await Promise.all([
-    cbFrom('cb_buckets').select('id').eq('codebook_id', codebookId),
-    cbFrom('cb_bucket_codes').select('*'),
-    cbFrom('cb_bucket_forks').select('*').eq('owner_id', user.id),
-  ]);
-  if (bucketsRes.error || membersRes.error || forksRes.error) {
-    throw new Error(
-      `batchPullMyForks failed: ${(bucketsRes.error || membersRes.error || forksRes.error)!.message}`,
-    );
-  }
-  const inBook = new Set((bucketsRes.data ?? []).map((b) => b.id));
-  const byBucket = new Map<string, BucketMember[]>();
-  for (const m of membersRes.data ?? []) {
-    if (!inBook.has(m.bucket_id)) continue;
-    (byBucket.get(m.bucket_id) ?? byBucket.set(m.bucket_id, []).get(m.bucket_id)!).push({
-      codeId: m.code_id,
-      mandatory: m.mandatory,
-    });
-  }
-
-  await cutSnapshot(codebookId, 'pull');
-
-  let pulled = 0;
-  for (const f of forksRes.data ?? []) {
-    if (!inBook.has(f.bucket_id)) continue;
-    const delta = (f.delta ?? {}) as ForkDelta;
-    // Refresh seen to the current modular list, but PRESERVE unresolved
-    // modular deletions (seen-members gone from modular, not removed by this
-    // fork): overwriting them would silently apply the deletion — exactly the
-    // auto-pull the spec forbids. They stay until keep/accept on /buckets.
-    const modularNow = byBucket.get(f.bucket_id) ?? [];
-    const modularIds = new Set(modularNow.map((m) => m.codeId));
-    const removedSet = new Set(delta.removedCodeIds ?? []);
-    const unresolvedDeletions = (delta.seen ?? []).filter(
-      (m) => !modularIds.has(m.codeId) && !removedSet.has(m.codeId),
-    );
-    const nextDelta: ForkDelta = { ...delta, seen: [...modularNow, ...unresolvedDeletions] };
-    await saveMyForkDelta(f.bucket_id, nextDelta);
-    pulled++;
-  }
-  await logEvent('bucket_batch_pull', { codebookId, by: user.id, forks: pulled });
-  return { pulled };
+  await logEvent('slot_fork_push', {
+    itemId,
+    bucketId: item.bucket_id,
+    codeId: item.code_id,
+    by: user.id,
+    pushed: adds as unknown as Json,
+    prior: { members: modularMembers } as unknown as Json,
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Snapshots + event log
 // ---------------------------------------------------------------------------
 
-/** Serialize full codebook state (codes+defs, buckets, forks/Δ, captions) and
- *  append it with the next monotonic seq. Returns the snapshot id. */
+/** Serialize full codebook state (codes+defs, buckets, slot forks/Δ, captions)
+ *  and append it with the next monotonic seq. Returns the snapshot id. */
 export async function cutSnapshot(
   codebookId: string,
   reason: 'irr' | 'pull' | 'push' | 'manual',
@@ -480,16 +525,18 @@ export async function cutSnapshot(
   if (err) throw new Error(`cutSnapshot failed: ${err.message}`);
 
   const bucketIds = new Set((bucketsRes.data ?? []).map((b) => b.id));
+  const inBookItems = ((itemsRes.data ?? []) as ItemRow[]).filter(
+    (i) => i.bucket_id === null || bucketIds.has(i.bucket_id),
+  );
+  const itemIds = new Set(inBookItems.map((i) => i.id));
   const state = {
     codes: codesRes.data ?? [],
     buckets: (bucketsRes.data ?? []).map((b) => ({
       ...b,
       members: (membersRes.data ?? []).filter((m) => m.bucket_id === b.id),
     })),
-    forks: (forksRes.data ?? []).filter((f) => bucketIds.has(f.bucket_id)),
-    items: ((itemsRes.data ?? []) as ItemRow[]).filter(
-      (i) => i.bucket_id === null || bucketIds.has(i.bucket_id),
-    ),
+    forks: (forksRes.data ?? []).filter((f) => f.item_id && itemIds.has(f.item_id)),
+    items: inBookItems,
   };
   const payload = serializeSnapshot(state);
   const seq = (lastRes.data?.[0]?.seq ?? 0) + 1;

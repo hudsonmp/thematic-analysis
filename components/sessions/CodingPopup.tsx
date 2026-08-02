@@ -4,10 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createCode, type CodeOrigin } from '@/app/actions/codes';
 import { createCodebookMemo } from '@/app/actions/codebook-memos';
 import type { AssignmentChildInput, AssignmentStatus } from '@/app/actions/assignments';
-import type { BucketView } from '@/app/actions/buckets';
+import type { BucketView, SlotItem } from '@/app/actions/buckets';
 import { splitDefinition } from '@/lib/codebook/definition';
 import { normalizeSlug } from '@/lib/codebook/mnemonic';
-import type { DefItem } from '@/lib/codebook/combinatorial';
 import { fuzzyRank } from '@/lib/transcript/fuzzy';
 import CombinatorialPanel, { type InSpanAssignment } from './CombinatorialPanel';
 
@@ -114,9 +113,10 @@ export default function CodingPopup({
    *  ✎ memo deliberately does something else (a missing-code lead), so both
    *  exist side by side with distinct labels. */
   onAddSpanNote?: ((body: string) => Promise<void>) | null;
-  /** Combinatorial context (v2): code id → its ordered AND items. Assigning a
-   *  code with items opens the SKIPPABLE decomposition panel. */
-  combDefs?: Record<string, DefItem[]> | null;
+  /** Combinatorial context (v2): code id → its ordered step slots (each
+   *  carrying its slot-fork-effective members). Assigning a code with items
+   *  opens the SKIPPABLE decomposition panel. */
+  combDefs?: Record<string, SlotItem[]> | null;
   /** Effective fork views of the modular buckets (candidates per step). */
   combBuckets?: BucketView[] | null;
   /** Other in-span assignments (spans ⊆ this selection) — promotion links. */

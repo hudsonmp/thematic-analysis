@@ -51,7 +51,10 @@ export type DefItem = {
 /** items.length > 0 ⇔ combinatorial. */
 export type CodeDef = { codeId: string; items: DefItem[] };
 
-export type MembersFn = (bucketId: string) => BucketMember[];
+/** A SLOT's effective member set. Item-keyed (not bucket-keyed): with
+ *  per-slot forks, two items referencing the SAME modular bucket can carry
+ *  different effective members — the fork is an overlay on the item. */
+export type MembersOfItem = (item: DefItem) => BucketMember[];
 
 // ---------------------------------------------------------------------------
 // Fork overlay: effective = modular − removed + added, with mandatory
@@ -102,7 +105,7 @@ export function resolveFork(modular: ModularBucket, delta: ForkDelta | null): Ef
 export function validateDefinition(
   def: CodeDef,
   defsById: Map<string, CodeDef>,
-  membersOf: MembersFn,
+  membersOfItem: MembersOfItem,
 ): string[] {
   const errors: string[] = [];
   const items = [...def.items].sort((a, b) => a.position - b.position);
@@ -133,9 +136,10 @@ export function validateDefinition(
     }
   }
 
-  // empty buckets
+  // empty buckets — judged on the SLOT's EFFECTIVE member set: a fork whose
+  // removals empty the slot is just as out-of-grammar as an empty modular bucket.
   for (const it of items) {
-    if (it.kind === 'bucket' && membersOf(it.bucketId).length === 0) {
+    if (it.kind === 'bucket' && membersOfItem(it).length === 0) {
       errors.push(`item at position ${it.position} references an empty bucket (${it.bucketId})`);
     }
   }
@@ -149,7 +153,7 @@ export function validateDefinition(
   const pushChildren = (d: CodeDef) => {
     for (const it of d.items) {
       if (it.kind === 'singleton') stack.push(it.codeId);
-      else for (const mem of membersOf(it.bucketId)) stack.push(mem.codeId);
+      else for (const mem of membersOfItem(it)) stack.push(mem.codeId);
     }
   };
   pushChildren(def);
@@ -254,7 +258,7 @@ export type FulfillmentResult = {
 export function checkFulfillment(
   def: CodeDef,
   links: ChildLink[],
-  membersOf: MembersFn,
+  membersOfItem: MembersOfItem,
 ): FulfillmentResult {
   const byItem = new Map<string, ChildLink[]>();
   for (const l of links) {
@@ -275,7 +279,7 @@ export function checkFulfillment(
       // mandatory singleton.
       admissible = itemLinks.filter((l) => l.childCodeId === it.codeId);
     } else {
-      const memberIds = new Set(membersOf(it.bucketId).map((x) => x.codeId));
+      const memberIds = new Set(membersOfItem(it).map((x) => x.codeId));
       // A link is admissible when its child is a bucket member OR it carries
       // subsumption provenance (via c₁): the subsuming code covers the slot by
       // entailment even though it is not itself a member. The CALLER verifies
@@ -285,7 +289,7 @@ export function checkFulfillment(
       // mandatory check only applies when the bucket item is being fulfilled
       if (admissible.length > 0) {
         const assigned = new Set(admissible.map((l) => l.childCodeId));
-        const missing = membersOf(it.bucketId)
+        const missing = membersOfItem(it)
           .filter((x) => x.mandatory && !assigned.has(x.codeId))
           .map((x) => x.codeId);
         if (missing.length) mandatoryMissing.push({ itemId: it.id, codeIds: missing });
@@ -313,11 +317,11 @@ export function checkFulfillment(
 // distinct parent bucket item with admissible(c₁-item) ⊆ admissible(parent-item),
 // and the mapped parent items are one item or one interchange group.
 //
-// The sub's members are read under the CODER'S fork view (`subMembers`), the
-// parent's under MODULAR (`parentMembers`) — so a fork with unpushed added
-// codes fails ⊆ against standard slots, which IS the spec's push-first rule.
-// Transitivity comes free: the DAG guard covers chains, and entailment is
-// re-evaluated per popup, not stored.
+// Members are read PER SLOT: each side's item resolves through its OWN slot
+// fork. The push-first rule falls out — a sub slot with an unpushed fork-added
+// code carries a member the parent's slot view lacks, so ⊆ fails until the
+// code is pushed to the modular bucket. Transitivity comes free: the DAG
+// guard covers chains, and entailment is re-evaluated per popup, not stored.
 // ---------------------------------------------------------------------------
 
 export type SubsumptionMapping = { parentItemId: string; viaSubItemId: string }[];
@@ -325,8 +329,8 @@ export type SubsumptionMapping = { parentItemId: string; viaSubItemId: string }[
 export function subsumption(
   sub: CodeDef,
   parent: CodeDef,
-  subMembers: MembersFn,
-  parentMembers: MembersFn,
+  subMembersOfItem: MembersOfItem,
+  parentMembersOfItem: MembersOfItem,
 ): SubsumptionMapping | null {
   const subBuckets = sub.items.filter((i) => i.kind === 'bucket');
   if (subBuckets.length === 0) return null; // primitive / singleton-only: nothing to map
@@ -335,12 +339,12 @@ export function subsumption(
 
   const subSets = subBuckets.map((i) => ({
     id: i.id,
-    set: new Set(subMembers((i as DefItem & { kind: 'bucket' }).bucketId).map((x) => x.codeId)),
+    set: new Set(subMembersOfItem(i).map((x) => x.codeId)),
   }));
   const parSets = parentBuckets.map((i) => ({
     id: i.id,
     group: i.interchangeGroup,
-    set: new Set(parentMembers((i as DefItem & { kind: 'bucket' }).bucketId).map((x) => x.codeId)),
+    set: new Set(parentMembersOfItem(i).map((x) => x.codeId)),
   }));
 
   const isSubset = (a: Set<string>, b: Set<string>) => {

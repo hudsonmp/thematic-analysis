@@ -83,50 +83,35 @@ async function defItemsOf(codeId: string): Promise<DefItem[]> {
 
 /**
  * Two member views, both needed:
- *   fork    — the CODER'S effective view (modular + their Δ): the admissibility
- *             the popup offered, so fulfillment is judged by what the coder saw.
- *   modular — the canonical view: subsumption's PARENT side (unpushed fork
- *             codes must not substitute into standard slots).
+ *   PER SLOT: each item resolves through its OWN slot fork (Hudson's model —
+ *   the fork hangs off the parent code's step, not the coder). One fn serves
+ *   both sides of a subsumption check; the push-first rule falls out because
+ *   an unpushed slot-added code is absent from the OTHER def's slot views.
  */
-async function memberViews(userId: string): Promise<{
-  fork: (bucketId: string) => { codeId: string; mandatory: boolean }[];
-  modular: (bucketId: string) => { codeId: string; mandatory: boolean }[];
-}> {
-  const [mRes, fRes, bRes] = await Promise.all([
+async function membersOfItemFn(): Promise<(item: DefItem) => { codeId: string; mandatory: boolean }[]> {
+  const [mRes, fRes] = await Promise.all([
     cbFrom('cb_bucket_codes').select('*'),
-    cbFrom('cb_bucket_forks').select('*').eq('owner_id', userId),
-    cbFrom('cb_buckets').select('id, name, caption'),
+    cbFrom('cb_bucket_forks').select('*'),
   ]);
-  const err = mRes.error || fRes.error || bRes.error;
-  if (err) throw new Error(`memberViews failed: ${err.message}`);
+  const err = mRes.error || fRes.error;
+  if (err) throw new Error(`membersOfItemFn failed: ${err.message}`);
   const modularBy = new Map<string, { codeId: string; mandatory: boolean }[]>();
   for (const m of mRes.data ?? []) {
     const arr = modularBy.get(m.bucket_id) ?? [];
     arr.push({ codeId: m.code_id, mandatory: m.mandatory });
     modularBy.set(m.bucket_id, arr);
   }
-  const deltaBy = new Map<string, ForkDelta>(
-    (fRes.data ?? []).map((f) => [f.bucket_id, (f.delta ?? {}) as ForkDelta]),
-  );
-  const metaBy = new Map((bRes.data ?? []).map((b) => [b.id, b]));
-  const forkCache = new Map<string, { codeId: string; mandatory: boolean }[]>();
-  const fork = (bucketId: string) => {
-    const hit = forkCache.get(bucketId);
-    if (hit) return hit;
-    const meta = metaBy.get(bucketId);
-    const eff = resolveFork(
-      {
-        id: bucketId,
-        name: meta?.name ?? bucketId,
-        caption: meta?.caption ?? null,
-        members: modularBy.get(bucketId) ?? [],
-      },
-      deltaBy.get(bucketId) ?? null,
+  const deltaByItem = new Map<string, ForkDelta>();
+  for (const f of fRes.data ?? []) {
+    if (f.item_id) deltaByItem.set(f.item_id, (f.delta ?? {}) as ForkDelta);
+  }
+  return (item: DefItem) => {
+    if (item.kind !== 'bucket') return [];
+    return resolveFork(
+      { id: item.bucketId, name: '', caption: null, members: modularBy.get(item.bucketId) ?? [] },
+      deltaByItem.get(item.id) ?? null,
     ).members;
-    forkCache.set(bucketId, eff);
-    return eff;
   };
-  return { fork, modular: (b) => modularBy.get(b) ?? [] };
 }
 
 /**
@@ -146,12 +131,12 @@ export async function setAssignmentChildren(input: {
   const user = await requireAuthUser();
 
   const items = await defItemsOf(input.parentCodeId);
-  const views = await memberViews(user.id);
+  const membersOfItem = await membersOfItemFn();
 
   // VERIFY subsumption provenance BEFORE any write: a via-link claims its
   // child (the subsuming code c₁) covers the target item by entailment. Rerun
-  // the entailment server-side — sub under the CODER'S fork view, parent under
-  // MODULAR — and reject links whose claimed item is not in the mapping. This
+  // the entailment server-side — BOTH sides read their own slot-fork-effective
+  // members — and reject links whose claimed item is not in the mapping. This
   // is what makes the engine's trust of `via` sound.
   const viaLinks = input.links.filter((l) => l.viaCodeId);
   if (viaLinks.length) {
@@ -167,8 +152,8 @@ export async function setAssignmentChildren(input: {
         ? subsumption(
             { codeId: l.viaCodeId!, items: subItems },
             { codeId: input.parentCodeId, items },
-            views.fork,
-            views.modular,
+            membersOfItem,
+            membersOfItem,
           )
         : null;
       if (!mapping || !mapping.some((m) => m.parentItemId === l.itemId)) {
@@ -200,7 +185,7 @@ export async function setAssignmentChildren(input: {
   }
 
   // Evaluate fulfillment + order by first evidence (engine). Admissibility is
-  // judged under the CODER'S fork view — the same member set the popup offered.
+  // judged under each SLOT's effective view — the same set the popup offered.
   const ords = await ordinalsFor(input.links.map((l) => l.childAnnotationId));
   const engineLinks: ChildLink[] = input.links.map((l) => ({
     itemId: l.itemId,
@@ -208,7 +193,7 @@ export async function setAssignmentChildren(input: {
     sentences: ords.get(l.childAnnotationId) ?? [],
     via: l.viaCodeId ?? null,
   }));
-  const ful = checkFulfillment({ codeId: input.parentCodeId, items }, engineLinks, views.fork);
+  const ful = checkFulfillment({ codeId: input.parentCodeId, items }, engineLinks, membersOfItem);
   const order = evaluateOrder(items, ful.firstEvidence);
 
   const status: AssignmentStatus = input.links.length > 0 ? 'decomposed' : 'attested';

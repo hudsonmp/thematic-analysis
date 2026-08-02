@@ -3,10 +3,7 @@
 import { useState } from 'react';
 import CodebookEntry from '@/components/codebook/CodebookEntry';
 import FacetCanvas from '@/components/codebook/tree/FacetCanvas';
-import CompositionView from './CompositionView';
 import type { CodebookTree } from '@/app/actions/codebook';
-import type { CombinatorialContext } from '@/app/actions/buckets';
-import { toComboCodes } from '@/lib/codebook/comboCodes';
 
 /**
  * The Codebook page has two views of ONE instrument, and they answer different
@@ -22,33 +19,13 @@ import { toComboCodes } from '@/lib/codebook/comboCodes';
  * into structure later. That is the point of letting codes exist before they have
  * a home.
  */
-export default function CodebookViews({
-  tree,
-  combinatorial,
-}: {
-  tree: CodebookTree;
-  /** Buckets + combinatorial defs (v2). Null on a load failure — the Buckets
-   *  tab then simply doesn't render. */
-  combinatorial: CombinatorialContext | null;
-}) {
-  const [view, setView] = useState<'tree' | 'grid' | 'buckets'>('tree');
-
-  const tabs = combinatorial
-    ? (['tree', 'grid', 'buckets'] as const)
-    : (['tree', 'grid'] as const);
-  const label = (v: string) =>
-    v === 'tree' ? 'Tree' : v === 'grid' ? 'Bulk entry' : 'Buckets';
-  const hint =
-    view === 'tree'
-      ? 'the structure of your constructs'
-      : view === 'grid'
-        ? 'get many codes in fast — they land Unplaced'
-        : 'compose codes from step buckets — the set/subset relations';
+export default function CodebookViews({ tree }: { tree: CodebookTree }) {
+  const [view, setView] = useState<'tree' | 'grid'>('tree');
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-1 border-b border-foreground/15 px-6 py-2">
-        {tabs.map((v) => (
+        {(['tree', 'grid'] as const).map((v) => (
           <button
             key={v}
             type="button"
@@ -59,10 +36,14 @@ export default function CodebookViews({
                 : 'text-foreground/50 hover:text-foreground'
             }`}
           >
-            {label(v)}
+            {v === 'tree' ? 'Tree' : 'Bulk entry'}
           </button>
         ))}
-        <span className="ml-3 text-xs text-foreground/40">{hint}</span>
+        <span className="ml-3 text-xs text-foreground/40">
+          {view === 'tree'
+            ? 'the structure of your constructs — steps live in each code’s drawer'
+            : 'get many codes in fast — they land Unplaced'}
+        </span>
       </div>
 
       {view === 'tree' ? (
@@ -72,20 +53,14 @@ export default function CodebookViews({
           codes={tree.codes}
           citations={tree.citations}
         />
-      ) : view === 'grid' ? (
+      ) : (
         <CodebookEntry
           codebookId={tree.codebook.id}
           facets={tree.facets}
           citations={tree.citations}
           labels={tree.labels}
         />
-      ) : combinatorial ? (
-        <CompositionView
-          codebookId={tree.codebook.id}
-          ctx={combinatorial}
-          codeOptions={toComboCodes(tree.codes)}
-        />
-      ) : null}
+      )}
     </div>
   );
 }

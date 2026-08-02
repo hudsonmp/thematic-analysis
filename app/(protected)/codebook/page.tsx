@@ -1,6 +1,5 @@
 import { redirect } from 'next/navigation';
 import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
-import { getCombinatorialContext } from '@/app/actions/buckets';
 import { getMyRole } from '@/lib/auth/roles';
 import CodebookViews from './CodebookViews';
 
@@ -30,14 +29,5 @@ export default async function CodebookPage() {
   const cb = await getOrCreateCodebook();
   const tree = await listCodebookTree(cb.id);
 
-  // Combinatorial context (v2) for the Buckets tab — non-fatal: a load failure
-  // renders the page without that tab rather than breaking the codebook.
-  let combinatorial: Awaited<ReturnType<typeof getCombinatorialContext>> | null = null;
-  try {
-    combinatorial = await getCombinatorialContext(cb.id);
-  } catch {
-    // Non-fatal.
-  }
-
-  return <CodebookViews tree={tree} combinatorial={combinatorial} />;
+  return <CodebookViews tree={tree} />;
 }

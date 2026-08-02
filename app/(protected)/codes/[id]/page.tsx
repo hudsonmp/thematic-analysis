@@ -1,13 +1,10 @@
 import { notFound } from 'next/navigation';
 import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
-import { getCombinatorialContext } from '@/app/actions/buckets';
 import { listCodeVersions } from '@/app/actions/codes';
 import { listComments } from '@/app/actions/comments';
 import { getProtocolEpisodes } from '@/app/actions/protocol';
-import { getMyRole } from '@/lib/auth/roles';
 import CodeCard from '@/components/code/CodeCard';
-import CombinatorialDef from '@/components/code/CombinatorialDef';
-import { toComboCodes } from '@/lib/codebook/comboCodes';
+import StepsSection from '@/components/codebook/tree/StepsSection';
 
 /**
  * The code-anatomy page. Next 16: `params` is a Promise, so we await it. We
@@ -25,23 +22,13 @@ export default async function CodePage({ params }: { params: Promise<{ id: strin
   const code = tree.codes.find((c) => c.id === id);
   if (!code) notFound();
 
-  const [versions, comments, episodes, role] = await Promise.all([
+  const [versions, comments, episodes] = await Promise.all([
     listCodeVersions(id),
     listComments(id),
     getProtocolEpisodes(),
-    getMyRole(),
   ]);
 
-  // Combinatorial context (v2) for the definition editor — non-fatal, like the
-  // session page: a load failure renders the page without the editor.
-  let combinatorial: Awaited<ReturnType<typeof getCombinatorialContext>> | null = null;
-  try {
-    combinatorial = await getCombinatorialContext(cb.id);
-  } catch {
-    // Non-fatal.
-  }
-
-  const allCodes = toComboCodes(tree.codes);
+  const allCodes = tree.codes.map((c) => ({ id: c.id, mnemonic: c.mnemonic }));
 
   return (
     <>
@@ -58,17 +45,11 @@ export default async function CodePage({ params }: { params: Promise<{ id: strin
         // in hand here, so the id+mnemonic pairs ride down as plain props.
         allCodes={allCodes}
       />
-      {combinatorial && (
-        <div className="mx-auto max-w-4xl px-6 pb-10">
-          <CombinatorialDef
-            codeId={id}
-            items={combinatorial.defs[id] ?? []}
-            buckets={combinatorial.buckets}
-            allCodes={allCodes}
-            readOnly={role === 'viewer'}
-          />
-        </div>
-      )}
+      {/* STEPS — the same self-loading section the tree drawer mounts, so the
+          combinatorial definition is edited identically wherever the code is met. */}
+      <div className="mx-auto max-w-4xl px-6 pb-10">
+        <StepsSection codeId={id} codebookId={cb.id} />
+      </div>
     </>
   );
 }

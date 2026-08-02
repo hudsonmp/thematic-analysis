@@ -1,25 +1,21 @@
-import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
+import { getOrCreateCodebook } from '@/app/actions/codebook';
 import { getCombinatorialContext } from '@/app/actions/buckets';
 import { getMyRole } from '@/lib/auth/roles';
 import BucketManager from '@/components/buckets/BucketManager';
-import { toComboCodes } from '@/lib/codebook/comboCodes';
 
 /**
- * The MODULAR BUCKETS manager (combinatorial codebook v2): the running list of
- * shared buckets (a bucket = a general action housing member codes), each
- * coder's fork Δ over them, push (double-confirm) / batch-pull, and snapshot
- * cutting. Combinatorial code DEFINITIONS (which buckets a code is an AND of)
- * are authored on the code page — this screen owns the bucket side.
+ * The MODULAR BUCKETS reference (combinatorial codebook v2): the running list
+ * of shared buckets — a bucket = a general action housing member codes — with
+ * modular member editing and snapshot cutting. FORKS live elsewhere by design:
+ * a fork is an overlay on one code's STEP SLOT, edited in that code's drawer
+ * (STEPS section) on the tree page, not here.
  */
 export default async function BucketsPage() {
   const codebook = await getOrCreateCodebook();
-  const [ctx, tree, role] = await Promise.all([
+  const [ctx, role] = await Promise.all([
     getCombinatorialContext(codebook.id),
-    listCodebookTree(codebook.id),
     getMyRole(),
   ]);
-
-  const codeOptions = toComboCodes(tree.codes);
 
   return (
     <BucketManager
@@ -27,7 +23,7 @@ export default async function BucketsPage() {
       buckets={ctx.buckets}
       defs={ctx.defs}
       latestSnapshotId={ctx.latestSnapshotId}
-      codeOptions={codeOptions}
+      codeOptions={ctx.codes}
       readOnly={role === 'viewer'}
     />
   );

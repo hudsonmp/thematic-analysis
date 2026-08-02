@@ -35,10 +35,25 @@ const sItem = (id: string, position: number, codeId: string, interchangeGroup: n
 
 const def = (codeId: string, items: DefItem[]): CodeDef => ({ codeId, items });
 
-const membersOf =
+/** Item-keyed members: the engine now reads a SLOT's effective member set,
+ *  not a bucket's — per-slot forks made the bucket id alone insufficient. The
+ *  plain helper resolves an item to its bucket's modular members; the fork-
+ *  aware one overlays a Δ on specific item ids (slot forks). */
+const itemMembers =
   (buckets: ModularBucket[]) =>
-  (bucketId: string): BucketMember[] =>
-    buckets.find((b) => b.id === bucketId)?.members ?? [];
+  (item: DefItem): BucketMember[] =>
+    item.kind === 'bucket' ? (buckets.find((b) => b.id === item.bucketId)?.members ?? []) : [];
+
+const withSlotForks =
+  (base: (item: DefItem) => BucketMember[], forks: Record<string, ForkDelta>) =>
+  (item: DefItem): BucketMember[] => {
+    const delta = forks[item.id];
+    if (!delta) return base(item);
+    return resolveFork(
+      { id: item.id, name: item.id, caption: null, members: base(item) },
+      delta,
+    ).members;
+  };
 
 // ---------------------------------------------------------------------------
 // resolveFork — fork = modular + Δ; pull automatic for non-overridden attrs;
@@ -104,19 +119,19 @@ describe('validateDefinition', () => {
 
   it('accepts a well-formed two-bucket definition', () => {
     const d = def('parent', [bItem('i1', 1, 'B1'), bItem('i2', 2, 'B2')]);
-    expect(validateDefinition(d, new Map([['parent', d]]), membersOf(buckets))).toEqual([]);
+    expect(validateDefinition(d, new Map([['parent', d]]), itemMembers(buckets))).toEqual([]);
   });
 
   it('rejects an empty bucket reference', () => {
     const d = def('parent', [bItem('i1', 1, 'BE')]);
-    const errs = validateDefinition(d, new Map([['parent', d]]), membersOf(buckets));
+    const errs = validateDefinition(d, new Map([['parent', d]]), itemMembers(buckets));
     expect(errs.some((e) => /empty bucket/i.test(e))).toBe(true);
   });
 
   it('rejects a direct cycle: code whose bucket contains itself', () => {
     const SELF = bucket('BS', [m('parent')]);
     const d = def('parent', [bItem('i1', 1, 'BS')]);
-    const errs = validateDefinition(d, new Map([['parent', d]]), membersOf([SELF]));
+    const errs = validateDefinition(d, new Map([['parent', d]]), itemMembers([SELF]));
     expect(errs.some((e) => /cycle/i.test(e))).toBe(true);
   });
 
@@ -133,14 +148,14 @@ describe('validateDefinition', () => {
       ['child', dChild],
       ['grandchild', dGrand],
     ]);
-    const errs = validateDefinition(dParent, defs, membersOf([BA, BB, BC]));
+    const errs = validateDefinition(dParent, defs, itemMembers([BA, BB, BC]));
     expect(errs.some((e) => /cycle/i.test(e))).toBe(true);
   });
 
   it('rejects a singleton cycle', () => {
     const dA = def('A', [sItem('i1', 1, 'B')]);
     const dB = def('B', [sItem('i2', 1, 'A')]);
-    const errs = validateDefinition(dA, new Map([['A', dA], ['B', dB]]), membersOf([]));
+    const errs = validateDefinition(dA, new Map([['A', dA], ['B', dB]]), itemMembers([]));
     expect(errs.some((e) => /cycle/i.test(e))).toBe(true);
   });
 
@@ -148,7 +163,7 @@ describe('validateDefinition', () => {
     const BX = bucket('BX', [m('leaf')]);
     const BY = bucket('BY', [m('leaf')]);
     const d = def('parent', [bItem('i1', 1, 'BX'), bItem('i2', 2, 'BY')]);
-    expect(validateDefinition(d, new Map([['parent', d]]), membersOf([BX, BY]))).toEqual([]);
+    expect(validateDefinition(d, new Map([['parent', d]]), itemMembers([BX, BY]))).toEqual([]);
   });
 
   it('rejects a NON-contiguous interchange group', () => {
@@ -157,13 +172,13 @@ describe('validateDefinition', () => {
       bItem('i2', 2, 'B2', null),
       bItem('i3', 3, 'B1', 7), // group 7 split by position 2 → illegal
     ]);
-    const errs = validateDefinition(d, new Map([['parent', d]]), membersOf(buckets));
+    const errs = validateDefinition(d, new Map([['parent', d]]), itemMembers(buckets));
     expect(errs.some((e) => /contiguous/i.test(e))).toBe(true);
   });
 
   it('rejects duplicate positions', () => {
     const d = def('parent', [bItem('i1', 1, 'B1'), bItem('i2', 1, 'B2')]);
-    const errs = validateDefinition(d, new Map([['parent', d]]), membersOf(buckets));
+    const errs = validateDefinition(d, new Map([['parent', d]]), itemMembers(buckets));
     expect(errs.some((e) => /position/i.test(e))).toBe(true);
   });
 });
@@ -248,7 +263,7 @@ describe('checkFulfillment', () => {
         { itemId: 'i2', childCodeId: 'edit-b', sentences: [8] },
         { itemId: 'i3', childCodeId: 'must-have', sentences: [9] },
       ],
-      membersOf(buckets),
+      itemMembers(buckets),
     );
     expect(r.complete).toBe(true);
     expect(r.missingItemIds).toEqual([]);
@@ -262,7 +277,7 @@ describe('checkFulfillment', () => {
         { itemId: 'i1', childCodeId: 'scenario-a', sentences: [1] },
         { itemId: 'i1', childCodeId: 'scenario-b', sentences: [2] },
       ],
-      membersOf(buckets),
+      itemMembers(buckets),
     );
     expect(r.missingItemIds.sort()).toEqual(['i2', 'i3']);
     expect(r.complete).toBe(false);
@@ -272,7 +287,7 @@ describe('checkFulfillment', () => {
     const r = checkFulfillment(
       parent,
       [{ itemId: 'i1', childCodeId: 'edit-a', sentences: [1] }], // edit-a ∉ B1
-      membersOf(buckets),
+      itemMembers(buckets),
     );
     expect(r.missingItemIds).toContain('i1');
   });
@@ -285,7 +300,7 @@ describe('checkFulfillment', () => {
         { itemId: 'i2', childCodeId: 'edit-a', sentences: [2] }, // edit-b (mandatory) missing
         { itemId: 'i3', childCodeId: 'must-have', sentences: [3] },
       ],
-      membersOf(buckets),
+      itemMembers(buckets),
     );
     expect(r.complete).toBe(true); // fulfillment ≠ mandatory satisfaction; warn-level
     expect(r.mandatoryMissing).toEqual([{ itemId: 'i2', codeIds: ['edit-b'] }]);
@@ -300,7 +315,7 @@ describe('checkFulfillment', () => {
         { itemId: 'i2', childCodeId: 'edit-a', sentences: [5] },
         { itemId: 'i3', childCodeId: 'must-have', sentences: [6] },
       ],
-      membersOf(buckets),
+      itemMembers(buckets),
     );
     expect(r.missingItemIds).toEqual([]);
     expect(r.complete).toBe(true);
@@ -311,7 +326,7 @@ describe('checkFulfillment', () => {
     const r = checkFulfillment(
       parent,
       [{ itemId: 'i3', childCodeId: 'c1', sentences: [1], via: 'c1' }],
-      membersOf(buckets),
+      itemMembers(buckets),
     );
     expect(r.missingItemIds).toContain('i3');
   });
@@ -323,7 +338,7 @@ describe('checkFulfillment', () => {
         { itemId: 'i1', childCodeId: 'scenario-a', sentences: [9, 4] },
         { itemId: 'i2', childCodeId: 'edit-a', sentences: [4] }, // sentence 4 double-serves
       ],
-      membersOf(buckets),
+      itemMembers(buckets),
     );
     expect(r.firstEvidence.get('i1')).toBe(4);
     expect(r.firstEvidence.get('i2')).toBe(4);
@@ -345,24 +360,24 @@ describe('subsumption', () => {
   it('sub whose single bucket is a subset of one parent bucket → mapping found', () => {
     const sub = def('c1', [bItem('s1', 1, 'R')]);
     const parent = def('c2', [bItem('p1', 1, 'RW'), bItem('p2', 2, 'E')]);
-    const r = subsumption(sub, parent, membersOf([REVIEW, REVIEW_WIDE, EDIT]), membersOf([REVIEW, REVIEW_WIDE, EDIT]));
+    const r = subsumption(sub, parent, itemMembers([REVIEW, REVIEW_WIDE, EDIT]), itemMembers([REVIEW, REVIEW_WIDE, EDIT]));
     expect(r).toEqual([{ parentItemId: 'p1', viaSubItemId: 's1' }]);
   });
 
   it('no mapping when sub admits a code the parent bucket does not', () => {
     const sub = def('c1', [bItem('s1', 1, 'RW')]); // wider than parent's R
     const parent = def('c2', [bItem('p1', 1, 'R')]);
-    const r = subsumption(sub, parent, membersOf([REVIEW, REVIEW_WIDE]), membersOf([REVIEW, REVIEW_WIDE]));
+    const r = subsumption(sub, parent, itemMembers([REVIEW, REVIEW_WIDE]), itemMembers([REVIEW, REVIEW_WIDE]));
     expect(r).toBeNull();
   });
 
-  it('fork-added unpushed code blocks substitution (fork view ⊄ modular view)', () => {
-    const forkView = (id: string) =>
-      id === 'R' ? [...REVIEW.members, m('my-fork-code')] : membersOf([REVIEW, REVIEW_WIDE, EDIT])(id);
+  it('slot-fork-added unpushed code blocks substitution (sub slot view ⊄ parent slot view)', () => {
+    const base = itemMembers([REVIEW, REVIEW_WIDE, EDIT]);
     const sub = def('c1', [bItem('s1', 1, 'R')]);
     const parent = def('c2', [bItem('p1', 1, 'R')]);
-    // sub read under fork (has extra code), parent under modular → ⊄ → blocked
-    expect(subsumption(sub, parent, forkView, membersOf([REVIEW, REVIEW_WIDE, EDIT]))).toBeNull();
+    // Sub's R slot is forked (+my-fork-code, unpushed); parent's R slot is not.
+    const subView = withSlotForks(base, { s1: { addedCodes: [m('my-fork-code')] } });
+    expect(subsumption(sub, parent, subView, base)).toBeNull();
   });
 
   it('multi-bucket sub must land inside ONE interchange group of the parent', () => {
@@ -371,7 +386,7 @@ describe('subsumption', () => {
     const AW = bucket('AW', [m('a1'), m('x')]);
     const BW = bucket('BW', [m('b1'), m('y')]);
     const sub = def('c1', [bItem('s1', 1, 'A'), bItem('s2', 2, 'B')]);
-    const mAll = membersOf([A, B, AW, BW]);
+    const mAll = itemMembers([A, B, AW, BW]);
     // parent items 1,2 in one interchange group → OK
     const pGood = def('c2', [bItem('p1', 1, 'AW', 1), bItem('p2', 2, 'BW', 1), bItem('p3', 3, 'A')]);
     expect(subsumption(sub, pGood, mAll, mAll)).not.toBeNull();
@@ -383,8 +398,81 @@ describe('subsumption', () => {
   it('a single-item substitution needs no interchange group (singleton target is trivially a group)', () => {
     const sub = def('c1', [bItem('s1', 1, 'R')]);
     const parent = def('c2', [bItem('p1', 1, 'R'), bItem('p2', 2, 'E')]);
-    const mAll = membersOf([REVIEW, EDIT]);
+    const mAll = itemMembers([REVIEW, EDIT]);
     expect(subsumption(sub, parent, mAll, mAll)).toEqual([{ parentItemId: 'p1', viaSubItemId: 's1' }]);
+  });
+
+  // Hudson's hand-drawn example, end to end at the engine level.
+  describe("Hudson's example: experimental-identification ⊑ structure-driven-hypothesis", () => {
+    const REVIEW_B = bucket('REV', [m('experimental-identification'), m('behavior-reconciliation')], 'Review');
+    const STRUCTURE = bucket('STR', [m('new-components'), m('structure-reconciliation')], 'Structure');
+    const base = itemMembers([REVIEW_B, STRUCTURE]);
+
+    // experimental-identification: Review{behavior-reconciliation} + Structure
+    // with a SLOT FORK appending queue-added-to-structure (mandatory).
+    const sub = def('experimental-identification', [
+      bItem('ei-rev', 1, 'REV'),
+      bItem('ei-str', 2, 'STR'),
+    ]);
+    const subForks = {
+      'ei-rev': { removedCodeIds: ['experimental-identification'] },
+      'ei-str': { addedCodes: [m('queue-added-to-structure', true)] },
+    } as Record<string, ForkDelta>;
+    const subView = withSlotForks(base, subForks);
+
+    // structure-driven-hypothesis: {Review, Structure} interchangeable ≺ Issue ≺ Change.
+    const ISSUE = bucket('ISS', [m('issue-found')], 'Issue');
+    const CHANGE = bucket('CHG', [m('change-made')], 'Change');
+    const parent = def('structure-driven-hypothesis', [
+      bItem('p-rev', 1, 'REV', 1),
+      bItem('p-str', 2, 'STR', 1),
+      bItem('p-iss', 3, 'ISS'),
+      bItem('p-chg', 4, 'CHG'),
+    ]);
+
+    it('slot fork resolves: Structure slot gains queue-added-to-structure AS MANDATORY, modular untouched', () => {
+      const eff = subView(sub.items[1]);
+      expect(eff.find((x) => x.codeId === 'queue-added-to-structure')).toEqual(
+        m('queue-added-to-structure', true),
+      );
+      // the modular Structure bucket itself is untouched (pure overlay)
+      expect(base(sub.items[1]).some((x) => x.codeId === 'queue-added-to-structure')).toBe(false);
+    });
+
+    it('mandatory is enforced from the SLOT view: fulfilling the forked Structure slot without the appended code surfaces it', () => {
+      const r = checkFulfillment(
+        sub,
+        [
+          { itemId: 'ei-rev', childCodeId: 'behavior-reconciliation', sentences: [1] },
+          { itemId: 'ei-str', childCodeId: 'new-components', sentences: [2] },
+        ],
+        subView,
+      );
+      expect(r.complete).toBe(true); // warn, never block
+      expect(r.mandatoryMissing).toEqual([
+        { itemId: 'ei-str', codeIds: ['queue-added-to-structure'] },
+      ]);
+    });
+
+    it('UNPUSHED slot fork blocks substitution into the parent (push-first rule)', () => {
+      const parentView = itemMembers([REVIEW_B, STRUCTURE, ISSUE, CHANGE]);
+      expect(subsumption(sub, parent, subView, parentView)).toBeNull();
+    });
+
+    it('after push (modular Structure gains the code NON-mandatory) the sub substitutes into the {Review, Structure} interchange group', () => {
+      const STRUCTURE_PUSHED = bucket(
+        'STR',
+        [...STRUCTURE.members, m('queue-added-to-structure', false)],
+        'Structure',
+      );
+      const pushedBase = itemMembers([REVIEW_B, STRUCTURE_PUSHED, ISSUE, CHANGE]);
+      // Sub still carries its fork: the mandatory flag stays FORK-LOCAL, but the
+      // member SET now matches modular, so ⊆ holds per slot.
+      const subViewPushed = withSlotForks(pushedBase, subForks);
+      const mapping = subsumption(sub, parent, subViewPushed, pushedBase);
+      expect(mapping).not.toBeNull();
+      expect(new Set(mapping!.map((x) => x.parentItemId))).toEqual(new Set(['p-rev', 'p-str']));
+    });
   });
 });
 

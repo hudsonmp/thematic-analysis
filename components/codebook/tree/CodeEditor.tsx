@@ -17,6 +17,7 @@ import MentionTextarea, { type MentionCode } from '@/components/codebook/Mention
 import { splitDefinition, joinDefinition } from '@/lib/codebook/definition';
 import type { ExemplarT } from '@/lib/types/contracts';
 import type { Tables } from '@/lib/types/cb-db';
+import StepsSection from './StepsSection';
 import ValueList from './ValueList';
 
 type Citation = Tables<'cb_citations'>;
@@ -323,6 +324,11 @@ export default function CodeEditor({
           </div>
         )}
       </section>
+
+      {/* ---- STEPS: the combinatorial definition (v2) — the code as an ordered
+          AND of bucket steps + mandatory codes, with per-slot fork control.
+          Self-loading, so the drawer stays identical in every host. ---- */}
+      <StepsSection codeId={code.id} codebookId={code.codebook_id} />
 
       {/* ---- PAPER ---- */}
       <section className="border-t border-foreground/10 pt-3">

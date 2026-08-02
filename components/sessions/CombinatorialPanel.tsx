@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { BucketView } from '@/app/actions/buckets';
+import type { BucketView, SlotItem } from '@/app/actions/buckets';
 import { listAssignmentChildren, type AssignmentChildInput } from '@/app/actions/assignments';
-import { subsumption, type DefItem } from '@/lib/codebook/combinatorial';
+import { subsumption, type BucketMember, type DefItem } from '@/lib/codebook/combinatorial';
 import type { PopupCode } from './CodingPopup';
 
 /**
@@ -52,9 +52,10 @@ export default function CombinatorialPanel({
   /** The annotation the parent is assigned on — null while the assign is still
    *  in flight. Present ⇒ the SAVED decomposition (if any) seeds the picks. */
   parentAnnotationId: string | null;
-  items: DefItem[];
+  /** The parent's step slots, each carrying its SLOT-fork-effective members. */
+  items: SlotItem[];
   buckets: BucketView[];
-  defs: Record<string, DefItem[]>;
+  defs: Record<string, SlotItem[]>;
   codesById: Map<string, PopupCode>;
   /** Codes already assigned on the SAME annotation as the parent. */
   assignedCodeIds: string[];
@@ -87,8 +88,10 @@ export default function CombinatorialPanel({
       ...assignedCodeIds.map((c) => ({ annotationId: null, codeId: c })),
       ...inSpan.map((a) => ({ annotationId: a.annotationId, codeId: a.codeId })),
     ];
-    const forkMembers = (bid: string) => bucketById.get(bid)?.members ?? [];
-    const modularMembers = (bid: string) => bucketById.get(bid)?.modularMembers ?? [];
+    // Per-SLOT member view: every item (parent's and sub-defs') is a SlotItem
+    // carrying its own fork-effective member set — the fork hangs off the
+    // step, not the coder.
+    const memOf = (it: DefItem): BucketMember[] => (it as SlotItem).effectiveMembers ?? [];
 
     for (const it of items) {
       if (it.kind === 'singleton') {
@@ -97,7 +100,7 @@ export default function CombinatorialPanel({
         }
         continue;
       }
-      const admissible = new Set(forkMembers(it.bucketId).map((m) => m.codeId));
+      const admissible = new Set(memOf(it).map((m) => m.codeId));
       for (const s of sources) {
         if (admissible.has(s.codeId)) add(it.id, `${s.annotationId ?? 'self'}|${s.codeId}`);
       }
@@ -109,8 +112,8 @@ export default function CombinatorialPanel({
       const mapping = subsumption(
         { codeId: s.codeId, items: subItems },
         { codeId: parentCode.id, items },
-        forkMembers,
-        modularMembers,
+        memOf,
+        memOf,
       );
       if (!mapping) continue;
       for (const mm of mapping) {
@@ -120,7 +123,7 @@ export default function CombinatorialPanel({
       }
     }
     return { picks, via };
-  }, [items, assignedCodeIds, inSpan, defs, bucketById, parentCode.id]);
+  }, [items, assignedCodeIds, inSpan, defs, parentCode.id]);
 
   const [picked, setPicked] = useState<Map<string, Set<PickKey>>>(
     () => new Map([...prefill.picks].map(([k, v]) => [k, new Set(v)])),
@@ -236,7 +239,7 @@ export default function CombinatorialPanel({
     if (it.kind === 'singleton') {
       pushSources(it.codeId, true);
     } else {
-      for (const m of bucketById.get(it.bucketId)?.members ?? []) pushSources(m.codeId, m.mandatory);
+      for (const m of (it as SlotItem).effectiveMembers ?? []) pushSources(m.codeId, m.mandatory);
       // subsuming combinatorial codes appear as candidates too (via c₁)
       for (const [key, viaCode] of prefill.via) {
         if ((prefill.picks.get(it.id) ?? new Set()).has(key) && !out.some((o) => o.key === key)) {
@@ -266,12 +269,14 @@ export default function CombinatorialPanel({
       <div className="mt-2 space-y-2">
         {items.map((it) => {
           const bucket = it.kind === 'bucket' ? bucketById.get(it.bucketId) : null;
+          const slotName = it.kind === 'bucket' ? (it.bucketName ?? bucket?.name ?? 'bucket') : null;
+          const slotCaption = it.kind === 'bucket' ? (it.bucketCaption ?? bucket?.caption ?? null) : null;
           const cands = candidatesFor(it);
           const sel = picked.get(it.id) ?? new Set<PickKey>();
           const fulfilled = sel.size > 0;
           const mandatoryMissing =
             it.kind === 'bucket' && fulfilled
-              ? (bucket?.members ?? [])
+              ? (it.effectiveMembers ?? [])
                   .filter((m) => m.mandatory && ![...sel].some((k) => k.endsWith(`|${m.codeId}`)))
                   .map((m) => codesById.get(m.codeId)?.mnemonic ?? m.codeId)
               : [];
@@ -279,12 +284,12 @@ export default function CombinatorialPanel({
             <div key={it.id} className={`border px-2 py-1.5 ${fulfilled ? 'border-emerald-600/40' : 'border-foreground/15'}`}>
               <div className="flex items-baseline justify-between gap-2">
                 <p className="text-xs font-medium">
-                  {it.kind === 'bucket' ? (bucket?.name ?? 'bucket') : `${codesById.get(it.codeId)?.mnemonic ?? 'code'} (required)`}
+                  {it.kind === 'bucket' ? slotName : `${codesById.get(it.codeId)?.mnemonic ?? 'code'} (required)`}
                   {fulfilled && <span className="ml-1 text-emerald-700">✓</span>}
                 </p>
                 <span className="shrink-0 text-[10px] uppercase tracking-wide text-foreground/35">{stagesLabel(it)}</span>
               </div>
-              {bucket?.caption && <p className="text-[11px] italic text-foreground/45">{bucket.caption}</p>}
+              {slotCaption && <p className="text-[11px] italic text-foreground/45">{slotCaption}</p>}
               <div className="mt-1 flex flex-wrap gap-1">
                 {cands.map((c) => {
                   const on = sel.has(c.key);

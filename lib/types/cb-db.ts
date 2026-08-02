@@ -325,6 +325,7 @@ export type Database = {
           bucket_id: string
           delta: Json
           id: string
+          item_id: string
           owner_id: string
           updated_at: string
         }
@@ -332,6 +333,7 @@ export type Database = {
           bucket_id: string
           delta?: Json
           id?: string
+          item_id: string
           owner_id: string
           updated_at?: string
         }
@@ -339,6 +341,7 @@ export type Database = {
           bucket_id?: string
           delta?: Json
           id?: string
+          item_id?: string
           owner_id?: string
           updated_at?: string
         }
@@ -348,6 +351,13 @@ export type Database = {
             columns: ["bucket_id"]
             isOneToOne: false
             referencedRelation: "cb_buckets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_bucket_forks_item_fk"
+            columns: ["item_id"]
+            isOneToOne: true
+            referencedRelation: "cb_code_bucket_items"
             referencedColumns: ["id"]
           },
         ]
