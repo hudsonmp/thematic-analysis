@@ -50,6 +50,7 @@ export default function MentionTextarea({
   disabled,
   className,
   'aria-label': ariaLabel,
+  onBlur,
 }: {
   value: string;
   onChange: (next: string) => void;
@@ -60,6 +61,9 @@ export default function MentionTextarea({
   disabled?: boolean;
   className?: string;
   'aria-label'?: string;
+  /** Fired on textarea blur (after the internal mention-popover cleanup) —
+   *  lets hosts blur-commit cheap fields (e.g. a code's Notes). */
+  onBlur?: () => void;
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
   const [mention, setMention] = useState<Mention | null>(null);
@@ -167,11 +171,12 @@ export default function MentionTextarea({
         }}
         onSelect={() => sync()}
         onKeyDown={onKeyDown}
-        onBlur={() =>
+        onBlur={() => {
           // Delay so a mousedown on a dropdown row (which blurs the textarea)
           // still lands its click before the list unmounts.
-          setTimeout(() => setMention(null), 150)
-        }
+          setTimeout(() => setMention(null), 150);
+          onBlur?.();
+        }}
       />
       {open && (
         <div

@@ -160,6 +160,7 @@ export default async function SessionPage({
     definition: c.current?.definition ?? null,
     exemplars: exemplarTexts(c.current?.exemplars),
     counterExample: c.current?.disconfirming_pattern ?? null,
+    notes: c.notes ?? null,
   }));
 
   // Effective recording anchor (Task 5) — MUST match materializeAutoEpisodes so

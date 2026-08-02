@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { Fragment, useMemo, useState } from 'react';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { splitDefinition } from '@/lib/codebook/definition';
+import NoteText from '@/components/codebook/NoteText';
 import {
   buildCodebookDocument,
   docNodesInOrder,
@@ -62,6 +63,7 @@ function cellText(
     // the exemplar column is sized for text that never appears.
     exemplars: shortestExemplar(asExemplarText(v?.exemplars)) ?? '',
     counter: v?.disconfirming_pattern ?? '',
+    notes: code.notes ?? '',
     meta: [...answersFor(code), ...citesFor(code)].join(' '),
   };
 }
@@ -437,6 +439,8 @@ function CodeRow({
       }
       case 'counter':
         return v?.disconfirming_pattern ?? null;
+      case 'notes':
+        return code.notes ? <NoteText text={code.notes} /> : null;
       case 'meta': {
         const answers = answersFor(code);
         const cites = citesFor(code);

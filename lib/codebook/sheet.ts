@@ -4,9 +4,12 @@
  * alone, so the layout is deterministic and testable apart from React.
  *
  * Policy:
- *  - `code` and `definition` always render (a codebook without them isn't one);
- *    every other column is DROPPED when no code has content for it — an empty
- *    "Counter-example" column is pure width tax on paper.
+ *  - `code`, `definition` and `notes` always render (`code`/`definition`
+ *    because a codebook without them isn't one; `notes` because the printed
+ *    sheet doubles as a mid-coding scratch surface — a blank Notes column is
+ *    there to be written IN, on paper); every other column is DROPPED when no
+ *    code has content for it — an empty "Counter-example" column is pure
+ *    width tax.
  *  - Remaining width splits proportional to sqrt(headerLen + mean content
  *    length). sqrt dampens outliers: one code with a paragraph-long counter-
  *    example widens its column a little, not catastrophically.
@@ -26,6 +29,7 @@ export type SheetColKey =
   | 'excludeIf'
   | 'exemplars'
   | 'counter'
+  | 'notes'
   | 'meta';
 
 export const SHEET_COL_HEADERS: Record<SheetColKey, string> = {
@@ -35,6 +39,7 @@ export const SHEET_COL_HEADERS: Record<SheetColKey, string> = {
   excludeIf: 'Exclude if',
   exemplars: 'Exemplars',
   counter: 'Counter-example',
+  notes: 'Notes',
   meta: 'Answers · Sources',
 };
 
@@ -45,6 +50,7 @@ export const SHEET_COL_ORDER: SheetColKey[] = [
   'excludeIf',
   'exemplars',
   'counter',
+  'notes',
   'meta',
 ];
 
@@ -55,7 +61,11 @@ export function computeSheetColumns(
   rows: Record<SheetColKey, string>[],
 ): { key: SheetColKey; width: number }[] {
   const visible = SHEET_COL_ORDER.filter(
-    (k) => k === 'code' || k === 'definition' || rows.some((r) => r[k].trim() !== ''),
+    (k) =>
+      k === 'code' ||
+      k === 'definition' ||
+      k === 'notes' || // always present — the printed sheet's write-in margin
+      rows.some((r) => r[k].trim() !== ''),
   );
   const weights = visible.map((k) => {
     const mean =

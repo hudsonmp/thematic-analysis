@@ -7,6 +7,7 @@ import {
   removeCodeFacetValue,
   renameCode,
   saveNewVersion,
+  setCodeNotes,
   setCodeOrigin,
   type CodeOrigin,
 } from '@/app/actions/codes';
@@ -90,6 +91,9 @@ export default function CodeEditor({
   const [exemplars, setExemplars] = useState<string[]>(asExemplarText(v?.exemplars));
   const [disconfirming, setDisconfirming] = useState(v?.disconfirming_pattern ?? '');
   const [changeNote, setChangeNote] = useState('');
+  // NOTES are unversioned marginalia (comments + @slug links) — cheap like the
+  // slug, so they commit on blur rather than riding the versioned save.
+  const [notes, setNotes] = useState(code.notes ?? '');
 
   const dirty =
     joinDefinition(literature, definition) !== (v?.definition ?? '') ||
@@ -322,6 +326,32 @@ export default function CodeEditor({
             </button>
           </div>
         )}
+      </section>
+
+      {/* ---- NOTES: unversioned marginalia. Commits on BLUR (like the slug) —
+          notes are commentary about the code, not versioned anatomy, and a
+          version per aside would be noise. @ mentions link other codes; the
+          notes surface in the coding popup's hover expansion and the printable
+          document's Notes column. ---- */}
+      <section className="border-t border-foreground/10 pt-3">
+        <Field label="Notes" hint="Comments about this code. @ mentions link another code by its slug. Shows on hover while coding.">
+          <MentionTextarea
+            value={notes}
+            disabled={pending}
+            onChange={setNotes}
+            onBlur={() => {
+              if ((notes.trim() || '') === (code.notes ?? '').trim()) return;
+              run(
+                () => setCodeNotes(code.id, notes),
+                () => setNotes(code.notes ?? ''),
+              );
+            }}
+            codes={mentionables}
+            rows={2}
+            className={input}
+            aria-label="Notes"
+          />
+        </Field>
       </section>
 
       {/* ---- PAPER ---- */}
