@@ -13,6 +13,7 @@ import {
   type BucketView,
 } from '@/app/actions/buckets';
 import type { DefItem, ForkDelta } from '@/lib/codebook/combinatorial';
+import CodeCombobox from '@/components/codebook/CodeCombobox';
 
 /**
  * Modular-bucket manager (v2). Two edit SCOPES per bucket, chosen explicitly:
@@ -34,6 +35,7 @@ export default function BucketManager({
   latestSnapshotId,
   codeOptions,
   readOnly,
+  embedded = false,
 }: {
   codebookId: string;
   buckets: BucketView[];
@@ -41,6 +43,9 @@ export default function BucketManager({
   latestSnapshotId: string | null;
   codeOptions: { id: string; mnemonic: string }[];
   readOnly: boolean;
+  /** True when rendered INSIDE another page (the /codebook Buckets tab) —
+   *  section semantics instead of a page <main>. */
+  embedded?: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -68,8 +73,9 @@ export default function BucketManager({
       .filter(([, items]) => items.some((i) => i.kind === 'bucket' && i.bucketId === bucketId))
       .map(([codeId]) => codeOptions.find((c) => c.id === codeId)?.mnemonic ?? codeId.slice(0, 8));
 
+  const Root = embedded ? 'section' : 'main';
   return (
-    <main className="mx-auto max-w-4xl px-6 py-10">
+    <Root className={embedded ? 'mx-auto max-w-4xl px-6 py-6' : 'mx-auto max-w-4xl px-6 py-10'}>
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-medium tracking-tight">Modular buckets</h1>
@@ -166,7 +172,7 @@ export default function BucketManager({
           />
         ))}
       </section>
-    </main>
+    </Root>
   );
 }
 
@@ -188,7 +194,6 @@ function BucketCard({
   run: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
   const [scope, setScope] = useState<'modular' | 'fork'>('modular');
-  const [addCodeId, setAddCodeId] = useState('');
   const [pushArmed, setPushArmed] = useState(false);
 
   const mnemonicOf = (codeId: string) =>
@@ -204,18 +209,17 @@ function BucketCard({
 
   const saveDelta = (next: ForkDelta) => run(() => saveMyForkDelta(bucket.id, next));
 
-  const addMember = () => {
-    if (!addCodeId) return;
+  const addMember = (codeId: string) => {
+    if (!codeId) return;
     if (scope === 'modular') {
-      const next = [...bucket.modularMembers, { codeId: addCodeId, mandatory: false }];
+      const next = [...bucket.modularMembers, { codeId, mandatory: false }];
       void run(() => setBucketMembers(bucket.id, next));
     } else {
       void saveDelta({
         ...delta,
-        addedCodes: [...(delta.addedCodes ?? []), { codeId: addCodeId, mandatory: false }],
+        addedCodes: [...(delta.addedCodes ?? []), { codeId, mandatory: false }],
       });
     }
-    setAddCodeId('');
   };
 
   const toggleMandatory = (codeId: string, current: boolean) => {
@@ -413,28 +417,14 @@ function BucketCard({
 
       {!readOnly && (
         <div className="mt-2 flex items-center gap-2">
-          <select
-            value={addCodeId}
-            onChange={(e) => setAddCodeId(e.target.value)}
-            className="border border-foreground/25 bg-background px-2 py-1 text-xs text-foreground"
-          >
-            <option value="">add a member code…</option>
-            {codeOptions
-              .filter((c) => !bucket.members.some((m) => m.codeId === c.id))
-              .map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.mnemonic}
-                </option>
-              ))}
-          </select>
-          <button
-            type="button"
-            disabled={busy || !addCodeId}
-            onClick={addMember}
-            className="border border-foreground/25 px-2 py-1 text-xs transition hover:border-foreground disabled:opacity-40"
-          >
-            add to {scope === 'modular' ? 'shared bucket' : 'my fork'}
-          </button>
+          {/* The coding screen's searchable picker, not a 60-option native
+              select: type-to-search, ⏎ adds to the active scope immediately. */}
+          <CodeCombobox
+            options={codeOptions.filter((c) => !bucket.members.some((m) => m.codeId === c.id))}
+            placeholder={`add a member code… (→ ${scope === 'modular' ? 'shared bucket' : 'my fork'})`}
+            disabled={busy}
+            onPick={addMember}
+          />
         </div>
       )}
     </div>

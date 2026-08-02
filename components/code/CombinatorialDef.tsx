@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { setCombinatorialDefinition } from '@/app/actions/codes';
 import type { BucketView } from '@/app/actions/buckets';
 import { stagesOf, type DefItem } from '@/lib/codebook/combinatorial';
+import CodeCombobox from '@/components/codebook/CodeCombobox';
 
 /**
  * The combinatorial-definition editor on a code's page (v2): the ordered AND
@@ -140,24 +141,49 @@ export default function CombinatorialDef({
               <option value="bucket">bucket</option>
               <option value="singleton">mandatory code</option>
             </select>
-            <select
-              disabled={readOnly}
-              value={r.targetId}
-              onChange={(e) =>
-                setRows((prev) => prev.map((x, j) => (j === i ? { ...x, targetId: e.target.value } : x)))
-              }
-              className="min-w-48 border border-foreground/25 bg-background px-1.5 py-1 font-mono text-foreground"
-            >
-              <option value="">choose…</option>
-              {(r.kind === 'bucket' ? buckets.map((b) => ({ id: b.id, label: b.name })) : allCodes
-                .filter((c) => c.id !== codeId)
-                .map((c) => ({ id: c.id, label: c.mnemonic }))
-              ).map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+            {r.kind === 'bucket' ? (
+              <select
+                disabled={readOnly}
+                value={r.targetId}
+                onChange={(e) =>
+                  setRows((prev) => prev.map((x, j) => (j === i ? { ...x, targetId: e.target.value } : x)))
+                }
+                className="min-w-48 border border-foreground/25 bg-background px-1.5 py-1 font-mono text-foreground"
+              >
+                <option value="">choose…</option>
+                {buckets.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            ) : r.targetId !== '' ? (
+              // Singleton picked: show it as a chip; × clears back to search.
+              <span className="inline-flex items-center gap-1 border border-emerald-600/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono">
+                {allCodes.find((c) => c.id === r.targetId)?.mnemonic ?? r.targetId.slice(0, 8)}
+                {!readOnly && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setRows((prev) => prev.map((x, j) => (j === i ? { ...x, targetId: '' } : x)))
+                    }
+                    className="text-foreground/40 hover:text-red-600"
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            ) : (
+              // The coding screen's searchable picker, not a 60-option select.
+              <CodeCombobox
+                options={allCodes.filter((c) => c.id !== codeId)}
+                placeholder="search a code…"
+                disabled={readOnly}
+                onPick={(id) =>
+                  setRows((prev) => prev.map((x, j) => (j === i ? { ...x, targetId: id } : x)))
+                }
+              />
+            )}
             <label className="flex items-center gap-1 text-foreground/50">
               ≋ group
               <input
