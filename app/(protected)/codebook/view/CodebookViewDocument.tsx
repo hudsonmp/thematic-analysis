@@ -1,10 +1,11 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useMemo, useRef, useState } from 'react';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { splitDefinition } from '@/lib/codebook/definition';
 import NoteText from '@/components/codebook/NoteText';
+import { setCodeNotes } from '@/app/actions/codes';
 import {
   buildCodebookDocument,
   docNodesInOrder,
@@ -73,6 +74,7 @@ export default function CodebookViewDocument({
   facets,
   codes,
   citations,
+  canEdit = false,
 }: {
   codebookName: string;
   codebookId: string;
@@ -83,6 +85,8 @@ export default function CodebookViewDocument({
   facets: FacetWithValues[];
   codes: CodeWithRefs[];
   citations: Citation[];
+  /** Editors may click a Notes cell to edit in place; viewers read only. */
+  canEdit?: boolean;
 }) {
   const router = useRouter();
   const enumFacets = useMemo(() => facets.filter((f) => f.type === 'enum'), [facets]);
@@ -293,6 +297,7 @@ export default function CodebookViewDocument({
                   showLit={showLit}
                   answersFor={answersFor}
                   citesFor={citesFor}
+                  canEdit={canEdit}
                 />
               ))}
             </Fragment>
@@ -315,6 +320,7 @@ export default function CodebookViewDocument({
                   showLit={showLit}
                   answersFor={answersFor}
                   citesFor={citesFor}
+                  canEdit={canEdit}
                 />
               ))}
             </>
@@ -383,12 +389,14 @@ function CodeRow({
   showLit,
   answersFor,
   citesFor,
+  canEdit,
 }: {
   code: CodeWithRefs;
   colKeys: ColKey[];
   showLit: boolean;
   answersFor: (c: CodeWithRefs) => string[];
   citesFor: (c: CodeWithRefs) => string[];
+  canEdit: boolean;
 }) {
   const v = code.current;
   const def = splitDefinition(v?.definition);
@@ -432,7 +440,7 @@ function CodeRow({
       case 'counter':
         return v?.disconfirming_pattern ?? null;
       case 'notes':
-        return code.notes ? <NoteText text={code.notes} /> : null;
+        return <NotesCell codeId={code.id} notes={code.notes} canEdit={canEdit} />;
       case 'meta': {
         const answers = answersFor(code);
         const cites = citesFor(code);
@@ -456,6 +464,86 @@ function CodeRow({
         <Td key={k}>{cell(k)}</Td>
       ))}
     </tr>
+  );
+}
+
+/**
+ * The Notes cell — the document's WRITE-IN margin, editable in place (v: click,
+ * type, blur saves; Esc cancels). Structure is plain-text syntax NoteText
+ * renders: `1.` numbered steps, `a.` fork branches beneath one, `@slug` links.
+ * The editing chrome never prints: the textarea exists only while focused, and
+ * the empty-cell hint is print-hidden.
+ */
+function NotesCell({
+  codeId,
+  notes,
+  canEdit,
+}: {
+  codeId: string;
+  notes: string | null;
+  canEdit: boolean;
+}) {
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  // Esc = CANCEL. The unmount it triggers can still fire onBlur — this ref
+  // keeps a cancelled edit from saving through that stray blur.
+  const cancelledRef = useRef(false);
+
+  if (editing) {
+    return (
+      <textarea
+        autoFocus
+        defaultValue={notes ?? ''}
+        rows={Math.max(4, (notes ?? '').split('\n').length + 1)}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            cancelledRef.current = true;
+            setEditing(false);
+          }
+        }}
+        onBlur={() => {
+          if (cancelledRef.current) {
+            cancelledRef.current = false;
+            return;
+          }
+          const next = draft;
+          setEditing(false);
+          if (next === (notes ?? '')) return;
+          setCodeNotes(codeId, next)
+            .then(() => router.refresh())
+            .catch((err) => setError(err instanceof Error ? err.message : 'Save failed.'));
+        }}
+        placeholder={'1. first step\na. fork branch\nb. other branch\n@slug links a code'}
+        className="w-full border border-foreground/30 bg-background px-1 py-0.5 text-[11px] leading-snug focus:border-foreground focus:outline-none"
+        aria-label="Notes"
+      />
+    );
+  }
+
+  return (
+    <div
+      onClick={
+        canEdit
+          ? () => {
+              setDraft(notes ?? '');
+              setError(null);
+              setEditing(true);
+            }
+          : undefined
+      }
+      title={canEdit ? 'Click to edit — 1. numbered · a. fork branches · @slug links' : undefined}
+      className={canEdit ? 'min-h-[1.5rem] cursor-text' : undefined}
+    >
+      {notes ? (
+        <NoteText text={notes} />
+      ) : canEdit ? (
+        <span className="text-foreground/25 print:hidden">add notes…</span>
+      ) : null}
+      {error && <p className="text-[10px] text-red-600 print:hidden">{error}</p>}
+    </div>
   );
 }
 

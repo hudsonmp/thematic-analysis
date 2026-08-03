@@ -1,4 +1,5 @@
 import { getOrCreateCodebook, listCodebooks, listCodebookTree } from '@/app/actions/codebook';
+import { getMyRole } from '@/lib/auth/roles';
 import CodebookViewDocument from './CodebookViewDocument';
 
 /**
@@ -24,7 +25,7 @@ export default async function CodebookViewPage({
   searchParams: Promise<{ codebook?: string }>;
 }) {
   const { codebook: requested } = await searchParams;
-  const [active, all] = await Promise.all([getOrCreateCodebook(), listCodebooks()]);
+  const [active, all, role] = await Promise.all([getOrCreateCodebook(), listCodebooks(), getMyRole()]);
   const chosen = all.find((c) => c.id === requested) ?? active;
   const tree = await listCodebookTree(chosen.id);
 
@@ -36,6 +37,7 @@ export default async function CodebookViewPage({
       facets={tree.facets}
       codes={tree.codes}
       citations={tree.citations}
+      canEdit={role !== 'viewer'}
     />
   );
 }
