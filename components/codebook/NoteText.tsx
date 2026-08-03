@@ -14,13 +14,13 @@
  * (coding-popup hover, printable document), so what you type is what prints.
  */
 
-type Block =
+export type NoteBlock =
   | { kind: 'p'; text: string }
   | { kind: 'list'; items: { n: string; text: string; subs: { n: string; text: string }[] }[] };
 
-function parse(text: string): Block[] {
-  const blocks: Block[] = [];
-  let list: Extract<Block, { kind: 'list' }> | null = null;
+export function parseNote(text: string): NoteBlock[] {
+  const blocks: NoteBlock[] = [];
+  let list: Extract<NoteBlock, { kind: 'list' }> | null = null;
 
   for (const raw of text.split('\n')) {
     const line = raw.trimEnd();
@@ -65,7 +65,7 @@ function Inline({ text }: { text: string }) {
 }
 
 export default function NoteText({ text }: { text: string }) {
-  const blocks = parse(text);
+  const blocks = parseNote(text);
   return (
     <div className="space-y-1">
       {blocks.map((b, i) =>

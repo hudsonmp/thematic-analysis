@@ -1,10 +1,11 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { Fragment, useMemo, useRef, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { splitDefinition } from '@/lib/codebook/definition';
 import NoteText from '@/components/codebook/NoteText';
+import NotesEditor from '@/components/codebook/NotesEditor';
 import { setCodeNotes } from '@/app/actions/codes';
 import {
   buildCodebookDocument,
@@ -486,42 +487,19 @@ function NotesCell({
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Esc = CANCEL for THIS edit only. The flag is reset on every open — a
-  // sticky flag silently swallowed the NEXT edit's save (the "typed it all,
-  // nothing saved" bug). The value itself is read from the DOM at blur, never
-  // tracked in state: uncontrolled input + read-at-commit has no stale-closure
-  // failure mode.
-  const cancelledRef = useRef(false);
 
   if (editing) {
     return (
-      <textarea
-        autoFocus
-        defaultValue={notes ?? ''}
-        rows={Math.max(4, (notes ?? '').split('\n').length + 1)}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') {
-            cancelledRef.current = true;
-            setEditing(false);
-          } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-            e.currentTarget.blur(); // ⌘⏎ commits via the same blur path
-          }
-        }}
-        onBlur={(e) => {
-          if (cancelledRef.current) {
-            cancelledRef.current = false;
-            return;
-          }
-          const next = e.currentTarget.value;
+      <NotesEditor
+        initial={notes ?? ''}
+        onCancel={() => setEditing(false)}
+        onCommit={(next) => {
           setEditing(false);
           if (next === (notes ?? '')) return;
           setCodeNotes(codeId, next)
             .then(() => router.refresh())
             .catch((err) => setError(err instanceof Error ? err.message : 'Save failed.'));
         }}
-        placeholder={'1. first step\na. fork branch\nb. other branch\n@slug links a code'}
-        className="w-full border border-foreground/30 bg-background px-1 py-0.5 text-[11px] leading-snug focus:border-foreground focus:outline-none"
-        aria-label="Notes"
       />
     );
   }
@@ -531,7 +509,6 @@ function NotesCell({
       onClick={
         canEdit
           ? () => {
-              cancelledRef.current = false; // a past Esc must not eat this edit
               setError(null);
               setEditing(true);
             }
