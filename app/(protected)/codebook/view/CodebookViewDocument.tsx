@@ -485,10 +485,12 @@ function NotesCell({
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
-  // Esc = CANCEL. The unmount it triggers can still fire onBlur — this ref
-  // keeps a cancelled edit from saving through that stray blur.
+  // Esc = CANCEL for THIS edit only. The flag is reset on every open — a
+  // sticky flag silently swallowed the NEXT edit's save (the "typed it all,
+  // nothing saved" bug). The value itself is read from the DOM at blur, never
+  // tracked in state: uncontrolled input + read-at-commit has no stale-closure
+  // failure mode.
   const cancelledRef = useRef(false);
 
   if (editing) {
@@ -497,19 +499,20 @@ function NotesCell({
         autoFocus
         defaultValue={notes ?? ''}
         rows={Math.max(4, (notes ?? '').split('\n').length + 1)}
-        onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Escape') {
             cancelledRef.current = true;
             setEditing(false);
+          } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+            e.currentTarget.blur(); // ⌘⏎ commits via the same blur path
           }
         }}
-        onBlur={() => {
+        onBlur={(e) => {
           if (cancelledRef.current) {
             cancelledRef.current = false;
             return;
           }
-          const next = draft;
+          const next = e.currentTarget.value;
           setEditing(false);
           if (next === (notes ?? '')) return;
           setCodeNotes(codeId, next)
@@ -528,7 +531,7 @@ function NotesCell({
       onClick={
         canEdit
           ? () => {
-              setDraft(notes ?? '');
+              cancelledRef.current = false; // a past Esc must not eat this edit
               setError(null);
               setEditing(true);
             }
