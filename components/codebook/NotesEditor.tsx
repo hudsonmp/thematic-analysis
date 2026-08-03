@@ -261,12 +261,6 @@ export default function NotesEditor({
           </li>
         ))}
       </ol>
-      <p className="mt-1 text-[10px] leading-relaxed text-foreground/40">
-        <b>Enter</b> new step below · <b>Tab</b> turn this line into a branch of the step above ·{' '}
-        <b>Shift+Tab</b> turn a branch back into a step · <b>⑂ fork</b> add a branch by mouse ·{' '}
-        <b>Backspace</b> on an empty line removes it · <b>Esc</b> cancel · <b>click away</b> or{' '}
-        <b>⌘+Enter</b> save
-      </p>
     </div>
   );
 }
