@@ -5,7 +5,7 @@ import { Fragment, useMemo, useState } from 'react';
 import type { CodeWithRefs, FacetWithValues } from '@/app/actions/codebook';
 import { splitDefinition } from '@/lib/codebook/definition';
 import NoteText from '@/components/codebook/NoteText';
-import NotesEditor from '@/components/codebook/NotesEditor';
+import NotesEditor, { type MentionOption } from '@/components/codebook/NotesEditor';
 import { setCodeNotes } from '@/app/actions/codes';
 import {
   buildCodebookDocument,
@@ -149,6 +149,17 @@ export default function CodebookViewDocument({
   const cols = computeSheetColumns(measureRows);
   const colKeys = cols.map((c) => c.key);
 
+  // Mentionable codes for the Notes editor's @picker — the coding screen's
+  // metadata (applied definition, exemplars, counter-example, origin).
+  const mentionCodes: MentionOption[] = [...distinct.values()].map((c) => ({
+    id: c.id,
+    mnemonic: c.mnemonic,
+    origin: c.origin,
+    definition: c.current?.definition ?? null,
+    exemplars: asExemplarText(c.current?.exemplars),
+    counterExample: c.current?.disconfirming_pattern ?? null,
+  }));
+
   return (
     <main
       lang="en"
@@ -166,10 +177,13 @@ export default function CodebookViewDocument({
            rules together: hyphens:auto inserts a real hyphen where the word has a
            valid break point (needs lang, set on <main>); overflow-wrap:anywhere
            guarantees any remaining long token still breaks. On screen AND in print. */
+        /* Wrap whole words; NO auto-hyphenation (Hudson: avoid hyphens).
+           overflow-wrap stays as the last resort so a pathological unbroken
+           token still cannot blow the fixed column. */
         .cb-sheet td, .cb-sheet th {
           overflow-wrap: anywhere;
-          hyphens: auto;
-          -webkit-hyphens: auto;
+          hyphens: none;
+          -webkit-hyphens: none;
         }
         @media print {
           .cb-sheet tbody tr { break-inside: avoid; page-break-inside: avoid; }
@@ -299,6 +313,7 @@ export default function CodebookViewDocument({
                   answersFor={answersFor}
                   citesFor={citesFor}
                   canEdit={canEdit}
+                  mentionCodes={mentionCodes}
                 />
               ))}
             </Fragment>
@@ -322,6 +337,7 @@ export default function CodebookViewDocument({
                   answersFor={answersFor}
                   citesFor={citesFor}
                   canEdit={canEdit}
+                  mentionCodes={mentionCodes}
                 />
               ))}
             </>
@@ -391,6 +407,7 @@ function CodeRow({
   answersFor,
   citesFor,
   canEdit,
+  mentionCodes,
 }: {
   code: CodeWithRefs;
   colKeys: ColKey[];
@@ -398,6 +415,7 @@ function CodeRow({
   answersFor: (c: CodeWithRefs) => string[];
   citesFor: (c: CodeWithRefs) => string[];
   canEdit: boolean;
+  mentionCodes: MentionOption[];
 }) {
   const v = code.current;
   const def = splitDefinition(v?.definition);
@@ -441,7 +459,14 @@ function CodeRow({
       case 'counter':
         return v?.disconfirming_pattern ?? null;
       case 'notes':
-        return <NotesCell codeId={code.id} notes={code.notes} canEdit={canEdit} />;
+        return (
+          <NotesCell
+            codeId={code.id}
+            notes={code.notes}
+            canEdit={canEdit}
+            mentionCodes={mentionCodes}
+          />
+        );
       case 'meta': {
         const answers = answersFor(code);
         const cites = citesFor(code);
@@ -479,10 +504,12 @@ function NotesCell({
   codeId,
   notes,
   canEdit,
+  mentionCodes,
 }: {
   codeId: string;
   notes: string | null;
   canEdit: boolean;
+  mentionCodes: MentionOption[];
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -492,6 +519,7 @@ function NotesCell({
     return (
       <NotesEditor
         initial={notes ?? ''}
+        codes={mentionCodes.filter((c) => c.id !== codeId)}
         onCancel={() => setEditing(false)}
         onCommit={(next) => {
           setEditing(false);
