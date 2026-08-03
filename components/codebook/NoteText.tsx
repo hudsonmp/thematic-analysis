@@ -28,16 +28,20 @@ export function parseNote(text: string): NoteBlock[] {
       list = null; // blank line ends the current list
       continue;
     }
-    const num = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
-    const sub = line.match(/^\s*([a-z])[.)]\s+(.*)$/);
+    // Text after the marker is OPTIONAL: a bare "1." (a forked step whose
+    // label is still empty) must stay an ITEM — demoting it to a paragraph
+    // orphaned its branches and dissolved the fork on the next edit. The
+    // marker still requires whitespace-or-end so "1.5 units" stays prose.
+    const num = line.match(/^\s*(\d+)[.)](?:\s+(.*))?$/);
+    const sub = line.match(/^\s*([a-z])[.)](?:\s+(.*))?$/);
     if (num) {
       if (!list) {
         list = { kind: 'list', items: [] };
         blocks.push(list);
       }
-      list.items.push({ n: num[1], text: num[2], subs: [] });
+      list.items.push({ n: num[1], text: num[2] ?? '', subs: [] });
     } else if (sub && list && list.items.length > 0) {
-      list.items[list.items.length - 1].subs.push({ n: sub[1], text: sub[2] });
+      list.items[list.items.length - 1].subs.push({ n: sub[1], text: sub[2] ?? '' });
     } else {
       list = null;
       blocks.push({ kind: 'p', text: line.trim() });

@@ -42,10 +42,12 @@ function toText(steps: Step[]): string {
   steps
     .filter((s) => s.text.trim() !== '' || s.subs.some((x) => x.trim() !== ''))
     .forEach((s, i) => {
-      lines.push(`${i + 1}. ${s.text.trim()}`);
+      // trimEnd: an empty label serializes as "1." (no trailing space) — the
+      // exact form the parser round-trips as an item, keeping its fork intact.
+      lines.push(`${i + 1}. ${s.text.trim()}`.trimEnd());
       s.subs
         .filter((x) => x.trim() !== '')
-        .forEach((x, k) => lines.push(`${String.fromCharCode(97 + k)}. ${x.trim()}`));
+        .forEach((x, k) => lines.push(`${String.fromCharCode(97 + k)}. ${x.trim()}`.trimEnd()));
     });
   return lines.join('\n');
 }
