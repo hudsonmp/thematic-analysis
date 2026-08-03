@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { parseNote } from './NoteText';
 
 /**
@@ -53,6 +53,46 @@ function toText(steps: Step[]): string {
 const stripStep = (v: string) => v.replace(/^\s*\d+[.)]\s+/, '');
 const stripBranch = (v: string) => v.replace(/^\s*[a-z][.)]\s+/, '');
 
+/**
+ * Auto-growing one-to-many-line text field. An <input> cannot wrap — long
+ * step text was scrolling left out of view — so every field is a rows=1
+ * textarea whose height tracks scrollHeight. Enter never inserts a newline
+ * here (the editor's Enter means "next step/branch"), so wrapping is purely
+ * visual.
+ */
+function GrowText({
+  value,
+  refCb,
+  className,
+  style,
+  ...rest
+}: React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  value: string;
+  refCb: (el: HTMLTextAreaElement | null) => void;
+  className?: string;
+}) {
+  const innerRef = useRef<HTMLTextAreaElement | null>(null);
+  useLayoutEffect(() => {
+    const el = innerRef.current;
+    if (!el) return;
+    el.style.height = '0px';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
+  return (
+    <textarea
+      {...rest}
+      value={value}
+      rows={1}
+      ref={(el) => {
+        innerRef.current = el;
+        refCb(el);
+      }}
+      style={style}
+      className={`resize-none overflow-hidden ${className ?? ''}`}
+    />
+  );
+}
+
 export default function NotesEditor({
   initial,
   onCommit,
@@ -70,8 +110,8 @@ export default function NotesEditor({
   const [focusKey, setFocusKey] = useState<string>('s0');
   const rootRef = useRef<HTMLDivElement | null>(null);
   const cancelledRef = useRef(false);
-  const inputRefs = useRef(new Map<string, HTMLInputElement>());
-  const reg = (key: string) => (el: HTMLInputElement | null) => {
+  const inputRefs = useRef(new Map<string, HTMLTextAreaElement>());
+  const reg = (key: string) => (el: HTMLTextAreaElement | null) => {
     if (el) inputRefs.current.set(key, el);
     else inputRefs.current.delete(key);
   };
@@ -118,10 +158,10 @@ export default function NotesEditor({
       <ol className="space-y-0.5">
         {steps.map((st, i) => (
           <li key={i}>
-            <div className="flex items-center gap-1">
+            <div className="flex items-start gap-1">
               <span className="shrink-0 text-foreground/45">{i + 1}.</span>
-              <input
-                ref={reg(`s${i}`)}
+              <GrowText
+                refCb={reg(`s${i}`)}
                 value={st.text}
                 onChange={(e) => {
                   const v = stripStep(e.target.value);
@@ -154,10 +194,10 @@ export default function NotesEditor({
                 type="button"
                 onMouseDown={(e) => e.preventDefault() /* keep focus inside */}
                 onClick={() => addBranch(i)}
-                title="Fork: add a lettered branch under this step"
-                className="shrink-0 border border-foreground/25 px-1 leading-4 text-foreground/60 transition hover:border-foreground hover:text-foreground"
+                title="Add a lettered branch under this step"
+                className="shrink-0 border border-foreground/25 px-1 text-[10px] leading-4 text-foreground/60 transition hover:border-foreground hover:text-foreground"
               >
-                ⑂
+                ⑂ fork
               </button>
             </div>
 
@@ -179,10 +219,12 @@ export default function NotesEditor({
                           own "a." label. */}
                       <div className="flex items-center gap-0.5 px-1.5">
                         <span className="shrink-0 text-foreground/45">{String.fromCharCode(97 + k)}.</span>
-                        <input
-                          ref={reg(`b${i}.${k}`)}
+                        <GrowText
+                          refCb={reg(`b${i}.${k}`)}
                           value={sub}
-                          style={{ width: `${Math.max(8, sub.length + 2)}ch` }}
+                          // grow by content up to a wrap ceiling — past ~24ch
+                          // the node stops widening and the text WRAPS down.
+                          style={{ width: `${Math.min(24, Math.max(8, sub.length + 2))}ch` }}
                           onChange={(e) => {
                             const v = stripBranch(e.target.value);
                             mut((n) => (n[i].subs[k] = v));
@@ -219,8 +261,11 @@ export default function NotesEditor({
           </li>
         ))}
       </ol>
-      <p className="mt-1 text-[10px] text-foreground/35">
-        ⏎ next step · ⇥ fork into branch · ⇧⇥ back to step · esc cancel · ⌘⏎ save
+      <p className="mt-1 text-[10px] leading-relaxed text-foreground/40">
+        <b>Enter</b> new step below · <b>Tab</b> turn this line into a branch of the step above ·{' '}
+        <b>Shift+Tab</b> turn a branch back into a step · <b>⑂ fork</b> add a branch by mouse ·{' '}
+        <b>Backspace</b> on an empty line removes it · <b>Esc</b> cancel · <b>click away</b> or{' '}
+        <b>⌘+Enter</b> save
       </p>
     </div>
   );
