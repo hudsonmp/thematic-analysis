@@ -105,11 +105,16 @@ export default function NotesEditor({
   onCancel: () => void;
 }) {
   const [steps, setSteps] = useState<Step[]>(() => fromText(initial));
-  // Which input owns focus: 's<i>' for a step, 'b<i>.<k>' for a branch.
-  // Focus is applied IMPERATIVELY after each render — autoFocus only fires at
-  // mount, and moving focus to an already-mounted input (Backspace-delete)
-  // would otherwise drop focus to <body>, blur the container and save early.
-  const [focusKey, setFocusKey] = useState<string>('s0');
+  // Focus is an explicit REQUEST (key + nonce), applied once per gesture:
+  //  - the nonce makes re-requesting the SAME key still fire (deleting row 1
+  //    twice must re-focus s0 both times, or focus falls to <body> and the
+  //    container blur saves early);
+  //  - depending on `steps` here was the old bug — the effect re-ran and
+  //    re-focused on EVERY keystroke (lag + caret jumps).
+  // Programmatic focus puts the caret at the END — landing at position 0 of
+  // the previous line after a row-delete read as teleporting to the start.
+  const [focusReq, setFocusReq] = useState({ key: 's0', n: 0 });
+  const focusOn = (key: string) => setFocusReq((p) => ({ key, n: p.n + 1 }));
   const rootRef = useRef<HTMLDivElement | null>(null);
   const cancelledRef = useRef(false);
   const inputRefs = useRef(new Map<string, HTMLTextAreaElement>());
@@ -118,8 +123,12 @@ export default function NotesEditor({
     else inputRefs.current.delete(key);
   };
   useEffect(() => {
-    inputRefs.current.get(focusKey)?.focus();
-  }, [focusKey, steps]);
+    const el = inputRefs.current.get(focusReq.key);
+    if (!el) return;
+    el.focus();
+    const end = el.value.length;
+    el.setSelectionRange(end, end);
+  }, [focusReq]);
 
   const mut = (fn: (next: Step[]) => void) => {
     setSteps((prev) => {
@@ -133,7 +142,7 @@ export default function NotesEditor({
 
   const addBranch = (i: number) => {
     mut((n) => n[i].subs.push(''));
-    setFocusKey(`b${i}.${steps[i].subs.length}`);
+    focusOn(`b${i}.${steps[i].subs.length}`);
   };
 
   return (
@@ -173,7 +182,7 @@ export default function NotesEditor({
                   if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) {
                     e.preventDefault();
                     mut((n) => n.splice(i + 1, 0, { text: '', subs: [] }));
-                    setFocusKey(`s${i + 1}`);
+                    focusOn(`s${i + 1}`);
                   } else if (e.key === 'Tab' && !e.shiftKey && i > 0) {
                     // Tab: this step becomes a fork branch of the step above.
                     e.preventDefault();
@@ -181,11 +190,11 @@ export default function NotesEditor({
                       const [me] = n.splice(i, 1);
                       n[i - 1].subs.push(me.text, ...me.subs);
                     });
-                    setFocusKey(`b${i - 1}.${steps[i - 1].subs.length}`);
+                    focusOn(`b${i - 1}.${steps[i - 1].subs.length}`);
                   } else if (e.key === 'Backspace' && st.text === '' && st.subs.length === 0 && steps.length > 1) {
                     e.preventDefault();
                     mut((n) => n.splice(i, 1));
-                    setFocusKey(i > 0 ? `s${i - 1}` : 's0');
+                    focusOn(i > 0 ? `s${i - 1}` : 's0');
                   }
                 }}
                 placeholder={i === 0 ? 'first step…' : 'step…'}
@@ -235,7 +244,7 @@ export default function NotesEditor({
                             if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) {
                               e.preventDefault();
                               mut((n) => n[i].subs.splice(k + 1, 0, ''));
-                              setFocusKey(`b${i}.${k + 1}`);
+                              focusOn(`b${i}.${k + 1}`);
                             } else if (e.key === 'Tab' && e.shiftKey) {
                               // Shift+Tab: promote the branch back to a step.
                               e.preventDefault();
@@ -243,11 +252,11 @@ export default function NotesEditor({
                                 const [me] = n[i].subs.splice(k, 1);
                                 n.splice(i + 1, 0, { text: me, subs: [] });
                               });
-                              setFocusKey(`s${i + 1}`);
+                              focusOn(`s${i + 1}`);
                             } else if (e.key === 'Backspace' && sub === '') {
                               e.preventDefault();
                               mut((n) => n[i].subs.splice(k, 1));
-                              setFocusKey(k > 0 ? `b${i}.${k - 1}` : `s${i}`);
+                              focusOn(k > 0 ? `b${i}.${k - 1}` : `s${i}`);
                             }
                           }}
                           placeholder="branch…"
