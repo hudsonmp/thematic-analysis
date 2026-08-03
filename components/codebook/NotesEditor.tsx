@@ -167,17 +167,22 @@ export default function NotesEditor({
                 <div className="mx-auto h-2 w-0 border-l border-foreground/50" />
                 <div className="flex justify-center">
                   {st.subs.map((sub, k) => (
-                    <div key={k} className="flex min-w-0 flex-1 flex-col items-center">
+                    <div key={k} className="flex min-w-0 flex-col items-center">
                       <div className="flex w-full">
                         <div className={`h-0 flex-1 border-t ${k === 0 ? 'border-transparent' : 'border-foreground/50'}`} />
                         <div className={`h-0 flex-1 border-t ${k === st.subs.length - 1 ? 'border-transparent' : 'border-foreground/50'}`} />
                       </div>
                       <div className="h-2 w-0 border-l border-foreground/50" />
-                      <div className="flex w-full min-w-0 items-center gap-0.5 px-1">
+                      {/* COMPACT node: label + character-sized input as one
+                          centered unit — a full-width centered input floated
+                          the caret to the middle of the cell, far from its
+                          own "a." label. */}
+                      <div className="flex items-center gap-0.5 px-1.5">
                         <span className="shrink-0 text-foreground/45">{String.fromCharCode(97 + k)}.</span>
                         <input
                           ref={reg(`b${i}.${k}`)}
                           value={sub}
+                          style={{ width: `${Math.max(8, sub.length + 2)}ch` }}
                           onChange={(e) => {
                             const v = stripBranch(e.target.value);
                             mut((n) => (n[i].subs[k] = v));
@@ -203,7 +208,7 @@ export default function NotesEditor({
                           }}
                           placeholder="branch…"
                           aria-label={`Branch ${String.fromCharCode(97 + k)} of step ${i + 1}`}
-                          className="w-full min-w-0 bg-transparent text-center focus:outline-none"
+                          className="min-w-0 bg-transparent focus:outline-none"
                         />
                       </div>
                     </div>
