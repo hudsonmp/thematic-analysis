@@ -79,14 +79,39 @@ export default function NoteText({ text }: { text: string }) {
               <li key={j}>
                 <span className="text-foreground/45">{it.n}.</span> <Inline text={it.text} />
                 {it.subs.length > 0 && (
-                  // The FORK: parallel lettered branches under one numbered step.
-                  <ol className="mt-0.5 space-y-0.5 pl-4">
-                    {it.subs.map((s, k) => (
-                      <li key={k}>
-                        <span className="text-foreground/45">{s.n}.</span> <Inline text={s.text} />
-                      </li>
-                    ))}
-                  </ol>
+                  // The FORK, drawn as Hudson sketched it: connector lines from
+                  // the step down to SIDE-BY-SIDE branches (org-chart elbows:
+                  // stub ↓, rail ─, tick ↓ per branch). BORDERS, not background
+                  // fills — browsers strip backgrounds when printing, and this
+                  // must survive on paper.
+                  <div className="mt-0.5">
+                    <div className="mx-auto h-2 w-0 border-l border-foreground/50" />
+                    <div className="flex justify-center">
+                      {it.subs.map((s, k) => (
+                        <div key={k} className="flex min-w-0 flex-col items-center">
+                          <div className="flex w-full">
+                            <div
+                              className={`h-0 flex-1 border-t ${
+                                k === 0 ? 'border-transparent' : 'border-foreground/50'
+                              }`}
+                            />
+                            <div
+                              className={`h-0 flex-1 border-t ${
+                                k === it.subs.length - 1
+                                  ? 'border-transparent'
+                                  : 'border-foreground/50'
+                              }`}
+                            />
+                          </div>
+                          <div className="h-2 w-0 border-l border-foreground/50" />
+                          <div className="min-w-0 break-words px-1.5 text-center">
+                            <span className="text-foreground/45">{s.n}.</span>{' '}
+                            <Inline text={s.text} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </li>
             ))}
