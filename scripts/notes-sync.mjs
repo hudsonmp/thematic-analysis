@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const notesDir = join(root, 'notes');
 const notesFile = join(notesDir, 'notes.md');
+const baselineFile = join(notesDir, '.baseline.md');
 
 // ---- env (.env.local, same loader pattern as restore-sentences.mjs) --------
 function loadEnv() {
@@ -79,6 +80,8 @@ async function pull() {
   }
   mkdirSync(notesDir, { recursive: true });
   writeFileSync(notesFile, lines.join('\n'));
+  // Baseline = what the DB looked like at pull time — push's 3-way anchor.
+  writeFileSync(baselineFile, lines.join('\n'));
   const n = codes.filter((c) => c.notes?.trim()).length;
   console.log(`pulled ${codes.length} codes (${n} with notes) → ${notesFile}`);
 }
@@ -107,10 +110,13 @@ function parseFile(text) {
   return out;
 }
 
-async function push(dryRun) {
+async function push(dryRun, force) {
   if (!existsSync(notesFile)) throw new Error(`${notesFile} not found — run pull first`);
   const wanted = parseFile(readFileSync(notesFile, 'utf8'));
-  const { codes } = await fetchCodes();
+  const baseline = existsSync(baselineFile)
+    ? parseFile(readFileSync(baselineFile, 'utf8'))
+    : new Map();
+  const { books, codes } = await fetchCodes();
   const byslug = new Map(codes.map((c) => [c.mnemonic, c]));
 
   const unknown = [...wanted.keys()].filter((s) => !byslug.has(s));
@@ -118,11 +124,34 @@ async function push(dryRun) {
     throw new Error(`unknown slugs (fix or remove them): ${unknown.join(', ')}`);
   }
 
+  // SAFETY BACKUP: the DB's current notes, before any write — every push is
+  // reversible by hand from this file.
+  if (!dryRun) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backup = codes
+      .filter((c) => c.notes?.trim())
+      .map((c) => `## ${c.mnemonic}\n${c.notes.trim()}\n`)
+      .join('\n');
+    writeFileSync(join(notesDir, `backup-${stamp}.md`), backup);
+  }
+
   let changed = 0;
+  let conflicts = 0;
   for (const [slug, text] of wanted) {
     const code = byslug.get(slug);
     const current = (code.notes ?? '').trim();
-    if (current === text) continue;
+    if (current === text) continue; // already what we want
+    // 3-WAY CHECK: if the DB moved since pull (someone edited in the app),
+    // do NOT clobber it silently — report the conflict and skip.
+    const base = (baseline.get(slug) ?? '').trim();
+    if (current !== base && !force) {
+      conflicts++;
+      console.log(`CONFLICT ${slug}: DB changed since your pull — skipped.`);
+      console.log(`  db now : ${JSON.stringify(current.slice(0, 80))}`);
+      console.log(`  yours  : ${JSON.stringify(text.slice(0, 80))}`);
+      console.log(`  (re-run pull to take the DB version, or push --force to overwrite)`);
+      continue;
+    }
     changed++;
     console.log(`${dryRun ? '[dry-run] ' : ''}${slug}: ${current.length} → ${text.length} chars`);
     if (!dryRun) {
@@ -133,14 +162,21 @@ async function push(dryRun) {
       if (error) throw new Error(`update ${slug} failed: ${error.message}`);
     }
   }
-  console.log(`${dryRun ? 'would update' : 'updated'} ${changed} code(s)`);
+  // A successful full push makes the file the new baseline.
+  if (!dryRun && conflicts === 0) writeFileSync(baselineFile, readFileSync(notesFile, 'utf8'));
+  console.log(
+    `${dryRun ? 'would update' : 'updated'} ${changed} code(s)` +
+      (conflicts ? ` · ${conflicts} conflict(s) skipped` : ''),
+  );
+  void books;
 }
 
 const cmd = process.argv[2];
 const dry = process.argv.includes('--dry-run');
+const force = process.argv.includes('--force');
 if (cmd === 'pull') await pull();
-else if (cmd === 'push') await push(dry);
+else if (cmd === 'push') await push(dry, force);
 else {
-  console.log('usage: node scripts/notes-sync.mjs <pull|push> [--dry-run]');
+  console.log('usage: node scripts/notes-sync.mjs <pull|push> [--dry-run] [--force]');
   process.exit(1);
 }
