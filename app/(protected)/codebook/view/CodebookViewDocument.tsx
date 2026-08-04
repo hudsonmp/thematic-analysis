@@ -513,20 +513,48 @@ function NotesCell({
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
+  const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
   const [error, setError] = useState<string | null>(null);
+  const draftKey = `ta-doc-note:${codeId}`;
 
   if (editing) {
     return (
       <NotesEditor
         initial={notes ?? ''}
+        draftKey={draftKey}
         codes={mentionCodes.filter((c) => c.id !== codeId)}
-        onCancel={() => setEditing(false)}
+        onCancel={() => {
+          // Esc = discard: the draft dies with the edit, deliberately.
+          try {
+            window.localStorage.removeItem(draftKey);
+          } catch {}
+          setEditing(false);
+        }}
         onCommit={(next) => {
           setEditing(false);
-          if (next === (notes ?? '')) return;
+          if (next === (notes ?? '')) {
+            try {
+              window.localStorage.removeItem(draftKey);
+            } catch {}
+            return;
+          }
+          // The draft is cleared ONLY after the server confirms — a failed
+          // save keeps it, and the next open restores it. Status is always
+          // visible, so a silent failure cannot exist.
+          setStatus('saving');
+          setError(null);
           setCodeNotes(codeId, next)
-            .then(() => router.refresh())
-            .catch((err) => setError(err instanceof Error ? err.message : 'Save failed.'));
+            .then(() => {
+              try {
+                window.localStorage.removeItem(draftKey);
+              } catch {}
+              setStatus('saved');
+              router.refresh();
+            })
+            .catch((err) => {
+              setStatus('failed');
+              setError(err instanceof Error ? err.message : 'Save failed.');
+            });
         }}
       />
     );
@@ -550,7 +578,17 @@ function NotesCell({
       ) : canEdit ? (
         <span className="text-foreground/25 print:hidden">add notes…</span>
       ) : null}
-      {error && <p className="text-[10px] text-red-600 print:hidden">{error}</p>}
+      {status === 'saving' && (
+        <p className="text-[10px] text-foreground/45 print:hidden">saving…</p>
+      )}
+      {status === 'saved' && (
+        <p className="text-[10px] text-emerald-700 print:hidden">saved ✓</p>
+      )}
+      {status === 'failed' && (
+        <p className="text-[10px] text-red-600 print:hidden">
+          save FAILED — your text is kept as a draft; click to reopen. {error}
+        </p>
+      )}
     </div>
   );
 }

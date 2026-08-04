@@ -120,17 +120,39 @@ function GrowText({
 
 export default function NotesEditor({
   initial,
+  draftKey = null,
   codes = [],
   onCommit,
   onCancel,
 }: {
   initial: string;
+  /** localStorage key for keystroke-level draft persistence. With it, NOTHING
+   *  can lose text: every change is written locally BEFORE any save path
+   *  runs, and an unsaved draft is restored on reopen. The HOST clears the
+   *  draft after a confirmed server save. */
+  draftKey?: string | null;
   /** Mentionable codes with the metadata the picker's hover expansion shows. */
   codes?: MentionOption[];
   onCommit: (next: string) => void;
   onCancel: () => void;
 }) {
-  const [steps, setSteps] = useState<Step[]>(() => fromText(initial));
+  const [restoredDraft, setRestoredDraft] = useState(false);
+  const [steps, setSteps] = useState<Step[]>(() => {
+    // An unsaved draft (a previous edit whose save never landed) outranks the
+    // server value — losing typed text is the one unforgivable failure.
+    if (draftKey && typeof window !== 'undefined') {
+      try {
+        const d = window.localStorage.getItem(draftKey);
+        if (d !== null && d.trim() !== initial.trim()) {
+          queueMicrotask(() => setRestoredDraft(true));
+          return fromText(d);
+        }
+      } catch {
+        // localStorage unavailable — fall through to the server value.
+      }
+    }
+    return fromText(initial);
+  });
   // Focus is an explicit REQUEST (key + nonce + optional caret), applied once
   // per gesture — never on plain typing. `caret` null = end of field.
   const [focusReq, setFocusReq] = useState<{ key: string; n: number; caret: number | null }>({
@@ -208,6 +230,15 @@ export default function NotesEditor({
     setSteps((prev) => {
       const next = prev.map((s) => ({ text: s.text, subs: [...s.subs] }));
       fn(next);
+      // Keystroke-level draft: written synchronously with the state update, so
+      // even an eaten blur / killed tab / stale bundle cannot lose text.
+      if (draftKey) {
+        try {
+          window.localStorage.setItem(draftKey, toText(next));
+        } catch {
+          // Quota/unavailable — the in-memory path still works.
+        }
+      }
       return next;
     });
   };
@@ -408,6 +439,22 @@ export default function NotesEditor({
           </li>
         ))}
       </ol>
+
+      <div className="mt-1 flex items-center gap-2">
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault() /* keep focus semantics */}
+          onClick={commit}
+          className="border border-foreground bg-foreground px-2 py-0.5 text-[10px] text-background transition hover:opacity-90"
+        >
+          save
+        </button>
+        {restoredDraft && (
+          <span className="text-[10px] text-amber-700">
+            restored an unsaved draft — save to keep it, Esc to discard
+          </span>
+        )}
+      </div>
 
       {/* The @mention picker — the coding screen's rows: slug line, metadata
           expands on hover / keyboard focus. mousedown picks before blur. */}
