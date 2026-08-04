@@ -188,6 +188,10 @@ export default function CodebookViewDocument({
         @media print {
           .cb-sheet tbody tr { break-inside: avoid; page-break-inside: avoid; }
           .cb-sheet section { break-inside: avoid; page-break-inside: avoid; }
+          /* A notes cell left mid-edit must not print its editor chrome. */
+          .cb-sheet textarea, .cb-sheet button { display: none !important; }
+          /* Hairlines and the fork-tree connectors keep their ink on paper. */
+          .cb-sheet { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
         }
       `}</style>
 
@@ -245,8 +249,22 @@ export default function CodebookViewDocument({
               .toLowerCase()
               .replace(/[^a-z0-9-]+/g, '-')
               .replace(/-+/g, '-');
+            // Restore the title on AFTERPRINT, not synchronously: in current
+            // Chrome window.print() can return the moment the preview opens,
+            // and a synchronous restore reverts the SUGGESTED FILENAME while
+            // the save dialog is still up (the "saves under the wrong name"
+            // failure). afterprint fires when the dialog actually closes; the
+            // timeout is the safety net for engines that never fire it.
+            let restored = false;
+            const restore = () => {
+              if (restored) return;
+              restored = true;
+              document.title = prev;
+              window.removeEventListener('afterprint', restore);
+            };
+            window.addEventListener('afterprint', restore);
+            setTimeout(restore, 120_000);
             window.print();
-            document.title = prev;
           }}
           className="ml-auto border border-foreground px-3 py-1 text-xs text-foreground transition hover:bg-foreground hover:text-background"
         >
