@@ -300,7 +300,17 @@ async function restoreSession(row, stats) {
     .single();
   if (verErr) throw new Error(`${tag} version insert: ${verErr.message}`);
 
-  const rows = restoredSegs.map((r, i) => ({
+  // ORDINALS FOLLOW TIME, not turn order. The resegmented sources contain
+  // OVERLAPPING per-speaker mega-cues (echo-track residue): serializing whole
+  // turns put e.g. a participant's 0–75s block before the interviewer's
+  // overlapping 3–64s block, scrambling the conversation (the 041 bug —
+  // 8–42 backward time-jumps on every session of the first batch, repaired
+  // in-place 2026-08-05 by re-ordinaling on t_start_ms). Stable sort: ties
+  // keep intra-turn sentence order.
+  const timeOrdered = restoredSegs
+    .map((r, i) => ({ ...r, turnIdx: i }))
+    .sort((a, b) => a.t0 - b.t0 || a.turnIdx - b.turnIdx);
+  const rows = timeOrdered.map((r, i) => ({
     session_id: row.session_id,
     version_id: ver.id,
     speaker: r.speaker,
