@@ -271,6 +271,10 @@ function expandRangeHighlights(
  * and (b) list, time-ordered, in a collapsed "Flags on timeline" rail. A
  * current-event box above the flags shows the auto-derived episode now playing.
  */
+/** Constant lead (ms) cancelling live-ASR cue-start latency in the
+ *  follow-along highlight on sentence-restored versions. */
+const HIGHLIGHT_LEAD_MS = 1200;
+
 export default function SessionPlayer({
   id,
   pidLabel,
@@ -635,8 +639,12 @@ export default function SessionPlayer({
     // jumps to the other speaker's overlapping window. Reading-order
     // resolution (last line whose START has passed) matches how a human
     // follows the page. Real ASR timings keep the tightest-containment rule.
+    // +LEAD: live-ASR cue start-stamps trail actual speech onset (the engine
+    // emits a cue only after hearing enough audio), so even with realigned
+    // per-sentence times the highlight arrived late. Resolving the reading
+    // index slightly AHEAD of the playhead cancels that constant.
     const idx = enforceWholeSentence
-      ? findReadingIndex(segments, tMs)
+      ? findReadingIndex(segments, tMs + HIGHLIGHT_LEAD_MS)
       : findActiveIndex(segments, tMs);
     setActiveIdx((prev) => (prev === idx ? prev : idx));
     // RETRO AUTO-SHIFT: crossing INTO a retrospective episode (canonical names
