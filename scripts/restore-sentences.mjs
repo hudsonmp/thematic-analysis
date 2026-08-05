@@ -103,12 +103,15 @@ const SYSTEM = [
   'nothing else. No prose, no code fences.',
 ].join(' ');
 
-async function restoreChunk(text) {
+async function restoreChunk(text, feedback = null) {
+  const content = feedback
+    ? `${feedback}\n\nRestore this text again, reproducing EVERY word verbatim:\n${text}`
+    : text;
   const resp = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 4096,
     system: SYSTEM,
-    messages: [{ role: 'user', content: text }],
+    messages: [{ role: 'user', content }],
   });
   const out = (resp.content || []).map((b) => (b.type === 'text' ? b.text : '')).join('').trim();
   // Tolerate accidental code fences / leading prose: extract the first JSON array.
@@ -118,6 +121,45 @@ async function restoreChunk(text) {
   const arr = JSON.parse(out.slice(start, end + 1));
   if (!Array.isArray(arr) || arr.some((s) => typeof s !== 'string')) throw new Error('not a string array');
   return arr.map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+/** Where two word signatures first diverge — the corrective feedback payload. */
+function firstDivergence(wantSig, gotSig) {
+  const a = wantSig.split(' ');
+  const b = gotSig.split(' ');
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return { i, want: a[i] ?? '(end)', got: b[i] ?? '(end)' };
+  }
+  return null;
+}
+
+/**
+ * Restore with the gate ENFORCED, not just measured: up to 3 attempts, each
+ * retry carrying the exact first-divergent token as corrective feedback. The
+ * first batch's single-shot policy let whole turns fall back silently —
+ * fallbacks concentrated on messy-audio sessions (398: 58% of segments raw,
+ * 738: 53%, 654: 51% …), which is what "the LLM didn't do the sentences"
+ * looked like in the player. Returns null only when every attempt failed.
+ */
+async function restoreVerified(joined) {
+  let feedback = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const sentences = await restoreChunk(joined, feedback);
+      const want = wordSig(joined);
+      const got = wordSig(sentences.join(' '));
+      if (want === got) return sentences;
+      const d = firstDivergence(want, got);
+      feedback =
+        `Your previous output changed the words (word ${d.i}: expected ` +
+        `"${d.want}", got "${d.got}"). Add ONLY punctuation and capitalization; ` +
+        `keep every word, filler, and stutter exactly as given.`;
+    } catch (e) {
+      feedback = `Your previous output was invalid (${String(e.message).slice(0, 80)}). ` +
+        `Output ONLY a JSON array of sentence strings.`;
+    }
+  }
+  return null;
 }
 
 // ---- pacing --------------------------------------------------------------
@@ -223,14 +265,24 @@ async function restoreSession(row, stats) {
   });
 
   const results = await mapLimited(jobs, CONCURRENCY, async (job) => {
-    if (!job.joined) return { ...job, sentences: null };
-    try {
-      const sentences = await restoreChunk(job.joined);
-      const ok = wordSig(sentences.join(' ')) === wordSig(job.joined);
-      return { ...job, sentences: ok ? sentences : null };
-    } catch {
-      return { ...job, sentences: null };
+    if (!job.joined) return { ...job, sentences: null, salvaged: null };
+    // Verified restore with retries + corrective feedback.
+    const sentences = await restoreVerified(job.joined);
+    if (sentences) return { ...job, sentences, salvaged: null };
+    // SALVAGE: the chunk as a whole failed — try each CUE alone (smaller
+    // input, far higher gate pass rate). Cues that pass get real sentences;
+    // only the truly stubborn stay raw. `salvaged` maps cue index → sentences.
+    if (job.chunk.length > 1) {
+      const salvaged = new Map();
+      for (let k = 0; k < job.chunk.length; k++) {
+        const cueText = (job.chunk[k].text || '').trim();
+        if (!cueText) continue;
+        const per = await restoreVerified(cueText);
+        if (per) salvaged.set(k, per);
+      }
+      if (salvaged.size > 0) return { ...job, sentences: null, salvaged };
     }
+    return { ...job, sentences: null, salvaged: null };
   });
 
   // Re-assemble in reading order (jobs were built in order; mapLimited preserves index).
@@ -240,6 +292,27 @@ async function restoreSession(row, stats) {
       const times = apportionTime(job.t0, job.t1, job.sentences);
       job.sentences.forEach((sen, k) => {
         restoredSegs.push({ speaker: job.speaker, text: sen, t0: times[k][0], t1: times[k][1], fallback: false });
+      });
+    } else if (job.salvaged) {
+      // PARTIAL SALVAGE: per-cue restorations where they passed, raw cues
+      // only where even the single cue failed the gate.
+      gateFails++;
+      job.chunk.forEach((s, k) => {
+        const per = job.salvaged.get(k);
+        if (per) {
+          const times = apportionTime(s.t_start_ms ?? job.t0, s.t_end_ms ?? job.t1, per);
+          per.forEach((sen, j) => {
+            restoredSegs.push({ speaker: s.speaker, text: sen, t0: times[j][0], t1: times[j][1], fallback: false });
+          });
+        } else if ((s.text || '').trim()) {
+          restoredSegs.push({
+            speaker: s.speaker,
+            text: (s.text || '').trim(),
+            t0: s.t_start_ms ?? job.t0,
+            t1: s.t_end_ms ?? job.t1,
+            fallback: true,
+          });
+        }
       });
     } else {
       // FALLBACK: keep this chunk's original cues verbatim (word-preserving).
