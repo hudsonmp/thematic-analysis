@@ -71,7 +71,7 @@ import {
   type Highlight,
 } from '@/lib/transcript/selection';
 import { groupIntoTurns } from '@/lib/transcript/turns';
-import { findActiveIndex, nearestCueIndex } from '@/lib/transcript/active';
+import { findActiveIndex, findReadingIndex, nearestCueIndex } from '@/lib/transcript/active';
 import { findPhraseMatches } from '@/lib/transcript/search';
 import { cardsByTurn, type RailCard } from '@/lib/transcript/rail';
 import { packGutter, sameAnchor, type GutterInput } from '@/lib/transcript/gutter';
@@ -629,7 +629,15 @@ export default function SessionPlayer({
     const video = videoRef.current;
     if (!video) return;
     const tMs = video.currentTime * 1000;
-    const idx = findActiveIndex(segments, tMs);
+    // SENTENCE-RESTORED versions carry INTERPOLATED per-sentence times
+    // (turn spans apportioned by char length) with interleaved-speaker
+    // overlap: containment-based resolution dies in interpolation gaps and
+    // jumps to the other speaker's overlapping window. Reading-order
+    // resolution (last line whose START has passed) matches how a human
+    // follows the page. Real ASR timings keep the tightest-containment rule.
+    const idx = enforceWholeSentence
+      ? findReadingIndex(segments, tMs)
+      : findActiveIndex(segments, tMs);
     setActiveIdx((prev) => (prev === idx ? prev : idx));
     // RETRO AUTO-SHIFT: crossing INTO a retrospective episode (canonical names
     // from the participant task's page advances) flips the mode to 'retro';
@@ -673,7 +681,7 @@ export default function SessionPlayer({
         // Quota/private-mode failures just lose resume — never break playback.
       }
     }
-  }, [segments, id, codingEnabled, ensureRetroData]);
+  }, [segments, id, codingEnabled, ensureRetroData, enforceWholeSentence]);
 
   // Follow-along scrolling PAGES like a teleprompter instead of creeping.
   // scrollIntoView({block:'nearest'}) moved one line per cue advance — a

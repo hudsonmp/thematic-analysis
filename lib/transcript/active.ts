@@ -64,3 +64,36 @@ export function nearestCueIndex(cues: TimedCue[], tMs: number): number {
   }
   return best;
 }
+
+/**
+ * Index of the cue the READER is on at `tMs`: the LAST cue (in array order)
+ * whose `startMs` the playhead has passed — end times are ignored entirely.
+ *
+ * This is the right model for SENTENCE-RESTORED transcripts, where per-sentence
+ * times are INTERPOLATED (a turn's span apportioned by character length) and
+ * interleaved speakers overlap: containment-based resolution
+ * ({@link findActiveIndex}) dies in interpolation gaps and jumps to the other
+ * speaker's overlapping window ("the highlight is sort of off"). Reading order
+ * is monotone in `startMs` on restored versions (enforced at write since
+ * 2026-08-05), so "the last line whose start has passed" advances exactly like
+ * a human following the page: never backward, never blank mid-speech.
+ *
+ * Binary search over startMs (ascending — the restored invariant); ties
+ * resolve to the LATEST tied cue (the line just reached). -1 before the first
+ * cue starts.
+ */
+export function findReadingIndex(cues: TimedCue[], tMs: number): number {
+  let lo = 0;
+  let hi = cues.length - 1;
+  let best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (cues[mid].startMs <= tMs) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return best;
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findActiveIndex, nearestCueIndex, type TimedCue } from '../active';
+import { findActiveIndex, nearestCueIndex, type TimedCue, findReadingIndex } from '../active';
 
 // Models the real multi-track hazard: a long track-level cue (an 80s "interjection")
 // temporally containing several short phrase cues from the other speaker.
@@ -76,5 +76,39 @@ describe('nearestCueIndex (containing, else nearest by gap)', () => {
     ];
     expect(nearestCueIndex(single, 0)).toBe(0);
     expect(nearestCueIndex(single, 9999)).toBe(1);
+  });
+});
+
+describe('findReadingIndex', () => {
+  const cues = [
+    { startMs: 0, endMs: 4000 },
+    { startMs: 3000, endMs: 9000 }, // overlaps the previous (interleaved speaker)
+    { startMs: 5000, endMs: 5600 },
+    { startMs: 12000, endMs: 15000 }, // gap 5600..12000 before this
+  ];
+
+  it('is -1 before the first cue starts', () => {
+    expect(findReadingIndex(cues, -1)).toBe(-1);
+  });
+
+  it('advances by START time, ignoring ends (overlap never bounces back)', () => {
+    expect(findReadingIndex(cues, 0)).toBe(0);
+    expect(findReadingIndex(cues, 2999)).toBe(0);
+    expect(findReadingIndex(cues, 3000)).toBe(1); // later start wins on overlap
+    expect(findReadingIndex(cues, 5000)).toBe(2);
+  });
+
+  it('stays on the previous line through an interpolation gap (never blank)', () => {
+    expect(findReadingIndex(cues, 8000)).toBe(2); // gap after cue 2's end
+    expect(findReadingIndex(cues, 11999)).toBe(2);
+    expect(findReadingIndex(cues, 12000)).toBe(3);
+  });
+
+  it('holds the last line past the end of the transcript', () => {
+    expect(findReadingIndex(cues, 99999)).toBe(3);
+  });
+
+  it('empty transcript is -1', () => {
+    expect(findReadingIndex([], 1000)).toBe(-1);
   });
 });
