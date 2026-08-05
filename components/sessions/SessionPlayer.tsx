@@ -4547,6 +4547,18 @@ function renderHighlightedText(
     const underline = hasComment
       ? 'underline decoration-sky-500 decoration-dotted decoration-2 underline-offset-2'
       : '';
+    // SEARCH INSIDE AN ANNOTATED SPAN: the annotation kept the background and
+    // the match tint silently vanished — matches inside coded/commented spans
+    // were invisible ("not all locations show"). The hit renders as an inset
+    // orange bottom bar UNDER the annotation wash: visible on any background,
+    // never fights the yellow/emerald channel, adds no characters.
+    const hasSearch = piece.kinds.includes('search') || piece.kinds.includes('search-current');
+    const isCurrentSearch = piece.kinds.includes('search-current');
+    const searchBar = hasSearch
+      ? isCurrentSearch
+        ? 'shadow-[inset_0_-4px_0_0_rgba(249,115,22,0.95)]'
+        : 'shadow-[inset_0_-4px_0_0_rgba(251,146,60,0.7)]'
+      : '';
     // Open = the solid sky ring; hover previews the SAME ring, so "what would
     // I be opening?" is answered before the click.
     const ring = isOpen ? 'ring-2 ring-sky-500' : 'hover:ring-2 hover:ring-sky-500';
@@ -4557,8 +4569,8 @@ function renderHighlightedText(
           e.stopPropagation();
           if (ann) onFocus(ann, e);
         }}
-        title={title}
-        className={`cursor-pointer rounded-sm ${bg} ${underline} ${ring}`}
+        title={hasSearch ? `${title} · search match` : title}
+        className={`cursor-pointer rounded-sm ${bg} ${underline} ${searchBar} ${ring}`}
       >
         {piece.text}
       </mark>
