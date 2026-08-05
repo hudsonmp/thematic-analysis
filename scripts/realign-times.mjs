@@ -67,7 +67,7 @@ async function fetchSegs(versionId) {
 
 async function realignSession(v, pid) {
   const restored = await fetchSegs(v.id);
-  const source = await fetchSegs(v.derived_from_version_id);
+  const source = await fetchSegs(v.sourceVersionId ?? v.derived_from_version_id);
   const speakers = [...new Set(restored.map((s) => s.speaker))];
 
   // Per-speaker timed word streams from the SOURCE cues (true ASR times;
@@ -136,6 +136,8 @@ async function realignSession(v, pid) {
   return { ok: true, updated: updates.length };
 }
 
+const USE_ORIGINAL = args.includes('--source-original');
+
 async function main() {
   let q = sb
     .from('cb_transcript_versions')
@@ -144,11 +146,28 @@ async function main() {
   if (ONLY) q = q.eq('cb_sessions.pid_label', ONLY);
   const { data: vers, error } = await q;
   if (error) throw new Error(error.message);
+  if (USE_ORIGINAL) {
+    // Fine-grained ground truth: the ORIGINAL (verbatim ASR) version's cues
+    // are seconds-long, so per-word times are accurate even where the
+    // resegmented source had multi-minute mega-cues (the residual-drift
+    // stretches). Restored speakers only — echo tracks are ignored by
+    // construction (their speaker labels never appear in restored).
+    for (const v of vers) {
+      const { data: orig } = await sb
+        .from('cb_transcript_versions')
+        .select('id')
+        .eq('session_id', v.session_id)
+        .eq('kind', 'original')
+        .limit(1);
+      v.sourceVersionId = orig?.[0]?.id ?? null;
+    }
+  }
 
   const touched = [];
   for (const v of vers) {
     const pid = v.cb_sessions.pid_label;
     try {
+      console.log(`[${pid}] source = ${v.sourceVersionId ?? v.derived_from_version_id}${v.sourceVersionId ? ' (original)' : ' (derived)'}`);
       const r = await realignSession(v, pid);
       if (r.ok) {
         console.log(`[${pid}] realigned ${r.updated} segment time(s)${r.dry ? ' [dry]' : ''}`);
