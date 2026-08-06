@@ -1,24 +1,27 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   computeIrr,
   type IrrReport,
   type IrrSessionOption,
   type CooccurrenceView,
 } from '@/app/actions/irr';
+import { IRR_TARGET_KAPPA } from '@/lib/irr/target';
 
 /**
- * The reliability + code co-occurrence surface (David Smith's Tuesday method).
+ * The reliability + code co-occurrence surface, per the Aug 4 method
+ * (Zihan/David/Moonwara; precedent map in the 08-04 reading guide):
  *
- * ONE thing to read for agreement — per-code κ at the SENTENCE level (each segment
- * of the restored transcript is one sentence), reported strict AND overlap-relaxed
- * (±1 adjacent unit = agreement, David's rule). IRR here is a DIAGNOSTIC for
- * systematic disagreement, not a number to headline.
+ * POOLED κ over a SELECTED SET of sessions — "compute IRR on those three" —
+ * one statistic from summed per-session contingency tables, judged against the
+ * PREREGISTERED target κ ≥ 0.70 (McDonald et al. 2019 §5.3.5: state the
+ * target before the analysis). Sessions the coders reconciled in meetings
+ * (calibration) can be marked as such: including them is Zihan's pooled
+ * variant (B) and must be disclosed in methods; excluding them is plan A.
  *
- * ONE thing to read for redundancy — the code × code co-occurrence HEAT MAP. Two
- * codes that co-occur strongly AND agree poorly are merge candidates. A code-subset
- * selector restricts both the table and the map. Read-only; never changes coding.
+ * Per-code strict κ stays the diagnostic for systematic disagreement; the
+ * heat map flags merge candidates. Read-only; never changes coding.
  */
 
 function num(x: number | null): string {
@@ -37,10 +40,39 @@ function band(k: number | null): string {
 }
 
 export default function IrrReportView({ sessions }: { sessions: IrrSessionOption[] }) {
-  const [sessionId, setSessionId] = useState(sessions[0]?.sessionId ?? '');
-  const session = sessions.find((s) => s.sessionId === sessionId) ?? sessions[0];
-  const [coderAId, setCoderAId] = useState(session?.coders[0]?.id ?? '');
-  const [coderBId, setCoderBId] = useState(session?.coders[1]?.id ?? '');
+  // Pool selection: which sessions enter the κ pool, and which of those the
+  // coders CALIBRATED on (reconciliation meetings) — a methods disclosure, not
+  // a computation change.
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(sessions.map((s) => s.sessionId)),
+  );
+  const [calib, setCalib] = useState<Set<string>>(() => new Set());
+
+  // Coder options = union across the selected sessions (same user ids appear
+  // in every session they coded; counts summed for display).
+  const coderOptions = useMemo(() => {
+    const m = new Map<string, { id: string; name: string; nCode: number }>();
+    for (const s of sessions) {
+      if (!selected.has(s.sessionId)) continue;
+      for (const c of s.coders) {
+        const cur = m.get(c.id);
+        if (cur) cur.nCode += c.nCode;
+        else m.set(c.id, { ...c });
+      }
+    }
+    return [...m.values()].sort((a, b) => b.nCode - a.nCode);
+  }, [sessions, selected]);
+
+  const [coderAId, setCoderAId] = useState(sessions[0]?.coders[0]?.id ?? '');
+  const [coderBId, setCoderBId] = useState(sessions[0]?.coders[1]?.id ?? '');
+  // Toggling sessions can shrink the coder union; fall back to valid options so
+  // a stale id never reaches the action (where it would empty the whole pool).
+  const aId = coderOptions.some((c) => c.id === coderAId)
+    ? coderAId
+    : (coderOptions[0]?.id ?? '');
+  const bId = coderOptions.some((c) => c.id === coderBId && c.id !== aId)
+    ? coderBId
+    : (coderOptions.find((c) => c.id !== aId)?.id ?? '');
   const [minInstances, setMinInstances] = useState(3);
   const [winStartMin, setWinStartMin] = useState('');
   const [winEndMin, setWinEndMin] = useState('');
@@ -61,17 +93,17 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
   }
 
   const compute = (codeFilter: string[] | null) => {
-    if (!sessionId || !coderAId || !coderBId || coderAId === coderBId) {
-      setError('Pick a session and two different coders.');
+    if (selected.size === 0 || !aId || !bId || aId === bId) {
+      setError('Pick at least one session and two different coders.');
       return;
     }
     setBusy(true);
     setError(null);
     const toMs = (v: string) => (v.trim() === '' ? null : Math.round(Number(v) * 60000));
     computeIrr({
-      sessionId,
-      coderAId,
-      coderBId,
+      sessionIds: sessions.filter((s) => selected.has(s.sessionId)).map((s) => s.sessionId),
+      coderAId: aId,
+      coderBId: bId,
       minInstances,
       windowStartMs: toMs(winStartMin),
       windowEndMs: toMs(winEndMin),
@@ -84,13 +116,19 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
 
   const run = () => compute(selectedCodes ? [...selectedCodes] : null);
 
-  const onSession = (id: string) => {
-    setSessionId(id);
-    const s = sessions.find((x) => x.sessionId === id);
-    setCoderAId(s?.coders[0]?.id ?? '');
-    setCoderBId(s?.coders[1]?.id ?? '');
+  const toggleSession = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelected(next);
     setReport(null);
     setSelectedCodes(null);
+  };
+  const toggleCalib = (id: string) => {
+    const next = new Set(calib);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setCalib(next);
   };
 
   const toggleCode = (code: string) => {
@@ -111,108 +149,148 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
     ? report.perCode.filter((p) => p.origin === 'a_priori' && p.underpowered).length
     : 0;
 
+  // Pool-composition disclosure: which INCLUDED sessions were marked calibration.
+  const includedCalib = report
+    ? report.pool.filter((p) => p.included && calib.has(p.sessionId)).map((p) => p.pidLabel)
+    : [];
+
   return (
     <main className="mx-auto max-w-4xl px-6 py-10">
       <header>
         <h1 className="text-lg font-medium tracking-tight">Reliability &amp; code co-occurrence</h1>
         <p className="mt-1 max-w-2xl text-sm leading-relaxed text-foreground/60">
-          Agreement is computed at the <b>sentence level</b> (one sentence per segment), with
-          overlap counted as agreement. It is a <i>diagnostic for systematic disagreement</i>, not a
-          headline number. The heat map flags codes that co-occur yet agree poorly — merge
+          κ is computed <b>pooled over the selected sessions</b> at the sentence level — one
+          statistic from summed contingency tables, judged against the preregistered target. Per-code
+          rows stay the <i>diagnostic for systematic disagreement</i>; the heat map flags merge
           candidates. Reads the coding; never changes it.
         </p>
       </header>
 
+      <TargetPanel />
       <ConceptPanel />
 
       {/* Controls */}
-      <section className="mt-5 flex flex-wrap items-end gap-4 border border-foreground/15 p-4">
-        <label className="flex flex-col gap-1 text-xs text-foreground/60">
-          Session
-          <select
-            value={sessionId}
-            onChange={(e) => onSession(e.target.value)}
-            className="border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
-          >
-            {sessions.map((s) => (
-              <option key={s.sessionId} value={s.sessionId}>
-                {s.pidLabel} ({s.coders.length} coders)
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-foreground/60">
-          Coder A
-          <select
-            value={coderAId}
-            onChange={(e) => setCoderAId(e.target.value)}
-            className="border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
-          >
-            {session?.coders.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} ({c.nCode})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-foreground/60">
-          Coder B
-          <select
-            value={coderBId}
-            onChange={(e) => setCoderBId(e.target.value)}
-            className="border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
-          >
-            {session?.coders.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} ({c.nCode})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-foreground/60">
-          Min units/code
-          <input
-            type="number"
-            min={1}
-            max={100}
-            value={minInstances}
-            onChange={(e) => setMinInstances(Number(e.target.value))}
-            className="w-20 border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-foreground/60">
-          Window min–max (min)
-          <span className="flex items-center gap-1">
+      <section className="mt-5 border border-foreground/15 p-4">
+        {/* Session pool picker */}
+        <div className="mb-3">
+          <div className="mb-1.5 text-xs text-foreground/60">
+            κ pool — sessions to compute over{' '}
+            <span className="text-foreground/40">
+              · mark <b>calib</b> on sessions you reconciled in a meeting (548, 083): including them
+              is the pooled variant (B) and must be disclosed; deselect them for plan A
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {sessions.map((s) => {
+              const on = selected.has(s.sessionId);
+              const isCal = calib.has(s.sessionId);
+              return (
+                <span
+                  key={s.sessionId}
+                  className={`flex items-center gap-1.5 border px-2 py-1 text-sm ${
+                    on ? 'border-foreground/40' : 'border-foreground/15 text-foreground/40'
+                  }`}
+                >
+                  <label className="flex cursor-pointer items-center gap-1.5">
+                    <input type="checkbox" checked={on} onChange={() => toggleSession(s.sessionId)} />
+                    <span className="font-mono">{s.pidLabel}</span>
+                    <span className="text-xs text-foreground/40">({s.coders.length} coders)</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => toggleCalib(s.sessionId)}
+                    title="Mark as a calibration session (coded with reconciliation meetings) — a methods disclosure, not a computation change"
+                    className={`rounded-sm px-1 text-[10px] uppercase tracking-wide transition ${
+                      isCal
+                        ? 'bg-amber-500/20 text-amber-800'
+                        : 'text-foreground/30 hover:text-foreground/60'
+                    }`}
+                  >
+                    calib
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-end gap-4">
+          <label className="flex flex-col gap-1 text-xs text-foreground/60">
+            Coder A
+            <select
+              value={aId}
+              onChange={(e) => setCoderAId(e.target.value)}
+              className="border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
+            >
+              {coderOptions.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.nCode})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-foreground/60">
+            Coder B
+            <select
+              value={bId}
+              onChange={(e) => setCoderBId(e.target.value)}
+              className="border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
+            >
+              {coderOptions.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.nCode})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-foreground/60">
+            Min units/code
             <input
               type="number"
-              placeholder="0"
-              value={winStartMin}
-              onChange={(e) => setWinStartMin(e.target.value)}
-              className="w-14 border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
+              min={1}
+              max={100}
+              value={minInstances}
+              onChange={(e) => setMinInstances(Number(e.target.value))}
+              className="w-20 border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
             />
-            <span className="text-foreground/40">–</span>
-            <input
-              type="number"
-              placeholder="end"
-              value={winEndMin}
-              onChange={(e) => setWinEndMin(e.target.value)}
-              className="w-14 border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
-            />
-          </span>
-        </label>
-        <button
-          type="button"
-          onClick={run}
-          disabled={busy}
-          className="border border-foreground bg-foreground px-3 py-1.5 text-sm text-background transition hover:opacity-90 disabled:opacity-40"
-        >
-          {busy ? 'Computing…' : 'Compute'}
-        </button>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-foreground/60">
+            Window min–max (min)
+            <span className="flex items-center gap-1">
+              <input
+                type="number"
+                placeholder="0"
+                value={winStartMin}
+                onChange={(e) => setWinStartMin(e.target.value)}
+                className="w-14 border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
+              />
+              <span className="text-foreground/40">–</span>
+              <input
+                type="number"
+                placeholder="end"
+                value={winEndMin}
+                onChange={(e) => setWinEndMin(e.target.value)}
+                className="w-14 border border-foreground/25 bg-background px-2 py-1 text-sm text-foreground"
+              />
+            </span>
+          </label>
+          <button
+            type="button"
+            onClick={run}
+            disabled={busy}
+            className="border border-foreground bg-foreground px-3 py-1.5 text-sm text-background transition hover:opacity-90 disabled:opacity-40"
+          >
+            {busy ? 'Computing…' : 'Compute'}
+          </button>
+        </div>
       </section>
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
 
       {report && (
         <>
+          {/* Decision vs the preregistered target */}
+          <DecisionBanner report={report} includedCalib={includedCalib} />
+
           {/* Code-subset selector */}
           <CodeFilter
             allCodes={report.allCodes}
@@ -261,36 +339,134 @@ export default function IrrReportView({ sessions }: { sessions: IrrSessionOption
 }
 
 /**
- * The conceptual frame — collapsible. David's method in three ideas: agreement is a
+ * WHAT THE STATS NEED TO BE — the preregistered decision procedure, stated
+ * before any number renders (McDonald et al. 2019 §5.3.5: a target set after
+ * seeing the data is not a target). Always visible, not collapsed.
+ */
+function TargetPanel() {
+  return (
+    <section className="mt-5 border border-foreground/25 bg-foreground/[0.03] px-4 py-3 text-sm leading-relaxed">
+      <h2 className="text-xs font-medium uppercase tracking-wide text-foreground/55">
+        What the stats need to be — preregistered (Aug 4 meeting)
+      </h2>
+      <ul className="mt-2 space-y-1 text-foreground/75">
+        <li>
+          <b>Decision statistic:</b> mean strict per-code κ over powered codes, computed{' '}
+          <i>pooled</i> across the measurement sessions (one κ from summed tables — not a mean of
+          per-session κs).
+        </li>
+        <li>
+          <b>Target:</b>{' '}
+          <span className="font-mono">κ ≥ {IRR_TARGET_KAPPA.toFixed(2)}</span> (set in advance —
+          McDonald et al. 2019 §5.3.5). Reached → the codebook is certified; solo-code the remainder
+          (Kazemitabaar et al. 2023). Not reached → revise the codebook and run another independent
+          round; do not lower the target.
+        </li>
+        <li>
+          <b>Pool (plan A):</b> only sessions coded <i>independently</i> — no reconciliation
+          meetings between the coders on them; calibration sessions (548, 083) stay out. Including
+          them is the pooled variant (B, Zihan) and must be disclosed in methods.
+        </li>
+        <li>
+          <b>Reading the table:</b> strict κ decides; <span className="font-mono">κ rlx</span> (±1
+          sentence) is a sensitivity check only. <span className="uppercase">low-n</span> codes give
+          direction, not verdicts.
+        </li>
+      </ul>
+    </section>
+  );
+}
+
+/** The verdict against the preregistered target, plus the pool-composition disclosure. */
+function DecisionBanner({
+  report,
+  includedCalib,
+}: {
+  report: IrrReport;
+  includedCalib: string[];
+}) {
+  const d = report.decision;
+  const reached = d.meanKappa !== null && d.meanKappa >= d.target;
+  return (
+    <section className="mt-6 space-y-2">
+      {d.meanKappa === null ? (
+        <div className="border border-foreground/20 bg-foreground/[0.03] px-4 py-3 text-sm text-foreground/70">
+          No powered code yields a computable κ on this pool — nothing to judge against the target
+          yet. Pool more sessions or lower the min-units floor knowingly.
+        </div>
+      ) : reached ? (
+        <div className="border border-emerald-700/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-900">
+          <b>
+            κ = {d.meanKappa.toFixed(2)} ≥ {d.target.toFixed(2)} — target reached.
+          </b>{' '}
+          The codebook is certified on this pool; solo-coding the remainder is licensed
+          (Kazemitabaar et al. 2023 precedent). {d.poweredAtTarget}/{d.poweredTotal} powered codes
+          individually clear the target — codes below it still deserve a definition pass.
+        </div>
+      ) : (
+        <div className="border border-amber-700/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-900">
+          <b>
+            κ = {d.meanKappa.toFixed(2)} &lt; {d.target.toFixed(2)} — target not reached.
+          </b>{' '}
+          Revise the codebook where per-code κ is weak, then run another independent round (David:
+          choosing IRR obligates acting on a bad κ — do not lower the target). {d.poweredAtTarget}/
+          {d.poweredTotal} powered codes clear it individually.
+        </div>
+      )}
+      {includedCalib.length > 0 ? (
+        <div className="border border-amber-700/30 bg-amber-500/5 px-4 py-2 text-xs leading-relaxed text-amber-900/90">
+          <b>Pooled variant (B):</b> the pool includes calibration session
+          {includedCalib.length === 1 ? '' : 's'} {includedCalib.join(', ')} — coded with
+          reconciliation meetings. Legitimate (Zihan: syncing polishes the codebook without forcing
+          code-level agreement) but it must be <b>disclosed in methods</b>. Deselect{' '}
+          {includedCalib.length === 1 ? 'it' : 'them'} for plan A.
+        </div>
+      ) : (
+        <div className="border border-foreground/15 px-4 py-2 text-xs leading-relaxed text-foreground/60">
+          <b>Independent pool (plan A):</b> no session in the pool is marked as calibration — κ is
+          measured on independently coded sessions only.
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * The conceptual frame — collapsible. The method in three ideas: agreement is a
  * process check, sentences are the shared unit, and the heat map finds redundant
  * codes. Kept dense and specific to this study.
  */
 function ConceptPanel() {
   return (
-    <details className="mt-5 border border-foreground/15 bg-foreground/[0.02] px-4 py-3 text-sm">
+    <details className="mt-3 border border-foreground/15 bg-foreground/[0.02] px-4 py-3 text-sm">
       <summary className="cursor-pointer text-sm font-medium text-foreground/80">
         How to read this — three ideas
       </summary>
       <div className="mt-3 space-y-3 leading-relaxed text-foreground/70">
         <p>
-          <b>1 · IRR is a process check, not a trophy number.</b> The point is not the κ; it is that
-          you and the other coder took the time to agree on what the codes mean. Use it to find{' '}
-          <i>systematic</i> disagreement (a code you consistently split on), fix the definition, and
-          move on. κ = agreement minus luck: <span className="font-mono">κ = (p₀ − pₑ)/(1 − pₑ)</span>.
+          <b>1 · IRR is a process check with a preregistered stake.</b> The per-code table finds{' '}
+          <i>systematic</i> disagreement (a code you consistently split on) so you can fix the
+          definition. The pooled mean is different: it is judged against the target you set in
+          advance, and the outcome is binding — reached licenses solo-coding, missed obligates
+          another round. κ = agreement minus luck:{' '}
+          <span className="font-mono">κ = (p₀ − pₑ)/(1 − pₑ)</span>.
         </p>
         <p>
-          <b>2 · The sentence is the shared unit.</b> Both coders highlight whole sentences (the
-          restored transcript is one sentence per line), so you can&apos;t disagree on <i>edges</i> —
-          only on <i>which</i> sentences and <i>which</i> code. <b>Overlap counts as agreement:</b>{' '}
-          if you mark a sentence and the other coder marks the next, that is agreement (the{' '}
-          <span className="font-mono">κ&nbsp;rlx</span> column, ±1-unit tolerance). Strict κ is the
-          conservative read; relaxed is the honest one given how sentences split.
+          <b>2 · The sentence is the shared unit, pooled across sessions.</b> Both coders highlight
+          whole sentences (the restored transcript is one sentence per line), so you can&apos;t
+          disagree on <i>edges</i> — only on <i>which</i> sentences and <i>which</i> code. Pooling
+          sums each code&apos;s 2×2 table over the selected sessions and computes κ once — small
+          sessions don&apos;t get outsized weight, and a code rare in every single session can
+          still be estimated. <b>Overlap counts as agreement</b> in the{' '}
+          <span className="font-mono">κ&nbsp;rlx</span> column (±1-unit tolerance, never across a
+          session boundary); strict κ is what the decision reads.
         </p>
         <p>
           <b>3 · The heat map finds codes to merge.</b> Each cell is how strongly two codes land on
-          the <i>same</i> sentences (φ correlation, pooled across coders; diagonal = 1). Two codes
-          that co-occur strongly <i>and</i> agree poorly are doing the same work under two names —{' '}
-          <b>merge them</b> or sharpen a definition. Flagged pairs are listed under the map.
+          the <i>same</i> sentences (φ correlation, pooled across coders and sessions; diagonal =
+          1). Two codes that co-occur strongly <i>and</i> agree poorly are doing the same work under
+          two names — <b>merge them</b> or sharpen a definition. Flagged pairs are listed under the
+          map.
         </p>
       </div>
     </details>
@@ -358,10 +534,11 @@ function PerCodeTable({ report }: { report: IrrReport }) {
   const { perCode, codeOrigin } = report;
   const [showEmergent, setShowEmergent] = useState(true);
   const rows = perCode.filter((p) => showEmergent || codeOrigin[p.code] !== 'emergent');
+  const target = report.decision.target;
   return (
     <section className="mt-8">
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-sm font-medium">Per-code agreement (sentence level)</h2>
+        <h2 className="text-sm font-medium">Per-code agreement (sentence level, pooled)</h2>
         <label className="flex items-center gap-1.5 text-xs text-foreground/60">
           <input
             type="checkbox"
@@ -415,7 +592,17 @@ function PerCodeTable({ report }: { report: IrrReport }) {
                     {codeOrigin[p.code] ?? '—'}
                   </span>
                 </td>
-                <td className="py-1.5 pr-3 text-right font-mono">{num(p.kappa)}</td>
+                <td
+                  className={`py-1.5 pr-3 text-right font-mono ${
+                    p.underpowered || p.kappa === null
+                      ? ''
+                      : p.kappa >= target
+                        ? 'text-emerald-700'
+                        : 'text-amber-700'
+                  }`}
+                >
+                  {num(p.kappa)}
+                </td>
                 <td className="py-1.5 pr-3 text-right font-mono text-foreground/60">
                   {num(p.kappaRelaxed ?? null)}
                 </td>
@@ -428,9 +615,10 @@ function PerCodeTable({ report }: { report: IrrReport }) {
       </div>
       <p className="mt-2 text-xs leading-relaxed text-foreground/50">
         <span className="font-mono">κ</span> strict / <span className="font-mono">κ&nbsp;rlx</span>{' '}
-        counts adjacent-sentence overlap as agreement (David&apos;s rule). <span className="uppercase">low-n</span>{' '}
-        = below the min-units floor; not certifiable from this sample. Gate solo-coding per code
-        (κ ≥ .80 licenses; .667–.80 keep double-coding).
+        counts adjacent-sentence overlap as agreement (David&apos;s rule; never across a session
+        boundary). <span className="uppercase">low-n</span> = below the min-units floor pooled; not
+        certifiable from this sample. Green/amber κ = at/below the preregistered target of{' '}
+        {IRR_TARGET_KAPPA.toFixed(2)}.
       </p>
     </section>
   );
@@ -456,10 +644,10 @@ function CooccurrenceHeatmap({ co }: { co: CooccurrenceView }) {
     <section className="mt-10">
       <h2 className="mb-1 text-sm font-medium">Code × code co-occurrence</h2>
       <p className="mb-3 max-w-2xl text-xs leading-relaxed text-foreground/55">
-        Each cell is the φ correlation of two codes over sentence units (pooled across coders):
-        warm = they land on the same sentences, cool = they avoid each other, diagonal = 1. Hover a
-        cell for the shared-unit count. Strong warm cells among codes with weak agreement are merge
-        candidates (below).
+        Each cell is the φ correlation of two codes over sentence units (pooled across coders and
+        sessions): warm = they land on the same sentences, cool = they avoid each other, diagonal =
+        1. Hover a cell for the shared-unit count. Strong warm cells among codes with weak agreement
+        are merge candidates (below).
       </p>
       <div className="overflow-x-auto">
         <table className="border-collapse text-[11px]">

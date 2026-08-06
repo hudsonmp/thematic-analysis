@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   sentenceGridKappa,
+  poolSentenceGrids,
   enumerateSentences,
   sentencesForRange,
   type SentencePresence,
@@ -103,5 +104,99 @@ describe('enumerateSentences / sentencesForRange', () => {
     // From segment 0 char 7 ("Second.") through segment 2 char 7 ("Fourth.").
     const got = sentencesForRange(byOrdinal, 0, 7, 2, 7);
     expect(got).toEqual([1, 2, 3]);
+  });
+});
+
+describe('poolSentenceGrids', () => {
+  it('pooling one grid is the identity', () => {
+    const a = [p('X', 0), p('X', 2), p('Y', 5)];
+    const b = [p('X', 0), p('Y', 5), p('Y', 6)];
+    const g = sentenceGridKappa(20, a, b, { minActiveSentences: 1 });
+    const pooled = poolSentenceGrids([g], { minActiveSentences: 1 });
+    expect(pooled.nSentences).toBe(g.nSentences);
+    expect(pooled.segmentationKappa).toBeCloseTo(g.segmentationKappa!, 9);
+    expect(pooled.perCode).toHaveLength(g.perCode.length);
+    for (const gp of g.perCode) {
+      const pp = pooled.perCode.find((x) => x.code === gp.code)!;
+      expect(pp.kappa).toBeCloseTo(gp.kappa!, 9);
+      expect(pp.kappaRelaxed).toBeCloseTo(gp.kappaRelaxed!, 9);
+      expect(pp.prevalence).toBeCloseTo(gp.prevalence, 9);
+    }
+  });
+
+  it('pooled κ equals κ of the concatenated transcript (cells sum)', () => {
+    // Session 1: 10 sentences; session 2: 15 sentences. Concatenating by
+    // offsetting session 2's indices by 10 must give the same strict κ as
+    // pooling the two per-session grids — same summed contingency table.
+    const a1 = [p('X', 1), p('X', 2)];
+    const b1 = [p('X', 2), p('X', 7)];
+    const a2 = [p('X', 0), p('X', 9)];
+    const b2 = [p('X', 0)];
+    const g1 = sentenceGridKappa(10, a1, b1, { minActiveSentences: 1 });
+    const g2 = sentenceGridKappa(15, a2, b2, { minActiveSentences: 1 });
+    const pooled = poolSentenceGrids([g1, g2], { minActiveSentences: 1 });
+
+    const off = (ps: SentencePresence[], d: number) =>
+      ps.map((q) => ({ ...q, sentence: q.sentence + d }));
+    const concat = sentenceGridKappa(25, [...a1, ...off(a2, 10)], [...b1, ...off(b2, 10)], {
+      minActiveSentences: 1,
+    });
+    const px = pooled.perCode.find((c) => c.code === 'X')!;
+    const cx = concat.perCode.find((c) => c.code === 'X')!;
+    expect(px.bothActive).toBe(cx.bothActive);
+    expect(px.aOnly).toBe(cx.aOnly);
+    expect(px.bOnly).toBe(cx.bOnly);
+    expect(px.inactive).toBe(cx.inactive);
+    expect(px.kappa).toBeCloseTo(cx.kappa!, 9);
+    expect(pooled.segmentationKappa).toBeCloseTo(concat.segmentationKappa!, 9);
+  });
+
+  it('a code absent from one session counts that session as both-inactive', () => {
+    // Y appears only in session 1 (both coders agree there). Session 2's 30
+    // sentences must still enter Y's table as n00 — dropping them would
+    // overstate Y's prevalence and change κ.
+    const g1 = sentenceGridKappa(10, [p('Y', 3)], [p('Y', 3)], { minActiveSentences: 1 });
+    const g2 = sentenceGridKappa(30, [p('X', 0)], [p('X', 0)], { minActiveSentences: 1 });
+    const pooled = poolSentenceGrids([g1, g2], { minActiveSentences: 1 });
+    const y = pooled.perCode.find((c) => c.code === 'Y')!;
+    expect(y.bothActive).toBe(1);
+    expect(y.inactive).toBe(9 + 30);
+    expect(y.prevalence).toBeCloseTo(1 / 40, 9);
+    expect(y.kappa).toBeCloseTo(1, 9);
+  });
+
+  it('the ±1 tolerance never crosses a session boundary', () => {
+    // A marks X on the LAST sentence of session 1; B marks X on the FIRST
+    // sentence of session 2. Adjacent if concatenated naively — but they are
+    // different sessions, so relaxed must NOT credit agreement.
+    const g1 = sentenceGridKappa(5, [p('X', 4)], [], { minActiveSentences: 1 });
+    const g2 = sentenceGridKappa(5, [], [p('X', 0)], { minActiveSentences: 1 });
+    const pooled = poolSentenceGrids([g1, g2], { minActiveSentences: 1 });
+    const x = pooled.perCode.find((c) => c.code === 'X')!;
+    expect(x.rBothActive).toBe(0); // no relaxed agreement manufactured
+    expect(x.kappaRelaxed!).toBeLessThanOrEqual(0);
+  });
+
+  it('a code with no variance per session becomes estimable pooled', () => {
+    // In each session alone the code covers EVERY sentence for both coders →
+    // per-session κ is null (no variance). Pooled with a session where it is
+    // absent, the table has variance and κ = 1 (perfect agreement throughout).
+    const all = (n: number) => Array.from({ length: n }, (_, i) => p('Z', i));
+    const g1 = sentenceGridKappa(4, all(4), all(4), { minActiveSentences: 1 });
+    expect(g1.perCode.find((c) => c.code === 'Z')!.kappa).toBeNull();
+    const g2 = sentenceGridKappa(6, [], [], { minActiveSentences: 1 });
+    const pooled = poolSentenceGrids([g1, g2], { minActiveSentences: 1 });
+    expect(pooled.perCode.find((c) => c.code === 'Z')!.kappa).toBeCloseTo(1, 9);
+  });
+
+  it('underpowered is judged on the POOLED active count', () => {
+    // 2 active units per session, min 3: underpowered alone, powered pooled.
+    const g1 = sentenceGridKappa(10, [p('X', 0), p('X', 1)], [p('X', 0), p('X', 1)], {
+      minActiveSentences: 3,
+    });
+    expect(g1.perCode[0].underpowered).toBe(true);
+    const g2 = sentenceGridKappa(10, [p('X', 5)], [p('X', 5)], { minActiveSentences: 3 });
+    const pooled = poolSentenceGrids([g1, g2], { minActiveSentences: 3 });
+    expect(pooled.perCode.find((c) => c.code === 'X')!.underpowered).toBe(false);
   });
 });

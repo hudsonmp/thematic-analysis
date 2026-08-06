@@ -1,5 +1,40 @@
 # IRR — design decisions
 
+> **CURRENT PROCEDURE (2026-08-06, per the Aug 4 Zihan/David/Moonwara meeting;
+> precedent map: `~/Desktop/Readings - Claude/08-04-2026-irr-reconciliation-precedent.html`).**
+> Extends — does not replace — the 07-31 sentence-level method below.
+>
+> - **κ is POOLED over a selected session set**, not per-session:
+>   `poolSentenceGrids` (`lib/irr/sentencegrid.ts`) sums each code's per-session
+>   2×2 contingency tables and computes κ once from the summed table — "compute
+>   IRR on those three [sessions]" (plan A). This is deliberately NOT a mean of
+>   per-session κs: cell-summing weights sessions by their unit counts, and a
+>   code with no variance in any single session can still be estimated pooled.
+>   The ±1 relaxed tolerance is applied inside each session before summing, so
+>   it never credits agreement across a session boundary.
+> - **Preregistered target: mean strict per-code κ ≥ 0.70** (`lib/irr/target.ts`),
+>   per the meeting ("aiming for a 0.7") and McDonald et al. 2019 §5.3.5 (state
+>   a target agreement value with justification BEFORE the analysis). Decision
+>   rule: reached → codebook certified, solo-code the remainder (the
+>   calibrate → IRR-on-subset → split sequence of Kazemitabaar et al. 2023);
+>   not reached → revise the codebook, run another independent round (David's
+>   constraint: choosing IRR obligates acting on a bad κ). Do not lower the
+>   target post hoc. This supersedes §7's .80/.667 per-code gate for the
+>   POOLED decision; §7 remains sensible per-code triage guidance.
+> - **Pool discipline.** A session enters the pool only if BOTH coders have code
+>   annotations on its modal version (otherwise one coder's silence would score
+>   as disagreement); exclusions are disclosed in the report note, never
+>   silently absorbed. Which pooled sessions were CALIBRATION (coded with
+>   reconciliation meetings — 548, 083) vs independent is a methods disclosure
+>   the UI collects: excluding them is plan A (the Zihan-endorsed live plan);
+>   including them is the pooled variant B (Zihan: legitimate because syncing
+>   polishes the codebook without forcing code-level agreement — cite it, the
+>   open citation gap in the precedent guide notwithstanding).
+> - Code: `lib/irr/sentencegrid.ts` (`poolSentenceGrids` + relaxed cells),
+>   `lib/irr/target.ts`, `app/actions/irr.ts` (multi-session `computeIrr`),
+>   `components/irr/IrrReport.tsx` (pool picker, calib marking, target panel,
+>   decision banner).
+
 > **CURRENT METHOD (2026-07-31, David Smith Tuesday sync) — supersedes §§1–8 below.**
 >
 > The three-statistic apparatus (EasyDIAg, time-grid, char-sentence-grid) is
