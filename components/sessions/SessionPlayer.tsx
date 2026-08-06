@@ -2736,73 +2736,62 @@ export default function SessionPlayer({
     if (!root) return;
 
     const layout = () => {
-      const cells = root.querySelectorAll<HTMLElement>('[data-comment-card]');
+      // ONE GLOBAL PACK across every turn's gutter cell, in transcript-root
+      // coordinates. Cells were packed independently before, and each cell only
+      // knows its own tenants — so a busy turn whose stacked blocks outgrew the
+      // turn's text height spilled past its cell into the NEXT turn's gutter
+      // and overdrew that turn's blocks (short sentence-restored turns +
+      // several coded spans made this the common case, not the edge case). The
+      // gutter cells all share one vertical column, so packing them as a
+      // single sequence is geometrically exact; tops are written back relative
+      // to each element's own (position: relative) cell.
+      const cells = [...root.querySelectorAll<HTMLElement>('[data-comment-card]')].filter(
+        (cell) => cell.offsetParent !== null, // hidden (mobile) — nothing to place
+      );
+      if (cells.length === 0) return;
+      const rootRect = root.getBoundingClientRect();
+
+      // Everything that occupies the gutter goes into one input list: comment
+      // marginalia (desired beside their anchored SPAN — the cue row their
+      // annotation starts on, not the turn top) and code chip-blocks (desired
+      // at their coded text's true extent, from their OWN start/end cue
+      // indices). Ids are namespaced (`card:`/`block:`) because a coded
+      // annotation with notes appears in BOTH lists under one annotation id.
+      const tenants = new Map<string, { el: HTMLElement; cellTop: number }>();
+      const inputs: GutterInput[] = [];
       cells.forEach((cell) => {
         const blocks = cell.querySelectorAll<HTMLElement>('[data-code-block]');
         const railCards = cell.querySelectorAll<HTMLElement>('[data-rail-card]');
         if (blocks.length === 0 && railCards.length === 0) return;
-        if (cell.offsetParent === null) return; // hidden (mobile) — nothing to place
-        const cellRect = cell.getBoundingClientRect();
+        const cellTop = cell.getBoundingClientRect().top - rootRect.top;
 
-        // Each chip block anchors to its coded text's true extent (computed from
-        // its OWN start/end cue indices — the extent used to ride on the brace
-        // glyph, which is gone: the inline emerald highlight shows extent now).
-        const extents = new Map<string, { top: number; bottom: number }>();
+        railCards.forEach((el) => {
+          const startIdx = Number(el.dataset.startIdx);
+          const rowEl = rowRefs.current[startIdx] ?? null;
+          const top = rowEl ? rowEl.getBoundingClientRect().top - rootRect.top : cellTop;
+          const id = `card:${el.dataset.annId ?? ''}`;
+          tenants.set(id, { el, cellTop });
+          inputs.push({ id, top, bottom: top, blockHeight: el.offsetHeight || 24 });
+        });
         blocks.forEach((el) => {
           const startIdx = Number(el.dataset.startIdx);
           const endIdx = Number(el.dataset.endIdx);
           const startEl = rowRefs.current[startIdx];
           const endEl = rowRefs.current[endIdx] ?? startEl;
-          if (!startEl || !endEl) return;
-          extents.set(el.dataset.annId ?? '', {
-            top: startEl.getBoundingClientRect().top - cellRect.top,
-            bottom: endEl.getBoundingClientRect().bottom - cellRect.top,
-          });
-        });
-
-        // ONE pack for everything that occupies the gutter: comment marginalia
-        // (desired beside their anchored SPAN — the cue row their annotation
-        // starts on, not the turn top) and code chip-blocks (desired at their
-        // brace top). Packing them together is what stops a note group and a
-        // chip block anchored to nearby spans from overdrawing each other; the
-        // pure policy (text order, pushed DOWN on collision, never up) lives in
-        // packGutter. Ids are namespaced (`card:`/`block:`) because a coded
-        // annotation with notes appears in BOTH lists under one annotation id.
-        const inputs: GutterInput[] = [];
-        railCards.forEach((el) => {
-          const startIdx = Number(el.dataset.startIdx);
-          const rowEl = rowRefs.current[startIdx] ?? null;
-          const top = rowEl ? rowEl.getBoundingClientRect().top - cellRect.top : 0;
-          inputs.push({
-            id: `card:${el.dataset.annId ?? ''}`,
-            top,
-            bottom: top,
-            blockHeight: el.offsetHeight || 24,
-          });
-        });
-        blocks.forEach((el) => {
-          const ext = extents.get(el.dataset.annId ?? '');
-          inputs.push({
-            id: `block:${el.dataset.annId ?? ''}`,
-            top: ext?.top ?? 0,
-            bottom: ext?.bottom ?? 0,
-            blockHeight: el.offsetHeight || 24,
-          });
-        });
-        const packed = new Map(packGutter(inputs, 6).map((b) => [b.id, b]));
-        railCards.forEach((el) => {
-          const b = packed.get(`card:${el.dataset.annId ?? ''}`);
-          if (!b) return;
-          el.style.top = `${b.blockTop}px`;
-          el.style.opacity = '1';
-        });
-        blocks.forEach((el) => {
-          const b = packed.get(`block:${el.dataset.annId ?? ''}`);
-          if (!b) return;
-          el.style.top = `${b.blockTop}px`;
-          el.style.opacity = '1';
+          const top = startEl ? startEl.getBoundingClientRect().top - rootRect.top : cellTop;
+          const bottom = endEl ? endEl.getBoundingClientRect().bottom - rootRect.top : top;
+          const id = `block:${el.dataset.annId ?? ''}`;
+          tenants.set(id, { el, cellTop });
+          inputs.push({ id, top, bottom, blockHeight: el.offsetHeight || 24 });
         });
       });
+
+      for (const b of packGutter(inputs, 6)) {
+        const t = tenants.get(b.id);
+        if (!t) continue;
+        t.el.style.top = `${b.blockTop - t.cellTop}px`;
+        t.el.style.opacity = '1';
+      }
     };
 
     // After paint (fonts/wraps settled), then again on any resize.
