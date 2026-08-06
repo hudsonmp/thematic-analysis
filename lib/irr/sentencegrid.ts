@@ -112,6 +112,13 @@ export type SentenceGridPerCode = {
   aOnly: number;
   bOnly: number;
   inactive: number;
+  /** Relaxed (+/-1) contingency cells — kept so multi-session POOLING can sum
+   *  tables (dilation ran within each session, so summing never lets the
+   *  tolerance leak across a session boundary). */
+  rBothActive: number;
+  rAOnly: number;
+  rBOnly: number;
+  rInactive: number;
   underpowered: boolean;
 };
 
@@ -214,6 +221,10 @@ export function sentenceGridKappa(
       aOnly: n10,
       bOnly: n01,
       inactive: n00,
+      rBothActive: r11,
+      rAOnly: r10,
+      rBOnly: r01,
+      rInactive: r00,
       underpowered: active < minActive,
     };
   });
@@ -234,6 +245,117 @@ export function sentenceGridKappa(
     else if (av) m10++;
     else if (bv) m01++;
     else m00++;
+  }
+
+  const powered = perCode.filter((p) => !p.underpowered && p.kappa !== null);
+  const meanKappaPowered =
+    powered.length === 0 ? null : powered.reduce((s, p) => s + (p.kappa ?? 0), 0) / powered.length;
+
+  return {
+    nSentences,
+    segmentationKappa: cohenKappaBinary(m11, m10, m01, m00),
+    segBothActive: m11,
+    segAOnly: m10,
+    segBOnly: m01,
+    segBothEmpty: m00,
+    perCode: perCode.sort((a, b) => b.prevalence - a.prevalence || a.code.localeCompare(b.code)),
+    meanKappaPowered,
+  };
+}
+
+/**
+ * POOL per-session grids into one κ report — "compute IRR on those three
+ * sessions" from the Aug 4 method (Plan A: an independent measurement pool;
+ * Zihan's variant B admits calibration sessions too — pool composition is the
+ * CALLER's disclosure, not this function's concern).
+ *
+ * Pooling = summing each code's 2×2 contingency cells across sessions, then
+ * computing κ once from the summed table (one statistic over all sentence
+ * units, exactly as if the sessions were one long transcript). This is NOT the
+ * mean of per-session κs — a code can be uncomputable (no variance) in every
+ * single session yet well-estimated pooled, and small sessions would otherwise
+ * get equal weight to large ones.
+ *
+ * Two invariants the cell-sum design buys:
+ *  - A code absent from a session still counts that session's sentences as
+ *    both-inactive agreement for it (the code was appliable there and neither
+ *    coder applied it) — dropping them would inflate prevalence and bias κ.
+ *  - The ±1 relaxed tolerance cannot leak across a session boundary, because
+ *    dilation already happened inside each per-session grid; here we only sum.
+ */
+export function poolSentenceGrids(
+  grids: SentenceGridResult[],
+  opts: SentenceGridOptions = {},
+): SentenceGridResult {
+  const minActive = opts.minActiveSentences ?? 5;
+  const nSentences = grids.reduce((s, g) => s + g.nSentences, 0);
+  if (nSentences === 0) {
+    return {
+      nSentences: 0,
+      segmentationKappa: null,
+      segBothActive: 0,
+      segAOnly: 0,
+      segBOnly: 0,
+      segBothEmpty: 0,
+      perCode: [],
+      meanKappaPowered: null,
+    };
+  }
+
+  const codes = [...new Set(grids.flatMap((g) => g.perCode.map((p) => p.code)))].sort();
+  const zero = (n: number): Pick<
+    SentenceGridPerCode,
+    'bothActive' | 'aOnly' | 'bOnly' | 'inactive' | 'rBothActive' | 'rAOnly' | 'rBOnly' | 'rInactive'
+  > => ({
+    bothActive: 0,
+    aOnly: 0,
+    bOnly: 0,
+    inactive: n,
+    rBothActive: 0,
+    rAOnly: 0,
+    rBOnly: 0,
+    rInactive: n,
+  });
+
+  const perCode: SentenceGridPerCode[] = codes.map((code) => {
+    let n11 = 0, n10 = 0, n01 = 0, n00 = 0;
+    let r11 = 0, r10 = 0, r01 = 0, r00 = 0;
+    for (const g of grids) {
+      const p = g.perCode.find((x) => x.code === code) ?? zero(g.nSentences);
+      n11 += p.bothActive;
+      n10 += p.aOnly;
+      n01 += p.bOnly;
+      n00 += p.inactive;
+      r11 += p.rBothActive;
+      r10 += p.rAOnly;
+      r01 += p.rBOnly;
+      r00 += p.rInactive;
+    }
+    const active = n11 + n10 + n01;
+    return {
+      code,
+      kappa: cohenKappaBinary(n11, n10, n01, n00),
+      kappaRelaxed: cohenKappaBinary(r11, r10, r01, r00),
+      ac1: ac1Binary(n11, n10, n01, n00),
+      prevalence: active / nSentences,
+      bothActive: n11,
+      aOnly: n10,
+      bOnly: n01,
+      inactive: n00,
+      rBothActive: r11,
+      rAOnly: r10,
+      rBOnly: r01,
+      rInactive: r00,
+      underpowered: active < minActive,
+    };
+  });
+
+  let m11 = 0, m10 = 0, m01 = 0, m00 = 0;
+  for (const g of grids) {
+    m11 += g.segBothActive;
+    m10 += g.segAOnly;
+    m01 += g.segBOnly;
+    m00 += g.segBothEmpty;
   }
 
   const powered = perCode.filter((p) => !p.underpowered && p.kappa !== null);
