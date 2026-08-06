@@ -1,6 +1,8 @@
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { getSessionCloud } from '@/app/actions/sessions';
 import { listAllAnnotations, listCanonical } from '@/app/actions/annotations';
+import { listCompareNotes } from '@/app/actions/compareNotes';
+import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
 import { listSessionSpecTimeline } from '@/app/actions/spec';
 import CompareView from '@/components/sessions/CompareView';
 
@@ -30,11 +32,16 @@ export default async function ComparePage({
   const { id } = await params;
   const user = await requireAuthUser();
 
-  const [session, { annotations, coders }, canonical] = await Promise.all([
+  const [session, { annotations, coders }, canonical, notes, codebook] = await Promise.all([
     getSessionCloud(id),
     listAllAnnotations(id),
     listCanonical(id),
+    listCompareNotes(id),
+    getOrCreateCodebook(),
   ]);
+  // Active (non-retired) codes for the side-by-side add-a-code picker.
+  const tree = await listCodebookTree(codebook.id);
+  const codeOptions = tree.codes.map((c) => ({ id: c.id, mnemonic: c.mnemonic }));
 
   // The participant's spec-edit stream — replayed to its FINAL state client-side
   // (compare has no playhead, so "the spec they ended with" is the useful instant).
@@ -60,6 +67,8 @@ export default async function ComparePage({
       canonical={canonical}
       myUid={user.id}
       specTimeline={specTimeline}
+      notes={notes}
+      codeOptions={codeOptions}
     />
   );
 }

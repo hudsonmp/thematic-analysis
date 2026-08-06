@@ -571,6 +571,9 @@ export type CompareAnnotationView = {
   coderId: string;
   coderName: string;
   segmentId: string;
+  /** END segment of a multi-cue span (null = single segment). The side-by-side
+   *  view paints every covered segment. */
+  endSegmentId: string | null;
   tStartMs: number;
   tEndMs: number;
   isCanonical: boolean;
@@ -612,7 +615,7 @@ export async function listAllAnnotations(
       // end_segment_id), so the embed MUST name its relationship — the bare
       // cb_segments(ordinal) form 500s with 'more than one relationship found'
       // (this silently broke /compare when multi-cue anchors landed).
-      'id, coder_id, segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments!cb_annotations_segment_id_fkey(ordinal), cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
+      'id, coder_id, segment_id, end_segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments!cb_annotations_segment_id_fkey(ordinal), cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
     )
     .eq('session_id', sessionId)
     .order('id', { ascending: true })
@@ -626,6 +629,7 @@ export async function listAllAnnotations(
     id: string;
     coder_id: string;
     segment_id: string;
+    end_segment_id: string | null;
     t_start_ms: number;
     t_end_ms: number;
     is_canonical: boolean;
@@ -663,6 +667,7 @@ export async function listAllAnnotations(
     coderId: r.coder_id,
     coderName: nameFor(r.coder_id),
     segmentId: r.segment_id,
+    endSegmentId: r.end_segment_id,
     tStartMs: r.t_start_ms,
     tEndMs: r.t_end_ms,
     isCanonical: r.is_canonical,

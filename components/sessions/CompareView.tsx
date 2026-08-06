@@ -12,8 +12,10 @@ import {
   type CanonicalView,
 } from '@/app/actions/annotations';
 import type { SpecTimelineResult } from '@/app/actions/spec';
+import type { CompareNoteView } from '@/app/actions/compareNotes';
 import { specStateAt } from '@/lib/spec/reconstruct';
 import SpecReplay from './SpecReplay';
+import CompareSideBySide from './CompareSideBySide';
 
 /** Format a millisecond offset as `mm:ss` (minutes uncapped past 60). */
 function formatTime(ms: number): string {
@@ -75,6 +77,8 @@ export default function CompareView({
   canonical,
   myUid,
   specTimeline,
+  notes,
+  codeOptions,
 }: {
   sessionId: string;
   versionId: string | null;
@@ -86,11 +90,15 @@ export default function CompareView({
   /** The signed-in viewer — the fixed LEFT lane. */
   myUid: string;
   specTimeline: SpecTimelineResult;
+  /** Review-layer notes (cb_compare_notes) for the side-by-side tab. */
+  notes: CompareNoteView[];
+  /** Active codebook codes for the side-by-side add-a-code picker. */
+  codeOptions: { id: string; mnemonic: string }[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<'transcript' | 'specification'>('transcript');
+  const [tab, setTab] = useState<'side-by-side' | 'table' | 'specification'>('side-by-side');
   const [openSegmentId, setOpenSegmentId] = useState<string | null>(null);
   const [selection, setSelection] = useState<Record<string, Set<string>>>({});
 
@@ -276,7 +284,7 @@ export default function CompareView({
           </label>
 
           <div role="tablist" className="flex rounded border border-foreground/20 text-xs">
-            {(['transcript', 'specification'] as const).map((t) => (
+            {(['side-by-side', 'table', 'specification'] as const).map((t) => (
               <button
                 key={t}
                 type="button"
@@ -318,7 +326,21 @@ export default function CompareView({
         </p>
       )}
 
-      {tab === 'specification' ? (
+      {tab === 'side-by-side' ? (
+        <CompareSideBySide
+          sessionId={sessionId}
+          versionId={versionId}
+          segments={segments}
+          annotations={annotations}
+          me={{
+            coderId: myUid,
+            coderName: coders.find((c) => c.coderId === myUid)?.coderName ?? 'you',
+          }}
+          other={vsCoder}
+          notes={notes}
+          codeOptions={codeOptions}
+        />
+      ) : tab === 'specification' ? (
         <div className="max-w-3xl">
           <p className="mb-3 text-xs text-foreground/50">
             The participant&apos;s FINAL specification — shared context for the

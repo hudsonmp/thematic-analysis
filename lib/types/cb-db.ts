@@ -851,6 +851,60 @@ export type Database = {
           },
         ]
       }
+      cb_compare_notes: {
+        Row: {
+          about_coder_id: string | null
+          author_id: string
+          body: string
+          created_at: string
+          id: string
+          kind: string
+          resolved_at: string | null
+          segment_id: string
+          session_id: string
+          updated_at: string
+        }
+        Insert: {
+          about_coder_id?: string | null
+          author_id: string
+          body: string
+          created_at?: string
+          id?: string
+          kind: string
+          resolved_at?: string | null
+          segment_id: string
+          session_id: string
+          updated_at?: string
+        }
+        Update: {
+          about_coder_id?: string | null
+          author_id?: string
+          body?: string
+          created_at?: string
+          id?: string
+          kind?: string
+          resolved_at?: string | null
+          segment_id?: string
+          session_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_compare_notes_segment_id_fkey"
+            columns: ["segment_id"]
+            isOneToOne: false
+            referencedRelation: "cb_segments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_compare_notes_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_codebooks: {
         Row: {
           created_at: string
