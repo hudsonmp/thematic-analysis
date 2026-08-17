@@ -1172,6 +1172,77 @@ export type Database = {
           },
         ]
       }
+      cb_exemplar_comments: {
+        Row: {
+          author_id: string
+          body: string
+          code_id: string
+          created_at: string
+          id: string
+          thread_id: string
+        }
+        Insert: {
+          author_id: string
+          body: string
+          code_id: string
+          created_at?: string
+          id?: string
+          thread_id: string
+        }
+        Update: {
+          author_id?: string
+          body?: string
+          code_id?: string
+          created_at?: string
+          id?: string
+          thread_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_exemplar_comments_code_id_fkey"
+            columns: ["code_id"]
+            isOneToOne: false
+            referencedRelation: "cb_exemplar_docs"
+            referencedColumns: ["code_id"]
+          },
+        ]
+      }
+      cb_exemplar_docs: {
+        Row: {
+          body: Json
+          code_id: string
+          codebook_id: string
+          updated_at: string
+        }
+        Insert: {
+          body?: Json
+          code_id: string
+          codebook_id: string
+          updated_at?: string
+        }
+        Update: {
+          body?: Json
+          code_id?: string
+          codebook_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_exemplar_docs_code_id_fkey"
+            columns: ["code_id"]
+            isOneToOne: true
+            referencedRelation: "cb_codes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_exemplar_docs_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_facet_values: {
         Row: {
           color: string | null

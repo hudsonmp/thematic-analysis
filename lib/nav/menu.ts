@@ -34,6 +34,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: '/reliability/irr', label: 'IRR (live)', hint: 'EasyDIAg κ from coding' },
       { href: '/export', label: 'Export', hint: 'LaTeX, JSON' },
       { href: '/instructions', label: 'Instructions', hint: 'Coder guidance' },
+      { href: '/exemplars', label: 'Exemplars', hint: 'Worked examples, one tab per code' },
       { href: '/drill', label: 'Drill', hint: 'Spaced practice on the codes' },
     ],
   },
