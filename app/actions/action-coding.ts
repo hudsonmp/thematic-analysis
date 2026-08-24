@@ -18,6 +18,7 @@ import {
   type ManualComposition,
 } from '@/lib/actions/schema';
 import { foldUsage, type ActionUsage } from '@/lib/actions/search';
+import { codingDetail } from '@/lib/actions/projection';
 import {
   coderStatusFromRow,
   type CoderStatus,
@@ -94,6 +95,7 @@ function toView(
       | Array<{
           id: string;
           action_id: string | null;
+          action_name: string | null;
           move_ids: string[];
           object_ids: string[];
           object_roles: Json;
@@ -109,6 +111,13 @@ function toView(
   const codings = [...(r.cb_action_codings ?? [])].sort((a, b) =>
     a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
   );
+  const qLites = schema.questions.map((q) => ({
+    id: q.id,
+    prompt: q.prompt,
+    kind: q.kind,
+    required: q.required,
+    options: q.options.map((o) => ({ id: o.id, label: o.label })),
+  }));
   return {
     id: r.id,
     segmentId: r.segment_id,
@@ -120,23 +129,29 @@ function toView(
     tEndMs: r.t_end_ms,
     kind: r.kind,
     codes: codings.map((c) => {
-      // A LINKED coding displays its action's CURRENT composition (the action is
-      // the source of truth); the snapshot columns are the fallback for ad hoc
-      // codings and for an action deleted out from under the link.
-      const live = c.action_id ? schema.actions.find((a) => a.id === c.action_id) ?? null : null;
-      const detail: ActionCodingView = {
-        id: c.id,
-        actionId: c.action_id,
-        actionName: live?.name ?? c.cb_actions?.name ?? null,
-        moveIds: live ? live.moveIds : c.move_ids,
-        objectIds: live ? live.objectIds : c.object_ids,
-        answers: live ? live.answers : parseAnswers(c.answers),
-        objectRoles: live ? live.objectRoles : parseObjectRoles(c.object_roles),
-      };
+      // A coding renders the SNAPSHOT it was stored with — never the action's
+      // current composition. See lib/actions/projection.ts for why. Divergence
+      // comes back as `drifted` for the UI to surface, not as a rewrite.
+      const { detail, drifted } = codingDetail(
+        {
+          id: c.id,
+          actionId: c.action_id,
+          // Pre-migration-51 rows have no name snapshot; fall back to the live
+          // name once, so an old coding still renders with a label.
+          actionName: c.action_name ?? c.cb_actions?.name ?? null,
+          moveIds: c.move_ids,
+          objectIds: c.object_ids,
+          objectRoles: parseObjectRoles(c.object_roles),
+          answers: parseAnswers(c.answers),
+        },
+        schema.actions,
+        qLites,
+      );
       return {
         id: c.id,
         mnemonic: detail.actionName ?? compositionLabel(detail, schema),
         actionCoding: detail,
+        actionDrifted: drifted,
       };
     }),
     commentCount: (r.cb_action_annotation_comments ?? []).length,
@@ -145,7 +160,7 @@ function toView(
 }
 
 const ANN_SELECT =
-  'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_action_codings(id, action_id, move_ids, object_ids, object_roles, answers, created_at, cb_actions(id, name)), cb_action_annotation_comments(id)';
+  'id, segment_id, end_segment_id, char_start, char_end, quote_text, t_start_ms, t_end_ms, kind, created_at, cb_action_codings(id, action_id, action_name, move_ids, object_ids, object_roles, answers, created_at, cb_actions(id, name)), cb_action_annotation_comments(id)';
 
 /**
  * The signed-in coder's OWN action-layer annotations for one transcript version
@@ -192,7 +207,7 @@ export type CodingRef = { actionId: string } | { manual: ManualComposition };
 async function codingRow(
   ref: CodingRef,
   codebookId: string,
-): Promise<{ action_id: string | null; move_ids: string[]; object_ids: string[]; object_roles: Json; answers: Json }> {
+): Promise<{ action_id: string | null; action_name: string | null; move_ids: string[]; object_ids: string[]; object_roles: Json; answers: Json }> {
   const schema = await schemaFor(codebookId);
   const qLites = schema.questions.map((q) => ({
     id: q.id,
@@ -206,6 +221,7 @@ async function codingRow(
     if (!a) throw new Error('That action no longer exists.');
     return {
       action_id: a.id,
+      action_name: a.name,
       move_ids: a.moveIds,
       object_ids: a.objectIds,
       object_roles: a.objectRoles,
@@ -223,6 +239,7 @@ async function codingRow(
   const existing = schema.actions.find((a) => compositionKey(a, qLites) === key) ?? null;
   return {
     action_id: existing?.id ?? null,
+    action_name: existing?.name ?? null,
     move_ids: Array.from(new Set(ref.manual.moveIds)),
     object_ids: objectIds,
     object_roles: objectRoles,

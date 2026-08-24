@@ -167,6 +167,7 @@ export type Database = {
       cb_action_codings: {
         Row: {
           action_id: string | null
+          action_name: string | null
           annotation_id: string
           answers: Json
           created_at: string
@@ -177,6 +178,7 @@ export type Database = {
         }
         Insert: {
           action_id?: string | null
+          action_name?: string | null
           annotation_id: string
           answers?: Json
           created_at?: string
@@ -187,6 +189,7 @@ export type Database = {
         }
         Update: {
           action_id?: string | null
+          action_name?: string | null
           annotation_id?: string
           answers?: Json
           created_at?: string

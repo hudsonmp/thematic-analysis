@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { createBrowser } from '@/lib/supabase/browser';
+import { annotationChannelName } from '@/lib/realtime/channel';
 
 /**
  * Live-sync the signed-in coder's OWN annotations across THEIR devices/tabs
@@ -81,7 +82,7 @@ export function useRealtimeAnnotations({
     };
 
     const channel = sb
-      .channel(`realtime:annotations:${sessionId}`)
+      .channel(annotationChannelName(sessionId, annotationsTable))
       .on(
         'postgres_changes',
         {

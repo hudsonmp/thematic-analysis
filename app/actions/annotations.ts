@@ -33,7 +33,15 @@ export type MyAnnotationView = {
   /** The codes on this span. On the ACTION layer (/coding/action) each entry is
    *  one action coding — `id` is the coding row, `mnemonic` its label — and
    *  `actionCoding` carries the moves/objects/answers; legacy rows never set it. */
-  codes: { id: string; mnemonic: string; actionCoding?: ActionCodingView }[];
+  codes: {
+    id: string;
+    mnemonic: string;
+    actionCoding?: ActionCodingView;
+    /** ACTION layer only: the action this coding was entered through still
+     *  exists but no longer matches what was coded. The coding renders its own
+     *  snapshot regardless; this only asks the UI to say so. */
+    actionDrifted?: boolean;
+  }[];
   /** How many comments are threaded on this annotation (#17/#18 indicator). */
   commentCount: number;
   createdAt: string;
