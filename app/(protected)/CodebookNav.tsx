@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { logoutAction } from '@/app/actions/auth';
-import { NAV_GROUPS, activeGroupKey, activeHref } from '@/lib/nav/menu';
+import { visibleNavGroups, activeGroupKey, activeHref } from '@/lib/nav/menu';
 import CodebookSwitcher, { type CodebookOption } from '@/components/CodebookSwitcher';
 
 /**
@@ -24,12 +24,15 @@ export default function CodebookNav({
   codebooks,
   activeCodebookId,
   canEditCodebooks = false,
+  isAdmin = false,
   displayName,
 }: {
   studyName: string | null;
   codebooks: CodebookOption[];
   activeCodebookId: string | null;
   canEditCodebooks?: boolean;
+  /** Admin-only nav entries (the invite console) render only when true. */
+  isAdmin?: boolean;
   displayName: string;
 }) {
   const pathname = usePathname();
@@ -74,7 +77,7 @@ export default function CodebookNav({
         <div className="flex items-baseline gap-6" ref={navRef}>
           <span className="text-sm font-medium tracking-tight">Codebook</span>
           <ul className="flex items-center gap-1">
-            {NAV_GROUPS.map((group) => {
+            {visibleNavGroups(isAdmin).map((group) => {
               const isOpen = openKey === group.key;
               const isCurrent = currentGroup === group.key;
               return (

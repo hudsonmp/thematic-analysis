@@ -8,7 +8,7 @@
  *   Recording — collect + observe data  (live co-observation, sessions, events, flags)
  */
 
-export type NavItem = { href: string; label: string; hint?: string };
+export type NavItem = { href: string; label: string; hint?: string; adminOnly?: boolean };
 export type NavGroup = { key: string; label: string; items: NavItem[] };
 
 export const NAV_GROUPS: NavGroup[] = [
@@ -24,6 +24,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: '/citations', label: 'Citations', hint: 'BibTeX library' },
       { href: '/exemplars', label: 'Exemplars', hint: 'Worked examples, one tab per code' },
       { href: '/actions', label: 'Actions', hint: 'Moves × objects, the coding unit' },
+      { href: '/admin', label: 'Admin', hint: 'Invites · familiarization', adminOnly: true },
     ],
   },
   {
@@ -42,6 +43,20 @@ export const NAV_GROUPS: NavGroup[] = [
 
 /** Every item across every group, flattened — the resolution set for `activeHref`. */
 export const ALL_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
+
+/**
+ * The menus as one role should see them. The admin console mints the invite
+ * links that add coders to the study, so an admin must be able to REACH it,
+ * and a coder must never see it offered. The page re-gates with requireAdmin()
+ * regardless — this only decides what the chrome renders, which is why the
+ * filter is pure data here rather than inline in the nav component.
+ */
+export function visibleNavGroups(isAdmin: boolean): NavGroup[] {
+  return NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !item.adminOnly || isAdmin),
+  }));
+}
 
 /**
  * Which single nav href does `pathname` light up?

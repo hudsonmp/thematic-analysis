@@ -1,16 +1,11 @@
+import { redirect } from 'next/navigation';
 import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
-import { listInvites, listFamiliarization } from '@/app/actions/admin';
-import { listSessionsCloud } from '@/app/actions/sessions';
 import { getCitation } from '@/app/actions/citations';
-import { requireAdmin } from '@/lib/auth/roles';
 import SchemeView from '@/components/codebook/SchemeView';
-import AdminPanel from '@/components/admin/AdminPanel';
 
 /**
- * The scheme / matrix page, with the admin console intentionally hidden behind
- * `/?admin` instead of occupying permanent navigation or its own route. In
- * Next 16 `searchParams` is a Promise and must be awaited (reading it opts the
- * page into dynamic rendering).
+ * The scheme / matrix page. In Next 16 `searchParams` is a Promise and must be
+ * awaited (reading it opts the page into dynamic rendering).
  *
  * Deductive coding ("code from citation"): when `?fromCitation=<id>` is present
  * we resolve that citation and hand it through SchemeView to MatrixView as
@@ -31,27 +26,10 @@ export default async function Home({
 }) {
   const query = await searchParams;
 
-  if (query.admin !== undefined) {
-    await requireAdmin({ redirectTo: '/' });
-
-    const [invites, familiarization, sessions] = await Promise.all([
-      listInvites(),
-      listFamiliarization(),
-      listSessionsCloud(),
-    ]);
-
-    return (
-      <AdminPanel
-        invites={invites}
-        familiarization={familiarization}
-        sessions={sessions.map((session) => ({
-          id: session.id,
-          pidLabel: session.pidLabel,
-          collection: session.collection,
-        }))}
-      />
-    );
-  }
+  // The admin console is a real route again (/admin, linked from the Codebook
+  // menu for admins). Older `/?admin` links redirect there so there is exactly
+  // one canonical location rather than two doors onto the same panel.
+  if (query.admin !== undefined) redirect('/admin');
 
   const cb = await getOrCreateCodebook();
   const tree = await listCodebookTree(cb.id);

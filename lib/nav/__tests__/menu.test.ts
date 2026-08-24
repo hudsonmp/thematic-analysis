@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { ALL_ITEMS, NAV_GROUPS, activeGroupKey, activeHref } from '@/lib/nav/menu';
+import {
+  ALL_ITEMS,
+  NAV_GROUPS,
+  activeGroupKey,
+  activeHref,
+  visibleNavGroups,
+} from '@/lib/nav/menu';
 
 describe('NAV_GROUPS', () => {
   it('contains only the retained authoring and recording workflows', () => {
@@ -11,14 +17,46 @@ describe('NAV_GROUPS', () => {
     expect(new Set(hrefs).size).toBe(hrefs.length);
   });
 
-  it('does not expose retired tools or the query-only admin console', () => {
+  it('does not expose retired tools', () => {
     const hrefs = ALL_ITEMS.map((item) => item.href);
-    expect(hrefs).not.toContain('/admin');
     expect(hrefs).not.toContain('/drill');
     expect(hrefs).not.toContain('/export');
     expect(hrefs).not.toContain('/instructions');
     expect(hrefs).not.toContain('/reliability');
     expect(hrefs).not.toContain('/progression-analysis');
+  });
+
+  it('carries the admin console as an admin-only item', () => {
+    const admin = ALL_ITEMS.find((item) => item.href === '/admin');
+    expect(admin?.adminOnly).toBe(true);
+  });
+});
+
+/**
+ * The admin console mints the invite links that add coders to the study, so it
+ * has to be REACHABLE by the admin — but it must never render for a coder. The
+ * page re-gates with requireAdmin() regardless; this only decides what the nav
+ * shows, so the filter lives here as pure data rather than inline in the chrome.
+ */
+describe('visibleNavGroups', () => {
+  it('shows the admin console to an admin', () => {
+    const hrefs = visibleNavGroups(true).flatMap((g) => g.items.map((i) => i.href));
+    expect(hrefs).toContain('/admin');
+  });
+
+  it('hides the admin console from a non-admin', () => {
+    const hrefs = visibleNavGroups(false).flatMap((g) => g.items.map((i) => i.href));
+    expect(hrefs).not.toContain('/admin');
+  });
+
+  it('leaves every non-admin item alone for both roles', () => {
+    const asAdmin = visibleNavGroups(true).flatMap((g) => g.items.map((i) => i.href));
+    const asCoder = visibleNavGroups(false).flatMap((g) => g.items.map((i) => i.href));
+    expect(asAdmin.filter((h) => h !== '/admin')).toEqual(asCoder);
+  });
+
+  it('keeps both menus present even when nothing admin-only is shown', () => {
+    expect(visibleNavGroups(false).map((g) => g.key)).toEqual(['codebook', 'recording']);
   });
 });
 
@@ -59,5 +97,10 @@ describe('activeGroupKey', () => {
 
   it('is null when nothing matches', () => {
     expect(activeGroupKey('/codes/abc-123')).toBeNull();
+  });
+
+  it('resolves the admin console to its owning menu', () => {
+    expect(activeHref('/admin')).toBe('/admin');
+    expect(activeGroupKey('/admin')).toBe('codebook');
   });
 });
