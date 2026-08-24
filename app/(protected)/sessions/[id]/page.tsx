@@ -29,8 +29,7 @@ import SessionPlayer from '@/components/sessions/SessionPlayer';
  * picker shape) and the signed-in coder's OWN annotations (`listMyAnnotations`,
  * own-coding isolation) and pass them with `codingEnabled`. The coder is
  * implicit — every annotation is owned by `auth.uid()`, so there is no coder
- * input in the UI. Comments (`cb_memos`) remain hidden pending their own
- * migration.
+ * input in the UI.
  *
  * Realtime (Task 10): we also pass the signed-in coder's `auth.uid()` (`myUid`)
  * so the player's `useRealtimeAnnotations` hook can scope live sync to the

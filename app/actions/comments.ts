@@ -12,7 +12,7 @@ type CoderComment = Tables<'cb_coder_comments'>;
  * `author` is supplied by the UI — the coder's name or initials — rather than
  * derived server-side. We require it to be a non-empty string so
  * comments are always attributable; an unattributed comment is worse than none
- * in a reliability-coding context.
+ * in a collaborative coding context.
  *
  * `codeVersion` is optional: null/omitted means the comment is about the code in
  * general (not a specific version). When provided it must reference an existing

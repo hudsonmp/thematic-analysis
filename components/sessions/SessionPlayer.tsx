@@ -10,20 +10,12 @@ import {
   type CloudSegment,
   type SessionVersion,
 } from '@/app/actions/sessions';
-import {
-  addAnnotation,
-  addCodeToAnnotation,
-  removeCodeFromAnnotation,
-  updateAnnotationAnchor,
-  deleteAnnotation,
-  listMyAnnotationsForVersion,
-  addAnnotationComment,
-  listAnnotationComments,
-  editAnnotationComment,
-  deleteAnnotationComment,
-  type MyAnnotationView,
-  type AnnotationCommentView,
-} from '@/app/actions/annotations';
+import type { MyAnnotationView, AnnotationCommentView } from '@/app/actions/annotations';
+import type { ActionSchema } from '@/app/actions/action-schema';
+import { foldUsage, mergeUsage, type ActionUsage } from '@/lib/actions/search';
+import type { ManualComposition } from '@/lib/actions/schema';
+import { backendFor, type CodingLayer } from './annotationBackend';
+import ActionCodingPopup from './ActionCodingPopup';
 import {
   createEpisode,
   deleteSessionEpisode,
@@ -296,6 +288,9 @@ export default function SessionPlayer({
   codebookId,
   collection,
   compareHref = null,
+  layer = 'codebook',
+  actionSchema = null,
+  actionUsage = null,
 }: {
   id: string;
   pidLabel: string;
@@ -339,8 +334,24 @@ export default function SessionPlayer({
   collection: string | null;
   /** Link to the post-hoc, read-only Compare tab. */
   compareHref?: string | null;
+  /** WHICH coding layer this player writes: the codebook (legacy, default) or the
+   *  action layer (/coding/action — anchors in their own tables, chips are
+   *  moves × objects). Picks the backend + the popup; everything else is shared. */
+  layer?: CodingLayer;
+  /** The action vocabulary + catalog for the action-layer popup. */
+  actionSchema?: ActionSchema | null;
+  /** This coder's cross-session action usage (OTHER sessions) — the picker's
+   *  recent/frequent tie-break. This session's codings are folded in live. */
+  actionUsage?: ActionUsage | null;
 }) {
   const router = useRouter();
+  // The store seam (see annotationBackend.ts). Held in a ref — the layer never
+  // changes for a mounted player, and reading through a ref keeps the many
+  // callbacks below free of an extra dependency.
+  const apiRef = useRef(backendFor(layer));
+  useEffect(() => {
+    apiRef.current = backendFor(layer);
+  }, [layer]);
 
   // --- Modes: COMMENT (default) vs CODE -----------------------------------
   // Two selection grammars share one transcript. COMMENT mode: select → start
@@ -405,6 +416,18 @@ export default function SessionPlayer({
   const [comments, setComments] =
     useState<Record<string, AnnotationCommentView[]>>(initialComments);
 
+  // Action-layer usage for the picker's tie-break: the server's cross-session
+  // counts + THIS session's codings, live from state (so an action applied a
+  // moment ago floats up on the next open without a refresh).
+  const liveActionUsage = useMemo<ActionUsage>(() => {
+    if (layer !== 'action') return {};
+    const rows: { actionId: string | null; createdAt: string }[] = [];
+    for (const ann of myAnnotations) {
+      for (const c of ann.codes) rows.push({ actionId: c.actionCoding?.actionId ?? null, createdAt: ann.createdAt });
+    }
+    return mergeUsage(actionUsage ?? {}, foldUsage(rows));
+  }, [layer, myAnnotations, actionUsage]);
+
   const [versionBusy, setVersionBusy] = useState(false);
   const [versionError, setVersionError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -425,14 +448,14 @@ export default function SessionPlayer({
       setComments({});
       return;
     }
-    const next = await listAnnotationComments(annotationIds);
+    const next = await apiRef.current.listComments(annotationIds);
     setComments(next);
   }, []);
 
   const refreshActiveAnnotations = useCallback(async () => {
     if (!versionId) return;
     try {
-      const next = await listMyAnnotationsForVersion(id, versionId);
+      const next = await apiRef.current.listMine(id, versionId, codebookId);
       setMyAnnotations(next);
       await reloadComments(next.map((a) => a.id));
     } catch (e) {
@@ -440,11 +463,13 @@ export default function SessionPlayer({
         e instanceof Error ? e.message : 'Failed to refresh annotations.',
       );
     }
-  }, [id, versionId, reloadComments]);
+  }, [id, versionId, codebookId, reloadComments]);
 
   useRealtimeAnnotations({
     sessionId: id,
     myUid,
+    // Pure function of the layer prop (not the ref — refs are not for render).
+    tables: backendFor(layer).realtimeTables,
     // Always refetch into client state (BOTH tabs). `versionId` is set on the
     // 'original' tab too, so `refreshActiveAnnotations` works there; a bare
     // router.refresh() re-passed the prop but never synced it into `myAnnotations`
@@ -851,7 +876,7 @@ export default function SessionPlayer({
       try {
         const [segs, anns] = await Promise.all([
           getSessionSegments(id, targetVersionId),
-          listMyAnnotationsForVersion(id, targetVersionId),
+          apiRef.current.listMine(id, targetVersionId, codebookId),
         ]);
         setVersionId(targetVersionId);
         setSegments(segs);
@@ -869,7 +894,7 @@ export default function SessionPlayer({
         setVersionBusy(false);
       }
     },
-    [id, reloadComments],
+    [id, codebookId, reloadComments],
   );
 
   // The Original/Cleaned handlers are VARIANT switches: they are reachable only
@@ -1064,7 +1089,7 @@ export default function SessionPlayer({
       setReanchoringId(null);
       void (async () => {
         try {
-          await updateAnnotationAnchor(target, {
+          await apiRef.current.updateAnchor(target, {
             segmentId: startSeg.id,
             endSegmentId: r.endSegIdx !== r.startSegIdx ? endSeg.id : null,
             charStart: anchor.startChar,
@@ -1284,7 +1309,7 @@ export default function SessionPlayer({
     setBusyId(annotationId);
     setError(null);
     try {
-      await deleteAnnotation(annotationId);
+      await apiRef.current.delete(annotationId);
       setOpenCommentAnnId((cur) => (cur === annotationId ? null : cur));
       await afterAnnotationMutation();
     } catch (e) {
@@ -1303,8 +1328,8 @@ export default function SessionPlayer({
   // Dismissal is the popup's own leave-to-close: once ≥1 code is assigned,
   // moving the cursor off the card closes it (see CodingPopup.onMouseLeave).
   const handleAssignCode = useCallback(
-    async (codeId: string) => {
-      if (!versionId || !codeId || !pending) return;
+    async (codeId: string, manual: ManualComposition | null = null) => {
+      if (!versionId || (!codeId && !manual) || !pending) return;
       setApplying(true);
       setError(null);
       try {
@@ -1326,12 +1351,13 @@ export default function SessionPlayer({
           // The id can still be stale (deleted server-side after our snapshot): the
           // action probes and reports 'annotation_gone' instead of erroring, and we
           // fall through to creating a fresh anchor rather than failing the assign.
-          added = (await addCodeToAnnotation(live, codeId)) === 'added';
+          added = (await apiRef.current.addCode(live, codeId, manual, codebookId)) === 'added';
         }
         if (!added) {
-          const ann = await addAnnotation({
+          const ann = await apiRef.current.add({
             sessionId: id,
             versionId,
+            codebookId,
             segmentId: pending.startSeg.id,
             endSegmentId:
               pending.endSeg.id !== pending.startSeg.id ? pending.endSeg.id : undefined,
@@ -1343,7 +1369,8 @@ export default function SessionPlayer({
             tStartMs: pending.startSeg.startMs,
             tEndMs: pending.endSeg.endMs,
             kind: 'code',
-            codeIds: [codeId],
+            codeIds: codeId ? [codeId] : [],
+            manual,
           });
           setAssignedAnnId(ann.id);
         }
@@ -1354,7 +1381,7 @@ export default function SessionPlayer({
         setApplying(false);
       }
     },
-    [versionId, pending, id, assignedAnnId, myAnnotations, afterAnnotationMutation],
+    [versionId, pending, id, codebookId, assignedAnnId, myAnnotations, afterAnnotationMutation],
   );
 
   // Remove one code from a BRACKET (gutter ×). The bracket survives — even empty —
@@ -1364,7 +1391,7 @@ export default function SessionPlayer({
     async (annId: string, codeId: string) => {
       setError(null);
       try {
-        await removeCodeFromAnnotation(annId, codeId);
+        await apiRef.current.removeCode(annId, codeId);
         await afterAnnotationMutation();
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to remove the code.');
@@ -1415,7 +1442,7 @@ export default function SessionPlayer({
       setApplying(true);
       setError(null);
       try {
-        await removeCodeFromAnnotation(assignedAnnId, codeId);
+        await apiRef.current.removeCode(assignedAnnId, codeId);
         await afterAnnotationMutation();
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to remove the code.');
@@ -1434,7 +1461,7 @@ export default function SessionPlayer({
       setOpenCommentAnnId(annotationId);
       setCommentError(null);
       try {
-        const grouped = await listAnnotationComments([annotationId]);
+        const grouped = await apiRef.current.listComments([annotationId]);
         setComments((prev) => ({ ...prev, [annotationId]: grouped[annotationId] ?? [] }));
       } catch (e) {
         setCommentError(e instanceof Error ? e.message : 'Failed to load comments.');
@@ -1453,8 +1480,8 @@ export default function SessionPlayer({
       setCommentBusy(true);
       setCommentError(null);
       try {
-        await addAnnotationComment(openCommentAnnId, text.trim());
-        const grouped = await listAnnotationComments([openCommentAnnId]);
+        await apiRef.current.addComment(openCommentAnnId, text.trim());
+        const grouped = await apiRef.current.listComments([openCommentAnnId]);
         setComments((prev) => ({
           ...prev,
           [openCommentAnnId]: grouped[openCommentAnnId] ?? [],
@@ -1479,9 +1506,10 @@ export default function SessionPlayer({
     setCommentBusy(true);
     setCommentError(null);
     try {
-      const ann = await addAnnotation({
+      const ann = await apiRef.current.add({
         sessionId: id,
         versionId,
+        codebookId,
         segmentId: pending.startSeg.id,
         endSegmentId: pending.endSeg.id,
         charStart: pending.startChar,
@@ -1494,7 +1522,7 @@ export default function SessionPlayer({
         kind: 'quote',
         codeIds: [],
       });
-      await addAnnotationComment(ann.id, text);
+      await apiRef.current.addComment(ann.id, text);
       if (composerTextareaRef.current) composerTextareaRef.current.value = '';
       clearSelection();
       setComposerOpen(false);
@@ -1505,7 +1533,7 @@ export default function SessionPlayer({
     } finally {
       setCommentBusy(false);
     }
-  }, [pending, versionId, id, clearSelection, afterAnnotationMutation, openCommentThread]);
+  }, [pending, versionId, id, codebookId, clearSelection, afterAnnotationMutation, openCommentThread]);
 
   // BOOKMARK the pending selection — the coding popup's pinned first option.
   // A "come back to this later" anchor: no codes, no comment; paints violet in
@@ -1517,9 +1545,10 @@ export default function SessionPlayer({
     const anchor = pending;
     clearSelection();
     try {
-      await addAnnotation({
+      await apiRef.current.add({
         sessionId: id,
         versionId,
+        codebookId,
         segmentId: anchor.startSeg.id,
         endSegmentId: anchor.endSeg.id,
         charStart: anchor.startChar,
@@ -1536,7 +1565,7 @@ export default function SessionPlayer({
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to bookmark the selection.');
     }
-  }, [pending, versionId, id, clearSelection, afterAnnotationMutation]);
+  }, [pending, versionId, id, codebookId, clearSelection, afterAnnotationMutation]);
 
   // QUOTE the pending selection — the popup's pinned second option. A flagged
   // quotable excerpt: kind:'quote', no codes, paints yellow. Same one-shot
@@ -1547,9 +1576,10 @@ export default function SessionPlayer({
     const anchor = pending;
     clearSelection();
     try {
-      await addAnnotation({
+      await apiRef.current.add({
         sessionId: id,
         versionId,
+        codebookId,
         segmentId: anchor.startSeg.id,
         endSegmentId: anchor.endSeg.id,
         charStart: anchor.startChar,
@@ -1566,7 +1596,7 @@ export default function SessionPlayer({
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to flag the quote.');
     }
-  }, [pending, versionId, id, clearSelection, afterAnnotationMutation]);
+  }, [pending, versionId, id, codebookId, clearSelection, afterAnnotationMutation]);
 
   const handleDeleteComment = useCallback(
     async (commentId: string) => {
@@ -1575,8 +1605,8 @@ export default function SessionPlayer({
       setCommentRowBusyId(commentId);
       setCommentError(null);
       try {
-        await deleteAnnotationComment(commentId);
-        const grouped = await listAnnotationComments([annId]);
+        await apiRef.current.deleteComment(commentId);
+        const grouped = await apiRef.current.listComments([annId]);
         const thread = grouped[annId] ?? [];
         setComments((prev) => ({ ...prev, [annId]: thread }));
         // AUTO-DELETE an emptied anchor: marginalia ARE the notes, so when the
@@ -1590,7 +1620,7 @@ export default function SessionPlayer({
           emptiedAnn?.codes.length === 0 &&
           emptiedAnn?.kind !== 'bookmark'
         ) {
-          await deleteAnnotation(annId);
+          await apiRef.current.delete(annId);
           await afterAnnotationMutation();
           closeCard();
           return;
@@ -1618,11 +1648,11 @@ export default function SessionPlayer({
       setCommentError(null);
       try {
         if (trimmed === '') {
-          await deleteAnnotationComment(commentId);
+          await apiRef.current.deleteComment(commentId);
         } else {
-          await editAnnotationComment(commentId, trimmed);
+          await apiRef.current.editComment(commentId, trimmed);
         }
-        const grouped = await listAnnotationComments([annId]);
+        const grouped = await apiRef.current.listComments([annId]);
         const thread = grouped[annId] ?? [];
         setComments((prev) => ({ ...prev, [annId]: thread }));
         // An edit that emptied the LAST note on a code-less anchor deletes the
@@ -1634,7 +1664,7 @@ export default function SessionPlayer({
           emptiedAnn?.codes.length === 0 &&
           emptiedAnn?.kind !== 'bookmark'
         ) {
-          await deleteAnnotation(annId);
+          await apiRef.current.delete(annId);
           await afterAnnotationMutation();
           closeCard();
           return;
@@ -3868,7 +3898,58 @@ export default function SessionPlayer({
           Assign codes (⌘⏎ / +), read metadata (row click), create a new code (lands
           in the triage queue). It stays open across assigns — multiple codes group
           onto ONE annotation — and closes on Done/Esc/outside click. */}
-      {popupPos && pending && (
+      {/* ACTION LAYER (/coding/action): the same selection → popup gesture, but
+          the picker lists ACTIONS (moves × objects) and offers "Add manually"
+          for an ad hoc combination. Same assign/unassign/bookmark/quote/notes
+          contract as the codebook popup — `codeId` is an action id on assign and
+          a coding row id on unassign (see annotationBackend.ts). */}
+      {popupPos && pending && layer === 'action' && actionSchema && (
+        <ActionCodingPopup
+          pos={popupPos}
+          quote={pending.quoteText}
+          schema={actionSchema}
+          usage={liveActionUsage}
+          codebookId={codebookId}
+          assigned={assignedAnn?.codes ?? []}
+          busy={applying}
+          error={error}
+          onAssign={(actionId) => void handleAssignCode(actionId)}
+          onAssignManual={(composition) => void handleAssignCode('', composition)}
+          onUnassign={(codingId) => void handleUnassignCode(codingId)}
+          onClose={clearSelection}
+          onActionCreated={() => router.refresh()}
+          onQuote={() => void handleQuoteSelection()}
+          onBookmark={() => {
+            if (assignedAnn?.kind === 'bookmark') {
+              void handleDeleteAnnotation(assignedAnn.id).then(clearSelection);
+            } else {
+              void handleBookmarkSelection();
+            }
+          }}
+          bookmarked={assignedAnn?.kind === 'bookmark'}
+          onOpenNotes={
+            assignedAnn
+              ? () => {
+                  const ann = assignedAnn;
+                  clearSelection();
+                  openThreadForAnnotation(ann);
+                }
+              : null
+          }
+          onAddSpanNote={
+            assignedAnn
+              ? async (body: string) => {
+                  const annId = assignedAnn.id;
+                  await apiRef.current.addComment(annId, body);
+                  const grouped = await apiRef.current.listComments([annId]);
+                  setComments((prev) => ({ ...prev, [annId]: grouped[annId] ?? [] }));
+                  await afterAnnotationMutation();
+                }
+              : null
+          }
+        />
+      )}
+      {popupPos && pending && !(layer === 'action' && actionSchema) && (
         <CodingPopup
           pos={popupPos}
           quote={pending.quoteText}
@@ -3918,8 +3999,8 @@ export default function SessionPlayer({
                   // persisted + pulled into state so it renders beside the span
                   // immediately (the popup stays open; the flash acknowledges).
                   const annId = assignedAnn.id;
-                  await addAnnotationComment(annId, body);
-                  const grouped = await listAnnotationComments([annId]);
+                  await apiRef.current.addComment(annId, body);
+                  const grouped = await apiRef.current.listComments([annId]);
                   setComments((prev) => ({ ...prev, [annId]: grouped[annId] ?? [] }));
                   await afterAnnotationMutation();
                 }

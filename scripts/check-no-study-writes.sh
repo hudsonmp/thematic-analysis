@@ -23,8 +23,8 @@
 #   Rule 3 — no `.rpc()` anywhere in app code: stored procedures bypass both
 #     the cbFrom and studyFrom guards entirely.
 #
-# Excludes node_modules, and (Rule 1 only) the client modules that construct
-# the study-reading clients (lib/supabase/server.ts, lib/supabase/service.ts).
+# Excludes node_modules, and (Rule 1 only) the service-role client constructor
+# (lib/supabase/service.ts).
 
 set -euo pipefail
 
@@ -61,7 +61,7 @@ while IFS= read -r f; do
 done < <(
   find app lib components -type f \( -name '*.ts' -o -name '*.tsx' \) 2>/dev/null \
     | grep -v '/node_modules/' \
-    | grep -v -E '^lib/supabase/(server|service)\.ts$' \
+    | grep -v -E '^lib/supabase/service\.ts$' \
     | sort
 )
 
@@ -72,13 +72,13 @@ done < <(
 # readers, and the storage/media route. Adding a site here is a deliberate,
 # reviewed act.
 #
-# NOTE on the cb_-only readers: app/actions/codebook.ts and app/actions/memos.ts
-# read cb_ tables directly on the service client. That is legacy-sanctioned —
-# they predate the guards and touch only cb_ tables — but migrating them to
+# NOTE on the cb_-only reader: app/actions/codebook.ts reads cb_ tables directly
+# on the service client. That is legacy-sanctioned — it predates the guards and
+# touches only cb_ tables — but migrating it to
 # cbFrom-style access or the user client would let this allowlist shrink.
 # Path-ANCHORED (`^`): grep emits repo-relative paths with no leading `./`, so
 # a suffix match would silently sanction e.g. components/lib/supabase/guard.ts.
-SERVICE_ALLOWLIST_RE='^lib/supabase/(guard|service|study-guard)\.ts$|^app/actions/(auth|codebook|memos)\.ts$|^app/api/media/'
+SERVICE_ALLOWLIST_RE='^lib/supabase/(guard|service|study-guard)\.ts$|^app/actions/(auth|codebook)\.ts$|^app/api/media/'
 while IFS= read -r hit; do
   [ -n "$hit" ] || continue
   file="${hit%%:*}"

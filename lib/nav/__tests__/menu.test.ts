@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { ALL_ITEMS, NAV_GROUPS, activeGroupKey, activeHref } from '@/lib/nav/menu';
+import {
+  ALL_ITEMS,
+  NAV_GROUPS,
+  activeGroupKey,
+  activeHref,
+  visibleNavGroups,
+} from '@/lib/nav/menu';
 
 describe('NAV_GROUPS', () => {
-  it('is the three phases of the work', () => {
-    expect(NAV_GROUPS.map((g) => g.key)).toEqual(['codebook', 'recording', 'eval']);
+  it('contains only the retained authoring and recording workflows', () => {
+    expect(NAV_GROUPS.map((g) => g.key)).toEqual(['codebook', 'recording']);
   });
 
   it('routes every href exactly once (no item lives in two menus)', () => {
@@ -11,12 +17,46 @@ describe('NAV_GROUPS', () => {
     expect(new Set(hrefs).size).toBe(hrefs.length);
   });
 
-  it('puts the instrument-audit κ under Codebook and the grader κ under Eval', () => {
-    // /reliability is a human×human audit of the FROZEN instrument (README §2.9);
-    // the agreement view under /progression-analysis/llm is human×model. Two
-    // different κs — filing them in one menu is the mistake this pins against.
-    expect(activeGroupKey('/reliability')).toBe('codebook');
-    expect(activeGroupKey('/progression-analysis/llm')).toBe('eval');
+  it('does not expose retired tools', () => {
+    const hrefs = ALL_ITEMS.map((item) => item.href);
+    expect(hrefs).not.toContain('/drill');
+    expect(hrefs).not.toContain('/export');
+    expect(hrefs).not.toContain('/instructions');
+    expect(hrefs).not.toContain('/reliability');
+    expect(hrefs).not.toContain('/progression-analysis');
+  });
+
+  it('carries the admin console as an admin-only item', () => {
+    const admin = ALL_ITEMS.find((item) => item.href === '/admin');
+    expect(admin?.adminOnly).toBe(true);
+  });
+});
+
+/**
+ * The admin console mints the invite links that add coders to the study, so it
+ * has to be REACHABLE by the admin — but it must never render for a coder. The
+ * page re-gates with requireAdmin() regardless; this only decides what the nav
+ * shows, so the filter lives here as pure data rather than inline in the chrome.
+ */
+describe('visibleNavGroups', () => {
+  it('shows the admin console to an admin', () => {
+    const hrefs = visibleNavGroups(true).flatMap((g) => g.items.map((i) => i.href));
+    expect(hrefs).toContain('/admin');
+  });
+
+  it('hides the admin console from a non-admin', () => {
+    const hrefs = visibleNavGroups(false).flatMap((g) => g.items.map((i) => i.href));
+    expect(hrefs).not.toContain('/admin');
+  });
+
+  it('leaves every non-admin item alone for both roles', () => {
+    const asAdmin = visibleNavGroups(true).flatMap((g) => g.items.map((i) => i.href));
+    const asCoder = visibleNavGroups(false).flatMap((g) => g.items.map((i) => i.href));
+    expect(asAdmin.filter((h) => h !== '/admin')).toEqual(asCoder);
+  });
+
+  it('keeps both menus present even when nothing admin-only is shown', () => {
+    expect(visibleNavGroups(false).map((g) => g.key)).toEqual(['codebook', 'recording']);
   });
 });
 
@@ -38,11 +78,6 @@ describe('activeHref', () => {
     expect(activeGroupKey('/codebook/merge')).toBe('codebook');
   });
 
-  it('resolves the LLM run screen to LLM Eval, not Progression', () => {
-    expect(activeHref('/progression-analysis/llm/run')).toBe('/progression-analysis/llm');
-    expect(activeHref('/progression-analysis')).toBe('/progression-analysis');
-  });
-
   it('matches on a path SEGMENT, so a same-prefix sibling route cannot steal it', () => {
     // '/labels-archive' starts with '/labels' as a STRING but is a different
     // route; segment-aware matching is why this is null rather than '/labels'.
@@ -57,11 +92,15 @@ describe('activeHref', () => {
 describe('activeGroupKey', () => {
   it('opens the owning menu for a drilled-in route', () => {
     expect(activeGroupKey('/sessions/live')).toBe('recording');
-    expect(activeGroupKey('/progression-analysis/llm/run')).toBe('eval');
     expect(activeGroupKey('/citations')).toBe('codebook');
   });
 
   it('is null when nothing matches', () => {
     expect(activeGroupKey('/codes/abc-123')).toBeNull();
+  });
+
+  it('resolves the admin console to its owning menu', () => {
+    expect(activeHref('/admin')).toBe('/admin');
+    expect(activeGroupKey('/admin')).toBe('codebook');
   });
 });

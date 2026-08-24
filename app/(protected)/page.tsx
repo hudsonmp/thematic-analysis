@@ -1,3 +1,4 @@
+import { redirect } from 'next/navigation';
 import { getOrCreateCodebook, listCodebookTree } from '@/app/actions/codebook';
 import { getCitation } from '@/app/actions/citations';
 import SchemeView from '@/components/codebook/SchemeView';
@@ -23,10 +24,17 @@ export default async function Home({
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
+  const query = await searchParams;
+
+  // The admin console is a real route again (/admin, linked from the Codebook
+  // menu for admins). Older `/?admin` links redirect there so there is exactly
+  // one canonical location rather than two doors onto the same panel.
+  if (query.admin !== undefined) redirect('/admin');
+
   const cb = await getOrCreateCodebook();
   const tree = await listCodebookTree(cb.id);
 
-  const raw = (await searchParams).fromCitation;
+  const raw = query.fromCitation;
   const fromCitation = Array.isArray(raw) ? raw[0] : raw;
   const boundCitation = fromCitation ? await getCitation(fromCitation) : null;
 

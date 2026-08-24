@@ -6,8 +6,8 @@
  * .!? at all), so punctuation-based sentence-level coding is impossible on the raw
  * text. This script produces, per session, a NEW transcript version whose segments
  * are WHOLE SENTENCES — the coding unit David Smith standardized on ("always
- * highlight at the sentence level; never a fragment"). Coding, IRR, and the
- * co-occurrence heat map then all compute over one-sentence-per-segment units.
+ * highlight at the sentence level; never a fragment"). Coding and comparison
+ * then operate over one-sentence-per-segment units.
  *
  * INPUT  : the deduped `cleaned` version (segments source='resegmented') — single
  *          clean track, original wording, dedup already applied.

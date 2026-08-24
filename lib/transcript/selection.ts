@@ -65,15 +65,15 @@ function clamp(n: number, lo: number, hi: number): number {
 // Coders may only highlight WHOLE sentences, so boundary jitter — the ~80% of
 // disagreement diagnosed on session 548 — cannot arise (both coders inherit the
 // same sentence units). `snapToSentences` expands a raw selection OUTWARD to the
-// enclosing sentence boundaries; `sentenceSpans` is the shared splitter, reused
-// by the sentence-grid IRR to enumerate units. Both are pure string math.
+// enclosing sentence boundaries; `sentenceSpans` is the shared splitter used by
+// the coding surface to enumerate units. Both are pure string math.
 //
 // The splitter is deliberately simple and ASR-tolerant: a boundary is a
 // sentence-final `.`, `!`, or `?` (optionally followed by closing quotes/
 // brackets) and then whitespace or end-of-text. A cue with no terminal
 // punctuation — common for ASR fragments — is one sentence. This is not a
 // linguistic parser; it is a coding-unit segmenter, and its only correctness
-// requirement is that both coders and the IRR computation split identically.
+// requirement is that every coder receives identical boundaries.
 // ---------------------------------------------------------------------------
 
 const SENTENCE_END = /[.!?]+["'”’)\]]*(?=\s|$)/g;

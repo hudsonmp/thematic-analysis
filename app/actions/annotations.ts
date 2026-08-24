@@ -7,6 +7,7 @@ import { pageAll } from '@/lib/supabase/pageAll';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { requireEditor } from '@/lib/auth/roles';
 import type { Tables } from '@/lib/types/cb-db';
+import type { ActionCodingView } from '@/lib/actions/schema';
 
 type Annotation = Tables<'cb_annotations'>;
 
@@ -29,7 +30,18 @@ export type MyAnnotationView = {
   tEndMs: number;
   /** 'code' (a coded span) or 'quote' (a flagged paper quote, no code). */
   kind: string;
-  codes: { id: string; mnemonic: string }[];
+  /** The codes on this span. On the ACTION layer (/coding/action) each entry is
+   *  one action coding — `id` is the coding row, `mnemonic` its label — and
+   *  `actionCoding` carries the moves/objects/answers; legacy rows never set it. */
+  codes: {
+    id: string;
+    mnemonic: string;
+    actionCoding?: ActionCodingView;
+    /** ACTION layer only: the action this coding was entered through still
+     *  exists but no longer matches what was coded. The coding renders its own
+     *  snapshot regardless; this only asks the UI to say so. */
+    actionDrifted?: boolean;
+  }[];
   /** How many comments are threaded on this annotation (#17/#18 indicator). */
   commentCount: number;
   createdAt: string;
@@ -571,6 +583,9 @@ export type CompareAnnotationView = {
   coderId: string;
   coderName: string;
   segmentId: string;
+  /** END segment of a multi-cue span (null = single segment). The side-by-side
+   *  view paints every covered segment. */
+  endSegmentId: string | null;
   tStartMs: number;
   tEndMs: number;
   isCanonical: boolean;
@@ -612,7 +627,7 @@ export async function listAllAnnotations(
       // end_segment_id), so the embed MUST name its relationship — the bare
       // cb_segments(ordinal) form 500s with 'more than one relationship found'
       // (this silently broke /compare when multi-cue anchors landed).
-      'id, coder_id, segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments!cb_annotations_segment_id_fkey(ordinal), cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
+      'id, coder_id, segment_id, end_segment_id, t_start_ms, t_end_ms, is_canonical, created_at, cb_segments!cb_annotations_segment_id_fkey(ordinal), cb_annotation_codes(code_id, cb_codes(id, mnemonic))',
     )
     .eq('session_id', sessionId)
     .order('id', { ascending: true })
@@ -626,6 +641,7 @@ export async function listAllAnnotations(
     id: string;
     coder_id: string;
     segment_id: string;
+    end_segment_id: string | null;
     t_start_ms: number;
     t_end_ms: number;
     is_canonical: boolean;
@@ -663,6 +679,7 @@ export async function listAllAnnotations(
     coderId: r.coder_id,
     coderName: nameFor(r.coder_id),
     segmentId: r.segment_id,
+    endSegmentId: r.end_segment_id,
     tStartMs: r.t_start_ms,
     tEndMs: r.t_end_ms,
     isCanonical: r.is_canonical,

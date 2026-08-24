@@ -109,3 +109,51 @@ input, textarea, select, button {
 @media (prefers-reduced-motion: reduce) {
   .cue-now { animation: none; }
 }
+
+/* ── Exemplars (/exemplars) — the Google-Docs-shaped worked-example editor. ──
+   Times New Roman, black, pageless. Scoped to `.ex-page` so nothing leaks. */
+.ex-page .ProseMirror {
+  font-family: "Times New Roman", Times, serif;
+  color: #000;
+  font-size: 15px;
+  line-height: 1.5;
+  outline: none;
+  min-height: 60vh;
+  white-space: pre-wrap;
+}
+.ex-page .ProseMirror p { margin: 0; }
+.ex-page .ProseMirror p + p { margin-top: 0; }
+.ex-page .ProseMirror ul { list-style: none; padding-left: 0; margin: 0; }
+.ex-page .ProseMirror ul > li { position: relative; padding-left: 3.6em; }
+.ex-page .ProseMirror ul > li::before { content: "-"; position: absolute; left: 1.8em; }
+.ex-page .ProseMirror ul ul > li::before { content: "•"; }
+.ex-page .ProseMirror ol { list-style: decimal; padding-left: 3.6em; margin: 0; }
+.ex-page .ProseMirror li p { margin: 0; }
+.ex-page .ProseMirror strong { font-weight: 700; }
+.ex-page .ProseMirror h1, .ex-page .ProseMirror h2, .ex-page .ProseMirror h3 {
+  font-weight: 700; margin: 0.6em 0 0.2em;
+}
+.ex-page .ProseMirror h1 { font-size: 1.4em; }
+.ex-page .ProseMirror h2 { font-size: 1.2em; }
+.ex-page .ProseMirror h3 { font-size: 1.05em; }
+.ex-page .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: #9a9a9a;
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+/* A commented span: Docs' pale yellow; darker when its thread is active. */
+.ex-page .ex-comment { background: #fdf2c4; border-bottom: 2px solid #f4d16b; cursor: pointer; }
+.ex-page .ex-comment.ex-active, .ex-page .ex-comment:hover { background: #f8de84; }
+/* An inline @code chip. */
+.ex-page .ex-mention {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: #065f46;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 4px;
+  padding: 0 0.3em;
+  white-space: nowrap;
+}

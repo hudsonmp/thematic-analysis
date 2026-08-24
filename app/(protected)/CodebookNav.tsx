@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { logoutAction } from '@/app/actions/auth';
-import { NAV_GROUPS, activeGroupKey, activeHref } from '@/lib/nav/menu';
+import { visibleNavGroups, activeGroupKey, activeHref } from '@/lib/nav/menu';
 import CodebookSwitcher, { type CodebookOption } from '@/components/CodebookSwitcher';
 
 /**
@@ -14,7 +14,7 @@ import CodebookSwitcher, { type CodebookOption } from '@/components/CodebookSwit
  * Component must never call server actions during render). The codebook name
  * line is now the CodebookSwitcher — a per-browser active-codebook select.
  *
- * Thirteen flat links became three menus — Codebook / Recording / Eval. The
+ * The retained links live in two menus — Codebook / Recording. The
  * grouping and the active-link resolution live in `lib/nav/menu.ts` as pure
  * data + functions; this file is only the disclosure behaviour (open on click,
  * close on outside-click / Escape / navigation).
@@ -24,15 +24,16 @@ export default function CodebookNav({
   codebooks,
   activeCodebookId,
   canEditCodebooks = false,
-  displayName,
   isAdmin = false,
+  displayName,
 }: {
   studyName: string | null;
   codebooks: CodebookOption[];
   activeCodebookId: string | null;
   canEditCodebooks?: boolean;
-  displayName: string;
+  /** Admin-only nav entries (the invite console) render only when true. */
   isAdmin?: boolean;
+  displayName: string;
 }) {
   const pathname = usePathname();
   const navRef = useRef<HTMLDivElement | null>(null);
@@ -76,7 +77,7 @@ export default function CodebookNav({
         <div className="flex items-baseline gap-6" ref={navRef}>
           <span className="text-sm font-medium tracking-tight">Codebook</span>
           <ul className="flex items-center gap-1">
-            {NAV_GROUPS.map((group) => {
+            {visibleNavGroups(isAdmin).map((group) => {
               const isOpen = openKey === group.key;
               const isCurrent = currentGroup === group.key;
               return (
@@ -112,9 +113,7 @@ export default function CodebookNav({
                       role="menu"
                       className="absolute left-0 top-full z-50 mt-2 w-60 border border-foreground/15 bg-background py-1 shadow-lg"
                     >
-                      {group.items
-                        .filter((item) => !item.adminOnly || isAdmin)
-                        .map((item) => {
+                      {group.items.map((item) => {
                         const active = currentHref === item.href;
                         return (
                           <Link

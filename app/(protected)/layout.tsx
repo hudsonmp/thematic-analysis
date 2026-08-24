@@ -22,12 +22,15 @@ export default async function ProtectedLayout({ children }: { children: React.Re
     .eq('user_id', user.id)
     .maybeSingle();
   const displayName = profile?.display_name ?? user.email ?? 'Researcher';
-  const isAdmin = profile?.role === 'admin';
   // Editor-ness for the switcher's create/rename affordances, derived from the
   // profile row ALREADY fetched above — same fail-closed reading as getMyRole
   // (missing row ⇒ viewer ⇒ no edit affordances). The server actions re-gate
   // via requireEditor regardless; this only controls what the nav renders.
   const canEditCodebooks = profile?.role === 'admin' || profile?.role === 'full';
+  // Admin-ness for the nav's admin-only entries, from the SAME profile row —
+  // fail-closed like getMyRole (missing row ⇒ not admin). /admin re-gates with
+  // requireAdmin regardless; this only controls what the chrome offers.
+  const isAdmin = profile?.role === 'admin';
 
   // Data for the nav chrome. Fetched here (a Server Component) and passed as
   // props into the Client nav. Tolerant of a missing/unbound study so the shell
@@ -65,8 +68,8 @@ export default async function ProtectedLayout({ children }: { children: React.Re
         codebooks={codebooks}
         activeCodebookId={activeCodebookId}
         canEditCodebooks={canEditCodebooks}
-        displayName={displayName}
         isAdmin={isAdmin}
+        displayName={displayName}
       />
       <GuidePrompt />
       <NewCodesBanner codes={newCodes} />
