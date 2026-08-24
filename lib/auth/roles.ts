@@ -37,9 +37,9 @@ export const getMyRole = cache(async (): Promise<Role> => {
  *
  * User-client writes covered by the RESTRICTIVE policies (annotations, session
  * status, recording marks, observations) do NOT need this — the DB rejects a viewer's
- * JWT. But SERVICE-ROLE writes (cb_coder_comments, cb_codebook_notes, and everything
- * in codes/facets/labels/citations/episodes/flag-types/freeze/reliability) bypass RLS
- * and MUST call requireEditor here.
+ * JWT. But SERVICE-ROLE writes (cb_coder_comments and everything in
+ * codes/facets/labels/citations/episodes/flag-types) bypass RLS and MUST call
+ * requireEditor here.
  */
 export async function requireEditor(): Promise<void> {
   const role = await getMyRole();
@@ -48,7 +48,7 @@ export async function requireEditor(): Promise<void> {
   }
 }
 
-/** Gate for /admin and its actions. Pages redirect; actions throw. */
+/** Gate for `/?admin` and its actions. Pages redirect; actions throw. */
 export async function requireAdmin(opts: { redirectTo?: string } = {}): Promise<void> {
   const role = await getMyRole();
   if (role !== 'admin') {

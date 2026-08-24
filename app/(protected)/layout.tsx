@@ -22,7 +22,6 @@ export default async function ProtectedLayout({ children }: { children: React.Re
     .eq('user_id', user.id)
     .maybeSingle();
   const displayName = profile?.display_name ?? user.email ?? 'Researcher';
-  const isAdmin = profile?.role === 'admin';
   // Editor-ness for the switcher's create/rename affordances, derived from the
   // profile row ALREADY fetched above — same fail-closed reading as getMyRole
   // (missing row ⇒ viewer ⇒ no edit affordances). The server actions re-gate
@@ -66,7 +65,6 @@ export default async function ProtectedLayout({ children }: { children: React.Re
         activeCodebookId={activeCodebookId}
         canEditCodebooks={canEditCodebooks}
         displayName={displayName}
-        isAdmin={isAdmin}
       />
       <GuidePrompt />
       <NewCodesBanner codes={newCodes} />

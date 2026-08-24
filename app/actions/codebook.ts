@@ -87,7 +87,7 @@ export async function getShownStudy(): Promise<ShownStudy | null> {
 // two browsers signed into the same account can look at different codebooks.
 // Every server-side consumer resolves the codebook through
 // `getOrCreateCodebook()`, so honoring the cookie there switches the WHOLE app
-// (pages, session player, merge, reliability, export) with zero call-site
+// (pages, session player, merge) with zero call-site
 // changes.
 // ---------------------------------------------------------------------------
 const ACTIVE_CODEBOOK_COOKIE = 'cb-active-codebook';

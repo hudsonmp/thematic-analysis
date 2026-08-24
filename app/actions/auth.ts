@@ -60,7 +60,7 @@ export async function ensureProfile(role?: 'full' | 'viewer'): Promise<void> {
 
 /**
  * INVITE-gated registration. The shared access code is retired: an account now
- * requires a single-use invite token (minted at /admin), which carries the new
+ * requires a single-use invite token (minted at /?admin), which carries the new
  * account's ROLE ('full' or 'viewer').
  *
  * The token is CLAIMED ATOMICALLY BEFORE the account is created — a conditional

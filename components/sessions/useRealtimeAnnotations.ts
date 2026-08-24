@@ -43,13 +43,19 @@ export function useRealtimeAnnotations({
   sessionId,
   myUid,
   onChange,
+  tables = { annotations: 'cb_annotations', links: 'cb_annotation_codes' },
 }: {
   sessionId: string;
   /** The signed-in coder's auth uid; null when unauthenticated (no subscribe). */
   myUid: string | null;
   /** Called (debounced) when the coder's own rows change, to re-load from server. */
   onChange?: () => void;
+  /** Which anchor + junction tables to watch — the codebook layer by default;
+   *  the action layer (/coding/action) passes its own pair. */
+  tables?: { annotations: string; links: string };
 }): void {
+  const annotationsTable = tables.annotations;
+  const linksTable = tables.links;
   // Keep the latest onChange in a ref so the subscription effect can stay keyed
   // solely on (sessionId, myUid) and not re-subscribe when the callback identity
   // changes between renders.
@@ -81,7 +87,7 @@ export function useRealtimeAnnotations({
         {
           event: 'INSERT',
           schema: 'public',
-          table: 'cb_annotations',
+          table: annotationsTable,
           filter: `session_id=eq.${sessionId}`,
         },
         (payload) => {
@@ -97,7 +103,7 @@ export function useRealtimeAnnotations({
         {
           event: 'UPDATE',
           schema: 'public',
-          table: 'cb_annotations',
+          table: annotationsTable,
           filter: `session_id=eq.${sessionId}`,
         },
         (payload) => {
@@ -111,7 +117,7 @@ export function useRealtimeAnnotations({
         {
           event: 'DELETE',
           schema: 'public',
-          table: 'cb_annotations',
+          table: annotationsTable,
           filter: `session_id=eq.${sessionId}`,
         },
         () => {
@@ -141,12 +147,12 @@ export function useRealtimeAnnotations({
       // unconditionally; the refetch is own-scoped, debounced, and cheap.
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'cb_annotation_codes' },
+        { event: 'INSERT', schema: 'public', table: linksTable },
         () => fireChange(),
       )
       .on(
         'postgres_changes',
-        { event: 'DELETE', schema: 'public', table: 'cb_annotation_codes' },
+        { event: 'DELETE', schema: 'public', table: linksTable },
         () => fireChange(),
       )
       .subscribe();
@@ -155,5 +161,5 @@ export function useRealtimeAnnotations({
       if (timer) clearTimeout(timer);
       void sb.removeChannel(channel);
     };
-  }, [sessionId, myUid]);
+  }, [sessionId, myUid, annotationsTable, linksTable]);
 }

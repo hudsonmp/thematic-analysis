@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { ALL_ITEMS, NAV_GROUPS, activeGroupKey, activeHref } from '@/lib/nav/menu';
 
 describe('NAV_GROUPS', () => {
-  it('is the three phases of the work', () => {
-    expect(NAV_GROUPS.map((g) => g.key)).toEqual(['codebook', 'recording', 'eval']);
+  it('contains only the retained authoring and recording workflows', () => {
+    expect(NAV_GROUPS.map((g) => g.key)).toEqual(['codebook', 'recording']);
   });
 
   it('routes every href exactly once (no item lives in two menus)', () => {
@@ -11,12 +11,14 @@ describe('NAV_GROUPS', () => {
     expect(new Set(hrefs).size).toBe(hrefs.length);
   });
 
-  it('puts the instrument-audit κ under Codebook and the grader κ under Eval', () => {
-    // /reliability is a human×human audit of the FROZEN instrument (README §2.9);
-    // the agreement view under /progression-analysis/llm is human×model. Two
-    // different κs — filing them in one menu is the mistake this pins against.
-    expect(activeGroupKey('/reliability')).toBe('codebook');
-    expect(activeGroupKey('/progression-analysis/llm')).toBe('eval');
+  it('does not expose retired tools or the query-only admin console', () => {
+    const hrefs = ALL_ITEMS.map((item) => item.href);
+    expect(hrefs).not.toContain('/admin');
+    expect(hrefs).not.toContain('/drill');
+    expect(hrefs).not.toContain('/export');
+    expect(hrefs).not.toContain('/instructions');
+    expect(hrefs).not.toContain('/reliability');
+    expect(hrefs).not.toContain('/progression-analysis');
   });
 });
 
@@ -38,11 +40,6 @@ describe('activeHref', () => {
     expect(activeGroupKey('/codebook/merge')).toBe('codebook');
   });
 
-  it('resolves the LLM run screen to LLM Eval, not Progression', () => {
-    expect(activeHref('/progression-analysis/llm/run')).toBe('/progression-analysis/llm');
-    expect(activeHref('/progression-analysis')).toBe('/progression-analysis');
-  });
-
   it('matches on a path SEGMENT, so a same-prefix sibling route cannot steal it', () => {
     // '/labels-archive' starts with '/labels' as a STRING but is a different
     // route; segment-aware matching is why this is null rather than '/labels'.
@@ -57,7 +54,6 @@ describe('activeHref', () => {
 describe('activeGroupKey', () => {
   it('opens the owning menu for a drilled-in route', () => {
     expect(activeGroupKey('/sessions/live')).toBe('recording');
-    expect(activeGroupKey('/progression-analysis/llm/run')).toBe('eval');
     expect(activeGroupKey('/citations')).toBe('codebook');
   });
 

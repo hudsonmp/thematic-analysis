@@ -2,7 +2,7 @@ import RegisterForm from './RegisterForm';
 
 /**
  * Registration is INVITE-ONLY: the single-use token arrives as ?invite=<uuid> in the
- * link the admin minted at /admin. Next 16: searchParams is a Promise.
+ * link the admin minted at /?admin. Next 16: searchParams is a Promise.
  */
 export default async function ResearcherRegisterPage({
   searchParams,

@@ -7,6 +7,7 @@ import { pageAll } from '@/lib/supabase/pageAll';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { requireEditor } from '@/lib/auth/roles';
 import type { Tables } from '@/lib/types/cb-db';
+import type { ActionCodingView } from '@/lib/actions/schema';
 
 type Annotation = Tables<'cb_annotations'>;
 
@@ -29,7 +30,10 @@ export type MyAnnotationView = {
   tEndMs: number;
   /** 'code' (a coded span) or 'quote' (a flagged paper quote, no code). */
   kind: string;
-  codes: { id: string; mnemonic: string }[];
+  /** The codes on this span. On the ACTION layer (/coding/action) each entry is
+   *  one action coding — `id` is the coding row, `mnemonic` its label — and
+   *  `actionCoding` carries the moves/objects/answers; legacy rows never set it. */
+  codes: { id: string; mnemonic: string; actionCoding?: ActionCodingView }[];
   /** How many comments are threaded on this annotation (#17/#18 indicator). */
   commentCount: number;
   createdAt: string;

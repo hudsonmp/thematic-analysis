@@ -10,8 +10,8 @@ describe('assertStudyTable', () => {
   it('accepts every allowlisted study table', () => {
     for (const t of STUDY_TABLES) expect(() => assertStudyTable(t)).not.toThrow();
   });
-  it('rejects cb_ tables, eval tables, and unknown names', () => {
-    for (const t of ['cb_codes', 'cb_sessions', 'eval_runs', 'auth.users', 'studiesx', '']) {
+  it('rejects application tables and unknown names', () => {
+    for (const t of ['cb_codes', 'cb_sessions', 'analytics_runs', 'auth.users', 'studiesx', '']) {
       expect(() => assertStudyTable(t)).toThrow(/not a study table/i);
     }
   });

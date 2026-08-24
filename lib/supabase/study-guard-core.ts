@@ -1,8 +1,7 @@
 // Pure core of the STUDY-read guard (no next/headers, no client) so it unit-tests
 // under vitest. Mirrors guard-core.ts (assertCbTable) on the read side: study
 // tables are IRB-covered and READ-ONLY for this app — `studyFrom` (study-guard.ts)
-// composes this core with the user client. See
-// docs/superpowers/specs/2026-06-30-study-data-write-safety-design.md (L2).
+// composes this core with the user client.
 
 /** Every study-side table this app may READ. Closed allowlist — adding a table is
  *  a deliberate, reviewed act. (cb_* tables are NOT here: they go through cbFrom.) */

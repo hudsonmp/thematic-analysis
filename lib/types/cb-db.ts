@@ -14,6 +14,583 @@ export type Database = {
   }
   public: {
     Tables: {
+      cb_action_annotation_comments: {
+        Row: {
+          annotation_id: string
+          author_id: string
+          body: string
+          created_at: string
+          id: string
+          resolved: boolean
+        }
+        Insert: {
+          annotation_id: string
+          author_id: string
+          body: string
+          created_at?: string
+          id?: string
+          resolved?: boolean
+        }
+        Update: {
+          annotation_id?: string
+          author_id?: string
+          body?: string
+          created_at?: string
+          id?: string
+          resolved?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_action_annotation_comments_annotation_id_fkey"
+            columns: ["annotation_id"]
+            isOneToOne: false
+            referencedRelation: "cb_action_annotations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_action_annotations: {
+        Row: {
+          anchor_status: string
+          char_end: number
+          char_start: number
+          coder_id: string
+          created_at: string
+          end_segment_id: string | null
+          id: string
+          kind: string
+          prefix: string | null
+          quote_text: string | null
+          segment_id: string
+          session_id: string
+          suffix: string | null
+          t_end_ms: number
+          t_start_ms: number
+          version_id: string
+        }
+        Insert: {
+          anchor_status?: string
+          char_end?: number
+          char_start?: number
+          coder_id: string
+          created_at?: string
+          end_segment_id?: string | null
+          id?: string
+          kind: string
+          prefix?: string | null
+          quote_text?: string | null
+          segment_id: string
+          session_id: string
+          suffix?: string | null
+          t_end_ms: number
+          t_start_ms: number
+          version_id: string
+        }
+        Update: {
+          anchor_status?: string
+          char_end?: number
+          char_start?: number
+          coder_id?: string
+          created_at?: string
+          end_segment_id?: string | null
+          id?: string
+          kind?: string
+          prefix?: string | null
+          quote_text?: string | null
+          segment_id?: string
+          session_id?: string
+          suffix?: string | null
+          t_end_ms?: number
+          t_start_ms?: number
+          version_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_action_annotations_end_segment_id_fkey"
+            columns: ["end_segment_id"]
+            isOneToOne: false
+            referencedRelation: "cb_segments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_annotations_segment_id_fkey"
+            columns: ["segment_id"]
+            isOneToOne: false
+            referencedRelation: "cb_segments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_annotations_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_annotations_version_id_fkey"
+            columns: ["version_id"]
+            isOneToOne: false
+            referencedRelation: "cb_transcript_versions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_action_coding_status: {
+        Row: {
+          coder_id: string
+          session_id: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          coder_id: string
+          session_id: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          coder_id?: string
+          session_id?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_action_coding_status_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "cb_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_action_codings: {
+        Row: {
+          action_id: string | null
+          annotation_id: string
+          answers: Json
+          created_at: string
+          id: string
+          move_ids: string[]
+          object_ids: string[]
+          object_roles: Json
+        }
+        Insert: {
+          action_id?: string | null
+          annotation_id: string
+          answers?: Json
+          created_at?: string
+          id?: string
+          move_ids?: string[]
+          object_ids?: string[]
+          object_roles?: Json
+        }
+        Update: {
+          action_id?: string | null
+          annotation_id?: string
+          answers?: Json
+          created_at?: string
+          id?: string
+          move_ids?: string[]
+          object_ids?: string[]
+          object_roles?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_action_codings_action_id_fkey"
+            columns: ["action_id"]
+            isOneToOne: false
+            referencedRelation: "cb_actions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_codings_annotation_id_fkey"
+            columns: ["annotation_id"]
+            isOneToOne: false
+            referencedRelation: "cb_action_annotations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_action_answers: {
+        Row: {
+          action_id: string
+          free_text: string | null
+          option_id: string | null
+          question_id: string
+        }
+        Insert: {
+          action_id: string
+          free_text?: string | null
+          option_id?: string | null
+          question_id: string
+        }
+        Update: {
+          action_id?: string
+          free_text?: string | null
+          option_id?: string | null
+          question_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_action_answers_action_id_fkey"
+            columns: ["action_id"]
+            isOneToOne: false
+            referencedRelation: "cb_actions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_answers_option_id_fkey"
+            columns: ["option_id"]
+            isOneToOne: false
+            referencedRelation: "cb_action_question_options"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_answers_question_id_fkey"
+            columns: ["question_id"]
+            isOneToOne: false
+            referencedRelation: "cb_action_questions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_action_moves: {
+        Row: {
+          codebook_id: string
+          created_at: string
+          description: string | null
+          id: string
+          min_objects: number
+          name: string
+          position: number
+        }
+        Insert: {
+          codebook_id: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          min_objects?: number
+          name: string
+          position?: number
+        }
+        Update: {
+          codebook_id?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          min_objects?: number
+          name?: string
+          position?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_action_moves_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_action_moves_link: {
+        Row: {
+          action_id: string
+          move_id: string
+        }
+        Insert: {
+          action_id: string
+          move_id: string
+        }
+        Update: {
+          action_id?: string
+          move_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_action_moves_link_action_id_fkey"
+            columns: ["action_id"]
+            isOneToOne: false
+            referencedRelation: "cb_actions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_moves_link_move_id_fkey"
+            columns: ["move_id"]
+            isOneToOne: false
+            referencedRelation: "cb_action_moves"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_action_objects: {
+        Row: {
+          codebook_id: string
+          created_at: string
+          description: string | null
+          id: string
+          name: string
+          parent_id: string | null
+          position: number
+        }
+        Insert: {
+          codebook_id: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          name: string
+          parent_id?: string | null
+          position?: number
+        }
+        Update: {
+          codebook_id?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          name?: string
+          parent_id?: string | null
+          position?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_action_objects_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_objects_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "cb_action_objects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_action_objects_link: {
+        Row: {
+          action_id: string
+          object_id: string
+          role_id: string | null
+        }
+        Insert: {
+          action_id: string
+          object_id: string
+          role_id?: string | null
+        }
+        Update: {
+          action_id?: string
+          object_id?: string
+          role_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_action_objects_link_action_id_fkey"
+            columns: ["action_id"]
+            isOneToOne: false
+            referencedRelation: "cb_actions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_objects_link_object_id_fkey"
+            columns: ["object_id"]
+            isOneToOne: false
+            referencedRelation: "cb_action_objects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_objects_link_role_id_fkey"
+            columns: ["role_id"]
+            isOneToOne: false
+            referencedRelation: "cb_action_roles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_action_question_options: {
+        Row: {
+          created_at: string
+          follow_up_question_id: string | null
+          id: string
+          label: string
+          position: number
+          question_id: string
+          trigger_action_id: string | null
+          trigger_move_id: string | null
+          trigger_object_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          follow_up_question_id?: string | null
+          id?: string
+          label: string
+          position?: number
+          question_id: string
+          trigger_action_id?: string | null
+          trigger_move_id?: string | null
+          trigger_object_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          follow_up_question_id?: string | null
+          id?: string
+          label?: string
+          position?: number
+          question_id?: string
+          trigger_action_id?: string | null
+          trigger_move_id?: string | null
+          trigger_object_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_action_question_options_trigger_move_id_fkey"
+            columns: ["trigger_move_id"]
+            isOneToOne: false
+            referencedRelation: "cb_action_moves"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_question_options_trigger_object_id_fkey"
+            columns: ["trigger_object_id"]
+            isOneToOne: false
+            referencedRelation: "cb_action_objects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_question_options_follow_up_question_id_fkey"
+            columns: ["follow_up_question_id"]
+            isOneToOne: false
+            referencedRelation: "cb_action_questions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_question_options_question_id_fkey"
+            columns: ["question_id"]
+            isOneToOne: false
+            referencedRelation: "cb_action_questions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cb_action_question_options_trigger_action_id_fkey"
+            columns: ["trigger_action_id"]
+            isOneToOne: false
+            referencedRelation: "cb_actions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_action_questions: {
+        Row: {
+          codebook_id: string
+          created_at: string
+          description: string | null
+          id: string
+          kind: string
+          position: number
+          prompt: string
+          required: boolean
+        }
+        Insert: {
+          codebook_id: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          kind?: string
+          position?: number
+          prompt: string
+          required?: boolean
+        }
+        Update: {
+          codebook_id?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          kind?: string
+          position?: number
+          prompt?: string
+          required?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_action_questions_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_action_roles: {
+        Row: {
+          codebook_id: string
+          created_at: string
+          description: string | null
+          id: string
+          name: string
+          position: number
+        }
+        Insert: {
+          codebook_id: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          name: string
+          position?: number
+        }
+        Update: {
+          codebook_id?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          name?: string
+          position?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_action_roles_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cb_actions: {
+        Row: {
+          codebook_id: string
+          created_at: string
+          description: string | null
+          id: string
+          name: string
+          position: number
+        }
+        Insert: {
+          codebook_id: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          name: string
+          position?: number
+        }
+        Update: {
+          codebook_id?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          name?: string
+          position?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cb_actions_codebook_id_fkey"
+            columns: ["codebook_id"]
+            isOneToOne: false
+            referencedRelation: "cb_codebooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cb_annotation_codes: {
         Row: {
           annotation_id: string

@@ -1,7 +1,6 @@
 'use server';
 
 import { cbFrom } from '@/lib/supabase/guard';
-import { createServiceRoleClient } from '@/lib/supabase/service';
 import { requireAuthUser } from '@/lib/auth/supabase-auth';
 import { requireAdmin } from '@/lib/auth/roles';
 import type { Json } from '@/lib/types/cb-db';
@@ -46,15 +45,13 @@ export type ExemplarDoc = {
 /** The tab list for a codebook: every non-retired code, ordered by mnemonic. */
 export async function listExemplarTabs(codebookId: string): Promise<ExemplarTab[]> {
   await requireAuthUser();
-  const sb = createServiceRoleClient();
   const [codesRes, docsRes] = await Promise.all([
-    sb
-      .from('cb_codes')
+    cbFrom('cb_codes')
       .select('id, mnemonic')
       .eq('codebook_id', codebookId)
       .is('retired_at', null)
       .order('mnemonic', { ascending: true }),
-    sb.from('cb_exemplar_docs').select('code_id, body').eq('codebook_id', codebookId),
+    cbFrom('cb_exemplar_docs').select('code_id, body').eq('codebook_id', codebookId),
   ]);
   if (codesRes.error) throw new Error(`listExemplarTabs (codes) failed: ${codesRes.error.message}`);
   if (docsRes.error) throw new Error(`listExemplarTabs (docs) failed: ${docsRes.error.message}`);
@@ -65,8 +62,7 @@ export async function listExemplarTabs(codebookId: string): Promise<ExemplarTab[
   // Live thread count per tab: comments whose thread mark still exists in the doc.
   const counts = new Map<string, number>();
   if (docs.length > 0) {
-    const { data: comments, error } = await sb
-      .from('cb_exemplar_comments')
+    const { data: comments, error } = await cbFrom('cb_exemplar_comments')
       .select('code_id, thread_id')
       .in('code_id', docs.map((d) => d.code_id));
     if (error) throw new Error(`listExemplarTabs (comments) failed: ${error.message}`);
@@ -90,11 +86,9 @@ export async function listExemplarTabs(codebookId: string): Promise<ExemplarTab[
 /** One tab's body + its comments (author names resolved from cb_profiles). */
 export async function getExemplarDoc(codeId: string): Promise<ExemplarDoc> {
   await requireAuthUser();
-  const sb = createServiceRoleClient();
   const [docRes, commentsRes] = await Promise.all([
-    sb.from('cb_exemplar_docs').select('body, updated_at').eq('code_id', codeId).maybeSingle(),
-    sb
-      .from('cb_exemplar_comments')
+    cbFrom('cb_exemplar_docs').select('body, updated_at').eq('code_id', codeId).maybeSingle(),
+    cbFrom('cb_exemplar_comments')
       .select('id, thread_id, author_id, body, created_at')
       .eq('code_id', codeId)
       .order('created_at', { ascending: true }),
@@ -106,8 +100,7 @@ export async function getExemplarDoc(codeId: string): Promise<ExemplarDoc> {
   const authorIds = [...new Set(rows.map((r) => r.author_id))];
   const names = new Map<string, string>();
   if (authorIds.length > 0) {
-    const { data: profiles } = await sb
-      .from('cb_profiles')
+    const { data: profiles } = await cbFrom('cb_profiles')
       .select('user_id, display_name, initials')
       .in('user_id', authorIds);
     for (const p of profiles ?? []) {
@@ -186,8 +179,7 @@ export async function addExemplarComment(input: {
     throw new Error(`addExemplarComment failed: ${error?.message ?? 'no row returned'}`);
   }
 
-  const { data: profile } = await createServiceRoleClient()
-    .from('cb_profiles')
+  const { data: profile } = await cbFrom('cb_profiles')
     .select('display_name, initials')
     .eq('user_id', user.id)
     .maybeSingle();

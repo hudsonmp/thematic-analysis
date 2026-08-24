@@ -7,7 +7,7 @@ import { requireAdmin } from '@/lib/auth/roles';
 
 /**
  * Admin actions: single-use invites + the data-familiarization list. Every action
- * here starts with requireAdmin() — the /admin page gates rendering, but pages are
+ * here starts with requireAdmin() — the `/?admin` view gates rendering, but pages are
  * not security boundaries; the actions are.
  *
  * Invites go through cbFrom (service role) because cb_invites deliberately has NO

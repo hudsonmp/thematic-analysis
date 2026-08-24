@@ -14,7 +14,7 @@ import type { Tables } from '@/lib/types/cb-db';
  * a guessed slug pollutes the picker and the triage queue with half-decisions;
  * a memo parks the recall cue and defers definition work to a codebook-editing
  * sitting. Not an annotation either — there is no transcript span to anchor
- * (that case is a bookmark + note). Distinct from legacy `cb_memos`, which are
+ * (that case is a bookmark + note). Distinct from session-scoped `cb_memos`, which are
  * per-SESSION analytic notes keyed by pid.
  *
  * Writes go through the USER client so the PERMISSIVE editor-only RLS on

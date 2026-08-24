@@ -6,8 +6,7 @@ import CodebookViewDocument from './CodebookViewDocument';
  * /codebook/view — the codebook as a READABLE DOCUMENT: cover tree + spreadsheet,
  * printable to PDF.
  *
- * Distinct from the /export page (which emits the LaTeX methods TABLE and JSON backup)
- * and from /codebook (the interactive canvas). This is the human artifact — what a
+ * Distinct from /codebook (the interactive canvas). This is the human artifact — what a
  * coder reads to learn the instrument and a reviewer reads to judge it.
  *
  * WHICH codebook: `?codebook=<id>` selects one for THIS VIEW ONLY, defaulting to the
