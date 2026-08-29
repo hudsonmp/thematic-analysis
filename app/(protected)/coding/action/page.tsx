@@ -15,10 +15,6 @@ export default async function ActionCodingIndexPage() {
     <main className="px-6 py-6">
       <header className="mb-4">
         <h1 className="text-lg font-medium tracking-tight">Action coding</h1>
-        <p className="text-sm text-foreground/60">
-          Code sessions with ACTIONS (moves × objects) instead of codebook codes. Progress here is
-          separate from the codebook coding on Sessions.
-        </p>
       </header>
       <ActionCodingIndex rows={rows} readOnly={role === 'viewer'} />
     </main>

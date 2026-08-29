@@ -89,9 +89,6 @@ export default function AdminPanel({
     <main className="mx-auto max-w-3xl px-6 py-8">
       <header className="mb-6 border-b border-foreground/15 pb-3">
         <h1 className="text-lg font-medium tracking-tight">Admin</h1>
-        <p className="text-sm text-foreground/60">
-          Invites and the data-familiarization list.
-        </p>
       </header>
 
       {error && (

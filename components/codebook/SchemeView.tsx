@@ -65,12 +65,6 @@ export default function SchemeView({
       ) : (
         <main className="flex-1 px-6 py-6 space-y-6">
           <h1 className="text-xl font-medium tracking-tight">Scheme · Folders</h1>
-          <p className="max-w-3xl text-sm leading-relaxed text-foreground/60 border-l-2 border-foreground/15 pl-3">
-            Browse codes by your nested <span className="font-medium text-foreground/80">label</span>{' '}
-            vocabulary. Each folder rolls up every code tagged on it or anywhere in
-            its subtree; a code with several labels appears under each. Expand a
-            folder to list its codes.
-          </p>
           <LabelFolderView tree={tree} />
         </main>
       )}

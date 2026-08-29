@@ -309,12 +309,6 @@ export default function CompareView({
             ← My coding
           </Link>
         </div>
-        <p className="mt-1 text-sm text-foreground/60">
-          Post-hoc and pairwise: your codes beside one colleague&apos;s, segment by
-          segment. Independent coding stays in your own view; only the{' '}
-          <span className="text-blue-700 dark:text-blue-300">canonical</span> lane
-          writes.
-        </p>
       </header>
 
       {error && (
@@ -342,12 +336,6 @@ export default function CompareView({
         />
       ) : tab === 'specification' ? (
         <div className="max-w-3xl">
-          <p className="mb-3 text-xs text-foreground/50">
-            The participant&apos;s FINAL specification — shared context for the
-            comparison. (Coders don&apos;t code the spec itself yet: annotations
-            anchor to transcript segments, so there is nothing per-coder to overlay
-            here.)
-          </p>
           <SpecReplay
             spec={finalSpec.spec}
             entities={finalSpec.entities}

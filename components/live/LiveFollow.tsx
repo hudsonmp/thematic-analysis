@@ -570,11 +570,9 @@ export default function LiveFollow({
       <header className="mb-4 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-lg font-medium tracking-tight">Live</h1>
-          <p className="text-sm text-foreground/60">
-            Follow a participant in the moment. Hit{' '}
-            <span className="font-medium">Start recording</span> when you start the
-            Zoom recording; the clock then counts from that exact instant. Tap a
-            flag (or press 1–9) to log it; add a note and press Enter.
+          <p className="text-xs text-foreground/50">
+            Hit <span className="font-medium">Start recording</span> when the Zoom recording
+            starts · <kbd className="font-mono">1–9</kbd> logs a flag · <kbd className="font-mono">Enter</kbd> adds a note
           </p>
         </div>
 

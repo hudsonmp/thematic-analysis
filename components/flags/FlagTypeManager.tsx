@@ -74,11 +74,6 @@ export default function FlagTypeManager({
             <span className="text-sm font-normal text-foreground/40">· saving…</span>
           )}
         </h1>
-        <p className="text-sm text-foreground/60">
-          Preset the flags a co-observer can raise during a live session (e.g.
-          “Confusion”, “Aha”, “Off-task”). Give each a color so it reads at a
-          glance; a later step pins these at a live timecode.
-        </p>
       </header>
 
       {error && (

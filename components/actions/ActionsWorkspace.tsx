@@ -51,12 +51,12 @@ import ObjectRolesPicker from '@/components/actions/ObjectRolesPicker';
 
 type Tab = 'moves' | 'objects' | 'roles' | 'questions' | 'actions';
 
-const TABS: { key: Tab; label: string; blurb: string }[] = [
-  { key: 'moves', label: 'Moves', blurb: 'What is done — create, revise, review, trace, recall…' },
-  { key: 'objects', label: 'Objects', blurb: 'What it is done to — goal, entity, element, specification… An object may have subclasses (one level).' },
-  { key: 'roles', label: 'Roles', blurb: 'The roles an object may be assigned inside an action (source / target…). Optional: pick one per object when composing an action.' },
-  { key: 'questions', label: 'Questions', blurb: 'Extra fields answered for every action; mark some mandatory.' },
-  { key: 'actions', label: 'Actions', blurb: 'Compose an action from move(s) × object(s) and answer the questions.' },
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'moves', label: 'Moves' },
+  { key: 'objects', label: 'Objects' },
+  { key: 'roles', label: 'Roles' },
+  { key: 'questions', label: 'Questions' },
+  { key: 'actions', label: 'Actions' },
 ];
 
 const INPUT = 'border border-foreground/15 bg-background px-2 py-1 text-sm disabled:opacity-60';
@@ -114,11 +114,7 @@ export default function ActionsWorkspace({
           Actions{' '}
           {isPending && <span className="text-sm font-normal text-foreground/40">· saving…</span>}
         </h1>
-        <p className="text-sm text-foreground/60">
-          An action is a move performed on one or more objects — the objective, granular unit that
-          makes agreement computable. Define the vocabularies first, then compose actions.
-          {!canEdit && ' Your account is view-only.'}
-        </p>
+        {!canEdit && <p className="text-sm text-foreground/60">Your account is view-only.</p>}
       </header>
 
       <nav className="mb-4 flex gap-1 border-b border-foreground/15" aria-label="Action schema sections">
@@ -141,7 +137,6 @@ export default function ActionsWorkspace({
           </button>
         ))}
       </nav>
-      <p className="mb-4 text-xs text-foreground/55">{TABS.find((t) => t.key === tab)?.blurb}</p>
 
       {error && (
         <p className="mb-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700">

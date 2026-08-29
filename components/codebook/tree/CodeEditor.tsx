@@ -290,7 +290,7 @@ export default function CodeEditor({
 
         <Field
           label="Counter-example"
-          hint="The near-miss that looks like this code but is NOT it — the single most useful field for coder agreement. @ mentions the code the near-miss belongs to."
+          hint="@ mentions the code the near-miss belongs to."
         >
           <MentionTextarea
             value={disconfirming}
@@ -393,10 +393,7 @@ export default function CodeEditor({
             This is really a value of {promoteTo} →
           </button>
           <p className="mt-1 text-[11px] leading-snug text-foreground/40">
-            A code is an OBSERVATION — you can point at a transcript line and say
-            &ldquo;there&rdquo;. A value is an ANSWER. If you cannot point until you have
-            decided WHICH sub-thing happened, it was never a code. Name and definition
-            carry over; the code is retired, not deleted.
+            Name and definition carry over; the code is retired, not deleted.
           </p>
         </section>
       )}

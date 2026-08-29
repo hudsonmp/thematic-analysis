@@ -82,12 +82,6 @@ export default function MemoPanel({
 
   return (
     <div className="space-y-4 text-sm">
-      <p className="text-xs text-foreground/50">
-        Leads for codes that should exist but don&rsquo;t yet — recalled from the
-        literature or noticed as gaps mid-session. Resolve one when it becomes a real
-        code (or is judged not to be).
-      </p>
-
       <div>
         <textarea
           ref={bodyRef}

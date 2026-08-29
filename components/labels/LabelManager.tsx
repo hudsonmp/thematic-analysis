@@ -111,12 +111,6 @@ export default function LabelManager({
             <span className="text-sm font-normal text-foreground/40">· saving…</span>
           )}
         </h1>
-        <p className="text-sm text-foreground/60">
-          A nested vocabulary for organizing codes by theme (e.g.
-          “Scientific Reasoning → Experimentation”). Give each a color so it reads
-          at a glance, nest sub-labels under a parent, then tag codes on the code
-          page and filter the matrix by label.
-        </p>
       </header>
 
       {error && (

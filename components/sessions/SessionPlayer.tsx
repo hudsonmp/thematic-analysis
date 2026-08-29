@@ -13,7 +13,22 @@ import {
 import type { MyAnnotationView, AnnotationCommentView } from '@/app/actions/annotations';
 import type { ActionSchema } from '@/app/actions/action-schema';
 import { foldUsage, mergeUsage, type ActionUsage } from '@/lib/actions/search';
-import type { ManualComposition } from '@/lib/actions/schema';
+import {
+  answerRows,
+  cleanObjectRoles,
+  compositionLabel,
+  type ActionCodingView,
+  type ManualComposition,
+  type QuestionLite,
+} from '@/lib/actions/schema';
+import {
+  isPendingId,
+  mergePending,
+  pendingId,
+  settleChips,
+  type PendingChip,
+  type ResolvedAnchors,
+} from '@/lib/sessions/optimisticCodings';
 import { backendFor, type CodingLayer } from './annotationBackend';
 import ActionCodingPopup from './ActionCodingPopup';
 import {
@@ -68,6 +83,7 @@ import { findPhraseMatches } from '@/lib/transcript/search';
 import { cardsByTurn, type RailCard } from '@/lib/transcript/rail';
 import { packGutter, sameAnchor, type GutterInput } from '@/lib/transcript/gutter';
 import { useRealtimeAnnotations } from './useRealtimeAnnotations';
+import { useCodingPauseHold } from '@/components/hooks/useCodingPauseHold';
 
 /** A resolved transcript selection that may span MULTIPLE cues. `startSegIdx`/
  *  `startChar` is where it begins, `endSegIdx`/`endChar` where it ends (start ≤
@@ -411,10 +427,62 @@ export default function SessionPlayer({
   );
 
   const [segments, setSegments] = useState<CloudSegment[]>(initialSegments);
-  const [myAnnotations, setMyAnnotations] =
+  const [serverAnnotations, setServerAnnotations] =
     useState<MyAnnotationView[]>(initialAnnotations);
   const [comments, setComments] =
     useState<Record<string, AnnotationCommentView[]>>(initialComments);
+
+  // --- Optimistic codings -------------------------------------------------
+  // A pick paints its chip NOW and the write runs behind it (see
+  // lib/sessions/optimisticCodings.ts for the invariants). Everything
+  // downstream reads `myAnnotations`, which is the server's list with the
+  // in-flight chips laid over it — so the transcript paint, the gutter, the
+  // popup chips and the usage tie-break all update on the keystroke.
+  const [pendingChips, setPendingChips] = useState<PendingChip[]>([]);
+  // pending anchor id → the real annotation id, once its write has answered.
+  // Never pruned: one entry per span coded in this page session is nothing, and
+  // the alternative (pruning inside a state updater) means setState-in-updater.
+  const [anchorIds, setAnchorIds] = useState<ResolvedAnchors>({});
+  const anchorIdsRef = useRef<ResolvedAnchors>({});
+  // The write queue. Assign #2 on a span must not run before #1 has returned
+  // the anchor id, or one selection would mint two annotations. Serializing
+  // ALL of a player's writes (not just one span's) also keeps the coder's
+  // chips landing in the order they were picked.
+  const writeChainRef = useRef<Promise<void>>(Promise.resolve());
+  // Chips removed again before their write got a turn in the queue. The task
+  // consumes the id and skips the write entirely, so an undo inside the latency
+  // window is a real undo and not a write followed by a delete.
+  const canceledChipsRef = useRef<Set<string>>(new Set());
+  // How many writes have been enqueued, and the chips still waiting for a
+  // reconciling refetch. Together they coalesce a burst of picks down to ONE
+  // re-list: a task refetches only if it is the last one enqueued.
+  const writesEnqueuedRef = useRef(0);
+  const awaitingSettleRef = useRef<string[]>([]);
+  // What to paint on an optimistic chip. Reached through a ref because the
+  // code/action lookups it needs are built further down the component; it is
+  // only ever read from a user gesture, long after the first effect has run.
+  const describeChipRef = useRef<
+    (codeId: string, manual: ManualComposition | null) => {
+      mnemonic: string;
+      actionCoding?: ActionCodingView;
+    }
+  >(() => ({ mnemonic: '…' }));
+
+  const myAnnotations = useMemo(
+    () => mergePending(serverAnnotations, pendingChips, anchorIds),
+    [serverAnnotations, pendingChips, anchorIds],
+  );
+
+  // An optimistic anchor has no row yet, so anything that ADDRESSES an
+  // annotation server-side (comment on it, re-anchor it, delete it) has to come
+  // through here first: wait for the write queue to drain, then hand back the id
+  // the server actually created — or null, if that write failed and there is
+  // nothing to address.
+  const resolveAnnotationId = useCallback(async (annId: string): Promise<string | null> => {
+    if (!isPendingId(annId)) return annId;
+    await writeChainRef.current;
+    return anchorIdsRef.current[annId] ?? null;
+  }, []);
 
   // Action-layer usage for the picker's tie-break: the server's cross-session
   // counts + THIS session's codings, live from state (so an action applied a
@@ -452,18 +520,32 @@ export default function SessionPlayer({
     setComments(next);
   }, []);
 
-  const refreshActiveAnnotations = useCallback(async () => {
-    if (!versionId) return;
-    try {
-      const next = await apiRef.current.listMine(id, versionId, codebookId);
-      setMyAnnotations(next);
-      await reloadComments(next.map((a) => a.id));
-    } catch (e) {
-      setVersionError(
-        e instanceof Error ? e.message : 'Failed to refresh annotations.',
-      );
-    }
-  }, [id, versionId, codebookId, reloadComments]);
+  // `settle` names the optimistic chips this refetch is expected to contain.
+  // They are dropped in the SAME synchronous block as the new server list so
+  // React batches both — the frame that gains the real row is the frame that
+  // loses the placeholder, and no frame shows the chip twice.
+  const refreshActiveAnnotations = useCallback(
+    async (settle: string[] = []) => {
+      if (!versionId) {
+        if (settle.length > 0) setPendingChips((p) => settleChips(p, settle));
+        return;
+      }
+      try {
+        const next = await apiRef.current.listMine(id, versionId, codebookId);
+        setServerAnnotations(next);
+        if (settle.length > 0) setPendingChips((p) => settleChips(p, settle));
+        await reloadComments(next.map((a) => a.id));
+      } catch (e) {
+        // A failed refetch must still release the chips it was going to settle,
+        // or they hang in the UI forever pretending to be unwritten.
+        if (settle.length > 0) setPendingChips((p) => settleChips(p, settle));
+        setVersionError(
+          e instanceof Error ? e.message : 'Failed to refresh annotations.',
+        );
+      }
+    },
+    [id, versionId, codebookId, reloadComments],
+  );
 
   useRealtimeAnnotations({
     sessionId: id,
@@ -880,7 +962,11 @@ export default function SessionPlayer({
         ]);
         setVersionId(targetVersionId);
         setSegments(segs);
-        setMyAnnotations(anns);
+        setServerAnnotations(anns);
+        // In-flight chips anchor into the version we are leaving; their writes
+        // still land there (the anchor was captured at pick time), they just
+        // stop being painted here.
+        setPendingChips([]);
         setTextSel(null);
         setComposerOpen(false);
         setActiveIdx(-1);
@@ -914,7 +1000,8 @@ export default function SessionPlayer({
     } else {
       setVersionId(null);
       setSegments([]);
-      setMyAnnotations([]);
+      setServerAnnotations([]);
+      setPendingChips([]);
       setComments({});
       setOpenCommentAnnId(null);
       setComposerOpen(false);
@@ -932,7 +1019,8 @@ export default function SessionPlayer({
     } else {
       setVersionId(null);
       setSegments([]);
-      setMyAnnotations([]);
+      setServerAnnotations([]);
+      setPendingChips([]);
       setComments({});
       setOpenCommentAnnId(null);
       setComposerOpen(false);
@@ -1089,17 +1177,22 @@ export default function SessionPlayer({
       setReanchoringId(null);
       void (async () => {
         try {
-          await apiRef.current.updateAnchor(target, {
-            segmentId: startSeg.id,
-            endSegmentId: r.endSegIdx !== r.startSegIdx ? endSeg.id : null,
-            charStart: anchor.startChar,
-            charEnd: anchor.endChar,
-            quoteText: anchor.quoteText,
-            prefix: anchor.prefix,
-            suffix: anchor.suffix,
-            tStartMs: startSeg.startMs,
-            tEndMs: endSeg.endMs,
-          });
+          // The bracket may still be optimistic — re-anchoring a span whose row
+          // is in flight has to wait for the id it will get.
+          const real = await resolveAnnotationId(target);
+          if (real) {
+            await apiRef.current.updateAnchor(real, {
+              segmentId: startSeg.id,
+              endSegmentId: r.endSegIdx !== r.startSegIdx ? endSeg.id : null,
+              charStart: anchor.startChar,
+              charEnd: anchor.endChar,
+              quoteText: anchor.quoteText,
+              prefix: anchor.prefix,
+              suffix: anchor.suffix,
+              tStartMs: startSeg.startMs,
+              tEndMs: endSeg.endMs,
+            });
+          }
           await refreshActiveAnnotations();
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Failed to re-anchor.');
@@ -1138,7 +1231,7 @@ export default function SessionPlayer({
     }
     // COMMENT mode: the selection just sits (painted pending); typing opens the
     // marginalia composer via the keyboard handler below.
-  }, [segments, myAnnotations, mode, reanchoringId, refreshActiveAnnotations, enforceWholeSentence]);
+  }, [segments, myAnnotations, mode, reanchoringId, refreshActiveAnnotations, resolveAnnotationId, enforceWholeSentence]);
 
   // CLICK-TO-SEEK: a single click on plain cue text jumps the video to that cue
   // and plays. Click fires AFTER mouseup, so a drag-select arrives here with a
@@ -1240,6 +1333,19 @@ export default function SessionPlayer({
     else v.pause();
   }, []);
 
+  // Hold the video still while a coding gesture is in flight — a highlight only
+  // means something against the moment it was made, and dragging one across two
+  // sentences used to cost the four seconds of audio that ran past underneath.
+  // The DOM selection is watched inside the hook (it starts before mouseup); what
+  // React knows is the part that OUTLIVES the selection: the popup, the composer,
+  // and a pending span waiting for ⌘⌥M.
+  useCodingPauseHold({
+    videoRef,
+    transcriptRef,
+    engaged: textSel !== null || popupPos !== null || composerOpen,
+    enabled: codingEnabled || canComment,
+  });
+
   const clearSelection = useCallback(() => {
     setTextSel(null);
     setComposerOpen(false);
@@ -1309,7 +1415,8 @@ export default function SessionPlayer({
     setBusyId(annotationId);
     setError(null);
     try {
-      await apiRef.current.delete(annotationId);
+      const real = await resolveAnnotationId(annotationId);
+      if (real) await apiRef.current.delete(real);
       setOpenCommentAnnId((cur) => (cur === annotationId ? null : cur));
       await afterAnnotationMutation();
     } catch (e) {
@@ -1317,7 +1424,7 @@ export default function SessionPlayer({
     } finally {
       setBusyId(null);
     }
-  }, [afterAnnotationMutation]);
+  }, [afterAnnotationMutation, resolveAnnotationId]);
 
   // Assign a code to the CURRENT SELECTION (the popup's one job). First assign
   // creates the annotation (kind:'code', multi-cue anchor) and remembers its id;
@@ -1327,61 +1434,120 @@ export default function SessionPlayer({
   // The popup does NOT close on assign — multi-code needs consecutive assigns.
   // Dismissal is the popup's own leave-to-close: once ≥1 code is assigned,
   // moving the cursor off the card closes it (see CodingPopup.onMouseLeave).
+  //
+  // SYNCHRONOUS by design. The chip is painted from `pendingChips` on the same
+  // tick as the pick and the three round-trips (write → re-list → comments) run
+  // behind it on `writeChainRef`, so the coder can close the card and select the
+  // next span immediately. The queue is what keeps that safe: consecutive picks
+  // on one selection must not race each other into minting two anchors for it.
   const handleAssignCode = useCallback(
-    async (codeId: string, manual: ManualComposition | null = null) => {
+    (codeId: string, manual: ManualComposition | null = null) => {
       if (!versionId || (!codeId && !manual) || !pending) return;
-      setApplying(true);
       setError(null);
-      try {
-        // A stale assignedAnnId (its last code was removed and the anchor deleted
-        // server-side) must not receive junction rows — verify it still exists.
-        // Bookmarks qualify too: assigning onto a bookmark anchor is how it
-        // RESOLVES (addCodeToAnnotation promotes kind → 'code' server-side);
-        // excluding them would stack a duplicate coded span on the same text.
-        const live =
-          assignedAnnId !== null &&
-          myAnnotations.some(
-            (a) =>
-              a.id === assignedAnnId && (a.kind === 'code' || a.kind === 'bookmark'),
-          )
-            ? assignedAnnId
-            : null;
-        let added = false;
-        if (live !== null) {
-          // The id can still be stale (deleted server-side after our snapshot): the
-          // action probes and reports 'annotation_gone' instead of erroring, and we
-          // fall through to creating a fresh anchor rather than failing the assign.
-          added = (await apiRef.current.addCode(live, codeId, manual, codebookId)) === 'added';
+
+      // Snapshot the anchor NOW — by the time the write runs the coder may have
+      // dismissed the popup and selected something else, and the write must
+      // still describe the span they actually coded.
+      const anchor = {
+        segmentId: pending.startSeg.id,
+        endSegmentId:
+          pending.endSeg.id !== pending.startSeg.id ? pending.endSeg.id : null,
+        charStart: pending.startChar,
+        charEnd: pending.endChar,
+        quoteText: pending.quoteText,
+        prefix: pending.prefix,
+        suffix: pending.suffix,
+        tStartMs: pending.startSeg.startMs,
+        tEndMs: pending.endSeg.endMs,
+      };
+
+      // A stale assignedAnnId (its last code was removed and the anchor deleted
+      // server-side) must not receive junction rows — verify it still exists.
+      // Bookmarks qualify too: assigning onto a bookmark anchor is how it
+      // RESOLVES (addCodeToAnnotation promotes kind → 'code' server-side);
+      // excluding them would stack a duplicate coded span on the same text.
+      // A PENDING anchor minted by an earlier pick in this same popup passes the
+      // check (mergePending renders it as kind 'code') — that is what groups
+      // consecutive picks onto one annotation before any of them has a row.
+      const live =
+        assignedAnnId !== null &&
+        myAnnotations.some(
+          (a) =>
+            a.id === assignedAnnId && (a.kind === 'code' || a.kind === 'bookmark'),
+        )
+          ? assignedAnnId
+          : null;
+      const annotationId = live ?? pendingId(crypto.randomUUID());
+      const chipId = pendingId(crypto.randomUUID());
+      if (live === null) setAssignedAnnId(annotationId);
+      setPendingChips((p) => [
+        ...p,
+        {
+          id: chipId,
+          annotationId,
+          // Only the pick that MINTED the anchor carries what to paint it with.
+          anchor: live === null ? anchor : null,
+          createdAt: new Date().toISOString(),
+          ...describeChipRef.current(codeId, manual),
+        },
+      ]);
+
+      // Only the LAST write of a burst pays for the re-list: a coder putting
+      // three codes on one span would otherwise queue three full refetches
+      // behind each other and the third chip would sit optimistic for the sum
+      // of all of them. Writes still run in order; the reconciliation is what
+      // gets coalesced, and it settles every chip the burst accumulated.
+      const seq = ++writesEnqueuedRef.current;
+      awaitingSettleRef.current.push(chipId);
+
+      writeChainRef.current = writeChainRef.current.then(async () => {
+        try {
+          // Removed again before its write got a turn — never write it at all.
+          if (canceledChipsRef.current.delete(chipId)) return;
+          // A pending anchor resolves through the write that minted it, which
+          // the queue guarantees has already run.
+          const target = isPendingId(annotationId)
+            ? anchorIdsRef.current[annotationId] ?? null
+            : annotationId;
+          let added = false;
+          if (target !== null) {
+            // The id can still be stale (deleted server-side after our snapshot): the
+            // action probes and reports 'annotation_gone' instead of erroring, and we
+            // fall through to creating a fresh anchor rather than failing the assign.
+            added =
+              (await apiRef.current.addCode(target, codeId, manual, codebookId)) === 'added';
+          }
+          if (!added) {
+            const ann = await apiRef.current.add({
+              sessionId: id,
+              versionId,
+              codebookId,
+              ...anchor,
+              kind: 'code',
+              codeIds: codeId ? [codeId] : [],
+              manual,
+            });
+            anchorIdsRef.current = { ...anchorIdsRef.current, [annotationId]: ann.id };
+            setAnchorIds(anchorIdsRef.current);
+            setAssignedAnnId((cur) => (cur === annotationId ? ann.id : cur));
+          }
+        } catch (e) {
+          // The optimistic chip was a claim about the database; the claim was
+          // wrong, so it goes away and the coder is told.
+          setPendingChips((p) => settleChips(p, [chipId]));
+          setError(e instanceof Error ? e.message : 'Failed to assign the code.');
+        } finally {
+          // In `finally` so a failed write still releases the chips queued
+          // behind it — otherwise one error strands the whole burst.
+          if (seq === writesEnqueuedRef.current) {
+            const settle = awaitingSettleRef.current;
+            awaitingSettleRef.current = [];
+            await refreshActiveAnnotations(settle);
+          }
         }
-        if (!added) {
-          const ann = await apiRef.current.add({
-            sessionId: id,
-            versionId,
-            codebookId,
-            segmentId: pending.startSeg.id,
-            endSegmentId:
-              pending.endSeg.id !== pending.startSeg.id ? pending.endSeg.id : undefined,
-            charStart: pending.startChar,
-            charEnd: pending.endChar,
-            quoteText: pending.quoteText,
-            prefix: pending.prefix,
-            suffix: pending.suffix,
-            tStartMs: pending.startSeg.startMs,
-            tEndMs: pending.endSeg.endMs,
-            kind: 'code',
-            codeIds: codeId ? [codeId] : [],
-            manual,
-          });
-          setAssignedAnnId(ann.id);
-        }
-        await afterAnnotationMutation();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to assign the code.');
-      } finally {
-        setApplying(false);
-      }
+      });
     },
-    [versionId, pending, id, codebookId, assignedAnnId, myAnnotations, afterAnnotationMutation],
+    [versionId, pending, id, codebookId, assignedAnnId, myAnnotations, refreshActiveAnnotations],
   );
 
   // Remove one code from a BRACKET (gutter ×). The bracket survives — even empty —
@@ -1390,6 +1556,12 @@ export default function SessionPlayer({
   const handleRemoveCodeFromBracket = useCallback(
     async (annId: string, codeId: string) => {
       setError(null);
+      // Still optimistic: there is no row to delete, only a queued write to call off.
+      if (isPendingId(codeId)) {
+        canceledChipsRef.current.add(codeId);
+        setPendingChips((p) => settleChips(p, [codeId]));
+        return;
+      }
       try {
         await apiRef.current.removeCode(annId, codeId);
         await afterAnnotationMutation();
@@ -1439,18 +1611,28 @@ export default function SessionPlayer({
   const handleUnassignCode = useCallback(
     async (codeId: string) => {
       if (!assignedAnnId) return;
-      setApplying(true);
       setError(null);
+      // Still optimistic: call the queued write off instead of writing the row
+      // and immediately deleting it.
+      if (isPendingId(codeId)) {
+        canceledChipsRef.current.add(codeId);
+        setPendingChips((p) => settleChips(p, [codeId]));
+        return;
+      }
+      setApplying(true);
       try {
-        await apiRef.current.removeCode(assignedAnnId, codeId);
-        await afterAnnotationMutation();
+        const annId = await resolveAnnotationId(assignedAnnId);
+        if (annId) {
+          await apiRef.current.removeCode(annId, codeId);
+          await afterAnnotationMutation();
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to remove the code.');
       } finally {
         setApplying(false);
       }
     },
-    [assignedAnnId, afterAnnotationMutation],
+    [assignedAnnId, afterAnnotationMutation, resolveAnnotationId],
   );
 
   // --- Per-excerpt comments (margin) --------------------------------------
@@ -1684,9 +1866,13 @@ export default function SessionPlayer({
   // popover anchored at the click point.
   const openThreadForAnnotation = useCallback(
     (ann: MyAnnotationView) => {
-      void openCommentThread(ann.id);
+      // A span coded a moment ago may still be optimistic; its thread lives on
+      // the row the write is creating, so wait for the id.
+      void resolveAnnotationId(ann.id).then((real) => {
+        if (real) void openCommentThread(real);
+      });
     },
-    [openCommentThread],
+    [openCommentThread, resolveAnnotationId],
   );
 
   // My bookmarks in playback order, plus a header chip that CYCLES through them
@@ -2503,6 +2689,61 @@ export default function SessionPlayer({
   const refreshRetroCodebook = useCallback(() => {
     void getRetroCodebook().then((rcb) => setRetroCb(rcb ?? 'missing'));
   }, []);
+
+  // What an optimistic chip shows while its row is in flight. This is a LOCAL
+  // reconstruction of what the server will send back, so the two can disagree
+  // in one narrow case: an ad hoc composition that turns out to match a saved
+  // action exactly is stored as that action, and the chip's composition label
+  // becomes the action's name when the refetch lands. Rendering the label we
+  // can compute now beats rendering a spinner for the same information.
+  const describeChip = useCallback(
+    (codeId: string, manual: ManualComposition | null) => {
+      if (layer !== 'action' || !actionSchema) {
+        return { mnemonic: popupCodeById.get(codeId)?.mnemonic ?? '…' };
+      }
+      const questions: QuestionLite[] = actionSchema.questions.map((q) => ({
+        id: q.id,
+        prompt: q.prompt,
+        kind: q.kind,
+        required: q.required,
+        options: q.options.map((o) => ({ id: o.id, label: o.label })),
+      }));
+      const action = codeId ? actionSchema.actions.find((a) => a.id === codeId) ?? null : null;
+      const coding: ActionCodingView = action
+        ? {
+            id: '',
+            actionId: action.id,
+            actionName: action.name,
+            moveIds: action.moveIds,
+            objectIds: action.objectIds,
+            answers: action.answers,
+            objectRoles: action.objectRoles,
+          }
+        : {
+            id: '',
+            actionId: null,
+            actionName: null,
+            moveIds: manual?.moveIds ?? [],
+            objectIds: manual?.objectIds ?? [],
+            answers: manual ? answerRows(manual.answers, questions) : [],
+            // Same normalisation the server applies, so the chip's roles match
+            // the row that is about to be written.
+            objectRoles: cleanObjectRoles(
+              manual?.objectRoles,
+              manual?.objectIds ?? [],
+              actionSchema.roles,
+            ),
+          };
+      return {
+        mnemonic: coding.actionName ?? compositionLabel(coding, actionSchema),
+        actionCoding: coding,
+      };
+    },
+    [layer, actionSchema, popupCodeById],
+  );
+  useEffect(() => {
+    describeChipRef.current = describeChip;
+  }, [describeChip]);
 
   const renderGutter = useCallback(
     (turnIdx: number): React.ReactNode => {
@@ -3939,7 +4180,8 @@ export default function SessionPlayer({
           onAddSpanNote={
             assignedAnn
               ? async (body: string) => {
-                  const annId = assignedAnn.id;
+                  const annId = await resolveAnnotationId(assignedAnn.id);
+                  if (!annId) return;
                   await apiRef.current.addComment(annId, body);
                   const grouped = await apiRef.current.listComments([annId]);
                   setComments((prev) => ({ ...prev, [annId]: grouped[annId] ?? [] }));
@@ -3998,7 +4240,8 @@ export default function SessionPlayer({
                   // ✎ note in the popup = a margin comment on THIS anchor,
                   // persisted + pulled into state so it renders beside the span
                   // immediately (the popup stays open; the flash acknowledges).
-                  const annId = assignedAnn.id;
+                  const annId = await resolveAnnotationId(assignedAnn.id);
+                  if (!annId) return;
                   await apiRef.current.addComment(annId, body);
                   const grouped = await apiRef.current.listComments([annId]);
                   setComments((prev) => ({ ...prev, [annId]: grouped[annId] ?? [] }));

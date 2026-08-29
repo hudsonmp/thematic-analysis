@@ -1356,11 +1356,6 @@ function InterposeDialog({
           <h2 className="text-sm font-medium tracking-tight">
             Interpose a value under {parentLabel}
           </h2>
-          <p className="mt-0.5 text-xs text-foreground/50">
-            Too granular? Pull some of these sub-values down under a new intermediate
-            answer. No code is touched — a code answers a value, and re-parenting a
-            value changes none of those answers.
-          </p>
         </div>
 
         <div className="space-y-3 px-4 py-4">

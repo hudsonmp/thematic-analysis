@@ -543,17 +543,9 @@ export default function CodebookEntry({
     <main className="px-6 py-6 space-y-6">
       <header>
         <h1 className="text-xl font-medium tracking-tight">Codebook</h1>
-        <p className="mt-1 max-w-3xl text-sm leading-relaxed text-foreground/60">
-          Add many codes at once. Pick a <span className="font-medium text-foreground/80">mode</span>{' '}
-          (and optionally bind a paper) for the whole session, then type rows. The
-          columns after Definition are this codebook&apos;s{' '}
-          <Link href="/" className="underline underline-offset-2">
-            facets
-          </Link>
-          . <kbd className="font-mono text-xs">Enter</kbd> jumps to the next row;{' '}
-          <kbd className="font-mono text-xs">Shift+Enter</kbd> adds a line. Only the{' '}
-          <span className="font-medium text-foreground/80">slug</span> is required — it
-          is the code&apos;s sole identifier.
+        <p className="mt-1 text-xs text-foreground/50">
+          <kbd className="font-mono">Enter</kbd> next row · <kbd className="font-mono">Shift+Enter</kbd>{' '}
+          new line · only <span className="font-medium text-foreground/70">slug</span> is required
         </p>
       </header>
 

@@ -66,9 +66,6 @@ export default function LabelTagger({
   return (
     <div className="space-y-3">
       {error && <p className="text-sm text-red-600">{error}</p>}
-      <p className="text-xs text-foreground/50">
-        Group this code under themes. The matrix can filter codes by label.
-      </p>
       <div className="flex flex-wrap gap-1.5">
         {labels.map((lbl) => {
           const isOn = selected.has(lbl.id);
