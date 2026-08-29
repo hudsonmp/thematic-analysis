@@ -428,16 +428,6 @@ export default function MatrixView({
         />
       </div>
 
-      <p className="max-w-3xl text-sm leading-relaxed text-foreground/60 border-l-2 border-foreground/15 pl-3">
-        A <span className="font-medium text-foreground/80">facet</span> is a
-        dimension you organize codes by (e.g.{' '}
-        <span className="font-mono text-foreground/70">Stage</span>,{' '}
-        <span className="font-mono text-foreground/70">Locus</span>). Each facet
-        has <span className="font-medium text-foreground/80">values</span> (e.g.{' '}
-        Monitor, Diagnose). Tag codes with values, then pivot the matrix by any
-        two facets.
-      </p>
-
       <FacetEditor codebookId={codebook.id} facets={facets} />
 
       {noFacets ? (

@@ -79,10 +79,6 @@ export default function CitationLibrary({
     <main className="mx-auto max-w-3xl px-6 py-8 space-y-8">
       <header className="space-y-1">
         <h1 className="text-lg font-medium tracking-tight">Citations</h1>
-        <p className="text-sm text-foreground/60">
-          Your reference library for this codebook. Paste BibTeX to add entries;
-          link them to codes from the code card.
-        </p>
       </header>
 
       {error && <p className="text-sm text-red-600">{error}</p>}

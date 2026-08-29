@@ -18,13 +18,7 @@ export default async function SessionsPage() {
   return (
     <main className="px-6 py-6">
       <header className="mb-4 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-lg font-medium tracking-tight">Sessions</h1>
-          <p className="text-sm text-foreground/60">
-            Participant recordings. Open one to watch the video with its
-            synchronized transcript.
-          </p>
-        </div>
+        <h1 className="text-lg font-medium tracking-tight">Sessions</h1>
         {!readOnly && (
           <Link
             href="/sessions/upload"

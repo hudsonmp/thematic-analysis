@@ -71,11 +71,6 @@ export default function EpisodeManager({
             <span className="text-sm font-normal text-foreground/40">· saving…</span>
           )}
         </h1>
-        <p className="text-sm text-foreground/60">
-          Preset the named phases of a session (e.g. “Scenario 1 read”, “revise”).
-          While coding a session you mark where each event starts at the current
-          video time, so a coder can resume / navigate by event.
-        </p>
       </header>
 
       {error && (

@@ -63,9 +63,6 @@ export default function EpisodeTagger({
   return (
     <div className="space-y-3">
       {error && <p className="text-sm text-red-600">{error}</p>}
-      <p className="text-xs text-foreground/50">
-        Tag which events this code pertains to. The matrix can filter codes by event.
-      </p>
       <div className="flex flex-wrap gap-1.5">
         {episodes.map((ep) => {
           const isOn = selected.has(ep.id);
