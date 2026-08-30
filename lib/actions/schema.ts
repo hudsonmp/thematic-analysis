@@ -228,6 +228,30 @@ export function objectLabel(objects: ObjectLite[], id: string): string {
   return parent ? `${parent.name} › ${o.name}` : o.name;
 }
 
+/** Casefolded, whitespace-collapsed name — what "the same vocabulary entry" means. */
+export function vocabKey(name: string): string {
+  return name.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/** An existing move with this name, or null. Used to never mint a duplicate. */
+export function findMoveByName<T extends { name: string }>(moves: T[], name: string): T | null {
+  const k = vocabKey(name);
+  return moves.find((m) => vocabKey(m.name) === k) ?? null;
+}
+
+/**
+ * An existing object with this name UNDER THE SAME PARENT, or null. Scoped by
+ * parent because "Queue" under two different parents are two real objects.
+ */
+export function findObjectByName<T extends ObjectLite>(
+  objects: T[],
+  name: string,
+  parentId: string | null,
+): T | null {
+  const k = vocabKey(name);
+  return objects.find((o) => vocabKey(o.name) === k && (o.parentId ?? null) === (parentId ?? null)) ?? null;
+}
+
 /**
  * Why `objectId` (null when creating) cannot take `parentId` as its parent, or
  * null when it can. Enforces exactly one level: the parent must exist and be

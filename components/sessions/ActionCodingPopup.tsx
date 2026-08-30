@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ActionEntry, ActionObject, ActionSchema } from '@/app/actions/action-schema';
-import { promoteToAction } from '@/app/actions/action-coding';
+import type { ActionEntry, ActionMove, ActionObject, ActionSchema } from '@/app/actions/action-schema';
+import { mintMove, mintObject, promoteToAction } from '@/app/actions/action-coding';
 import {
   answerRows,
   compositionLabel,
@@ -83,7 +83,10 @@ const GHOST = 'shrink-0 px-1 text-xs text-foreground/50 hover:text-foreground di
  *
  * "Add manually" (lower-right) turns THIS card into the manual composer: two
  * tabs — Action (moves in one column, objects in the other) and Questions (the
- * /actions questions, mandatory ones starred). Submit:
+ * /actions questions, mandatory ones starred). Either column can also MINT its
+ * vocabulary inline ("+ new move" / "+ new object", the latter optionally as a
+ * subclass), so a combination the codebook has no word for yet does not send
+ * the coder to /actions mid-transcript. Submit:
  *   • an action with the EXACT same moves/objects/answers exists → that action
  *     is applied (no duplicate is ever minted);
  *   • otherwise the coder chooses: code it ad hoc (nothing added to /actions) or
@@ -94,7 +97,7 @@ const GHOST = 'shrink-0 px-1 text-xs text-foreground/50 hover:text-foreground di
 export default function ActionCodingPopup({
   pos,
   quote,
-  schema,
+  schema: baseSchema,
   usage = {},
   codebookId,
   assigned,
@@ -104,7 +107,7 @@ export default function ActionCodingPopup({
   onAssignManual,
   onUnassign,
   onClose,
-  onActionCreated,
+  onSchemaChanged,
   onBookmark,
   onQuote,
   bookmarked = false,
@@ -127,14 +130,26 @@ export default function ActionCodingPopup({
   /** Remove one coding (by coding row id) from the selection's anchor. */
   onUnassign: (codingId: string) => void;
   onClose: () => void;
-  /** A reusable action was created from here → the parent refreshes the schema. */
-  onActionCreated: () => void;
+  /** An action / move / object was created from here → the parent refetches the schema. */
+  onSchemaChanged: () => void;
   onBookmark: () => void;
   onQuote: () => void;
   bookmarked?: boolean;
   onOpenNotes?: (() => void) | null;
   onAddSpanNote?: ((body: string) => Promise<void>) | null;
 }) {
+  // Vocabulary minted from inside this card. The parent refetch (onSchemaChanged)
+  // is a round trip the composer must not wait on, so a minted move/object is
+  // spliced in locally and pickable at once; entries drop out of the overlay as
+  // soon as the refreshed prop carries them.
+  const [minted, setMinted] = useState<{ moves: ActionMove[]; objects: ActionObject[] }>({ moves: [], objects: [] });
+  const schema = useMemo<ActionSchema>(() => {
+    const newMoves = minted.moves.filter((m) => !baseSchema.moves.some((x) => x.id === m.id));
+    const newObjects = minted.objects.filter((o) => !baseSchema.objects.some((x) => x.id === o.id));
+    if (newMoves.length === 0 && newObjects.length === 0) return baseSchema;
+    return { ...baseSchema, moves: [...baseSchema.moves, ...newMoves], objects: [...baseSchema.objects, ...newObjects] };
+  }, [baseSchema, minted]);
+
   const [view, setView] = useState<'search' | 'manual'>('search');
   const [query, setQuery] = useState('');
   const PINNED = 2;
@@ -589,7 +604,7 @@ export default function ActionCodingPopup({
             </div>
             {schema.actions.length === 0 ? (
               <p className="px-3 py-2 text-xs italic text-foreground/40">
-                No saved actions yet — add one manually below, or define them on /actions.
+                No saved actions yet — add one manually below.
               </p>
             ) : ranked.length === 0 ? (
               <p className="px-3 py-2 text-xs italic text-foreground/40">
@@ -732,9 +747,17 @@ export default function ActionCodingPopup({
             setView('search');
           }}
           onPromoted={(actionId) => {
-            onActionCreated();
+            onSchemaChanged();
             assign(actionId);
             setView('search');
+          }}
+          onMintedMove={(move) => {
+            setMinted((m) => ({ ...m, moves: [...m.moves, move] }));
+            onSchemaChanged();
+          }}
+          onMintedObject={(object) => {
+            setMinted((m) => ({ ...m, objects: [...m.objects, object] }));
+            onSchemaChanged();
           }}
         />
       )}
@@ -781,6 +804,8 @@ function ManualComposer({
   onAssignExisting,
   onAssignManual,
   onPromoted,
+  onMintedMove,
+  onMintedObject,
 }: {
   schema: ActionSchema;
   codebookId: string;
@@ -790,6 +815,10 @@ function ManualComposer({
   onAssignExisting: (actionId: string) => void;
   onAssignManual: (c: ManualComposition) => void;
   onPromoted: (actionId: string) => void;
+  /** A move was created (or resolved to an existing one) from the move column. */
+  onMintedMove: (move: ActionMove) => void;
+  /** Same for the object column — including subclasses. */
+  onMintedObject: (object: ActionObject) => void;
 }) {
   const [tab, setTab] = useState<'action' | 'questions'>('action');
   const [moveIds, setMoveIds] = useState<string[]>([]);
@@ -807,6 +836,11 @@ function ManualComposer({
   const [description, setDescription] = useState('');
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  // Inline vocabulary minting: which column's form is open, and its draft.
+  const [minting, setMinting] = useState<'move' | 'object' | null>(null);
+  const [mintName, setMintName] = useState('');
+  const [mintParentId, setMintParentId] = useState('');
+  const [mintBusy, setMintBusy] = useState(false);
 
   const moveLites = schema.moves.map((m) => ({ id: m.id, name: m.name, minObjects: m.minObjects }));
   const qLites = schema.questions.map((q) => ({
@@ -868,6 +902,115 @@ function ManualComposer({
       setSaving(false);
     }
   }
+
+  function openMint(kind: 'move' | 'object') {
+    setLocalError(null);
+    setMintName('');
+    setMintParentId('');
+    setMinting(kind);
+  }
+
+  /**
+   * Create the move/object and select it in the same gesture. A name the
+   * codebook already has resolves to THAT entry rather than a second one, so
+   * the id that lands in the composition is always the canonical row.
+   */
+  async function mint() {
+    const name = mintName.trim();
+    const kind = minting;
+    if (name === '' || mintBusy || kind === null) return;
+    setMintBusy(true);
+    setLocalError(null);
+    try {
+      if (kind === 'move') {
+        const { move } = await mintMove(codebookId, { name });
+        onMintedMove(move);
+        edit(setMoveIds, [move.id]);
+      } else {
+        const parentId = mintParentId || null;
+        const { object } = await mintObject(codebookId, { name, parentId });
+        onMintedObject(object);
+        // A fresh subclass REFINES its parent (same rule as toggleObjectSelection):
+        // the parent leaves the selection, sibling subclasses stay.
+        setAskPromote(false);
+        setObjectIds((ids) =>
+          ids.includes(object.id) ? ids : [...ids.filter((x) => x !== parentId), object.id],
+        );
+      }
+      setMinting(null);
+      setMintName('');
+      setMintParentId('');
+    } catch (e) {
+      setLocalError(e instanceof Error ? e.message : 'Could not add it.');
+    } finally {
+      setMintBusy(false);
+    }
+  }
+
+  /** The inline "+ new …" form shared by both columns. */
+  const mintForm = (kind: 'move' | 'object') => {
+    if (minting !== kind) {
+      return (
+        <button
+          type="button"
+          disabled={busy || saving}
+          onClick={() => openMint(kind)}
+          className="mt-1 w-full border border-dashed border-foreground/30 px-2 py-1 text-left text-xs text-foreground/55 transition hover:border-foreground hover:text-foreground disabled:opacity-40"
+        >
+          + new {kind}
+        </button>
+      );
+    }
+    const roots = groupObjects(schema.objects).map((g) => g.root);
+    return (
+      <div className="mt-1 space-y-1 border border-dashed border-foreground/30 p-1.5">
+        <input
+          autoFocus
+          value={mintName}
+          disabled={mintBusy}
+          onChange={(e) => setMintName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void mint();
+            }
+            if (e.key === 'Escape') {
+              e.stopPropagation();
+              setMinting(null);
+            }
+          }}
+          placeholder={kind === 'move' ? 'Localize' : 'Goal'}
+          aria-label={`New ${kind} name`}
+          className={`${INPUT} w-full py-0.5 text-xs`}
+        />
+        {kind === 'object' && roots.length > 0 && (
+          <select
+            value={mintParentId}
+            disabled={mintBusy}
+            onChange={(e) => setMintParentId(e.target.value)}
+            aria-label="Parent object (leave empty for a top-level object)"
+            className={`${INPUT} w-full py-0.5 text-xs`}
+          >
+            <option value="">— top-level object —</option>
+            {roots.map((o) => (
+              <option key={o.id} value={o.id}>
+                subclass of {o.name}
+              </option>
+            ))}
+          </select>
+        )}
+        <div className="flex items-center gap-1">
+          <span className="flex-1" />
+          <button type="button" disabled={mintBusy} onClick={() => setMinting(null)} className={GHOST}>
+            cancel
+          </button>
+          <button type="button" disabled={mintBusy || mintName.trim() === ''} onClick={() => void mint()} className={PRIMARY}>
+            {mintBusy ? 'Adding…' : 'Add'}
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   const chipClass = (on: boolean) =>
     `flex cursor-pointer items-center gap-1.5 border px-2 py-1 text-sm ${on ? 'border-foreground bg-foreground/5' : 'border-foreground/15'}`;
@@ -959,7 +1102,7 @@ function ManualComposer({
               <legend className="px-1 text-[11px] uppercase tracking-wider text-foreground/50">
                 move <span className="normal-case tracking-normal text-foreground/40">· pick one; two moves at once = two actions</span>
               </legend>
-              {schema.moves.length === 0 && <p className="text-xs text-foreground/45">No moves defined — add them on /actions.</p>}
+              {schema.moves.length === 0 && <p className="text-xs text-foreground/45">No moves yet.</p>}
               <div className="flex flex-col gap-1" role="radiogroup" aria-label="Move">
                 {schema.moves.map((m) => (
                   <label
@@ -980,13 +1123,15 @@ function ManualComposer({
                   </label>
                 ))}
               </div>
+              {mintForm('move')}
             </fieldset>
             <fieldset className="border border-foreground/15 p-2">
               <legend className="px-1 text-[11px] uppercase tracking-wider text-foreground/50">
                 objects <span className="normal-case tracking-normal text-foreground/40">· need ≥ {need}, {objectIds.length} picked</span>
               </legend>
-              {schema.objects.length === 0 && <p className="text-xs text-foreground/45">No objects defined — add them on /actions.</p>}
+              {schema.objects.length === 0 && <p className="text-xs text-foreground/45">No objects yet.</p>}
               <div className="flex flex-col gap-1">{groupObjects(schema.objects).map(objectRow)}</div>
+              {mintForm('object')}
             </fieldset>
             <div className="sm:col-span-2">
               <ObjectRolesPicker

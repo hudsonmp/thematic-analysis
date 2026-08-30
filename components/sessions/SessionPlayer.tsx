@@ -4141,9 +4141,10 @@ export default function SessionPlayer({
           onto ONE annotation — and closes on Done/Esc/outside click. */}
       {/* ACTION LAYER (/coding/action): the same selection → popup gesture, but
           the picker lists ACTIONS (moves × objects) and offers "Add manually"
-          for an ad hoc combination. Same assign/unassign/bookmark/quote/notes
-          contract as the codebook popup — `codeId` is an action id on assign and
-          a coding row id on unassign (see annotationBackend.ts). */}
+          for an ad hoc combination — which can also mint a missing move/object
+          on the spot. Same assign/unassign/bookmark/quote/notes contract as the
+          codebook popup — `codeId` is an action id on assign and a coding row id
+          on unassign (see annotationBackend.ts). */}
       {popupPos && pending && layer === 'action' && actionSchema && (
         <ActionCodingPopup
           pos={popupPos}
@@ -4158,7 +4159,7 @@ export default function SessionPlayer({
           onAssignManual={(composition) => void handleAssignCode('', composition)}
           onUnassign={(codingId) => void handleUnassignCode(codingId)}
           onClose={clearSelection}
-          onActionCreated={() => router.refresh()}
+          onSchemaChanged={() => router.refresh()}
           onQuote={() => void handleQuoteSelection()}
           onBookmark={() => {
             if (assignedAnn?.kind === 'bookmark') {
