@@ -55,6 +55,11 @@ import { alignChat, activeChatIndex } from '@/lib/chat/align';
 import type { SpecTimelineResult } from '@/app/actions/spec';
 import { specStateAt } from '@/lib/spec/reconstruct';
 import { coalesceEditBursts } from '@/lib/sessions/editBursts';
+import {
+  episodeIndexAt,
+  isRetroEpisodeName,
+  retroSkipTarget,
+} from '@/lib/sessions/retroSkip';
 import { retroQuestionsAt } from '@/lib/live/retro';
 import RetroPanel from './RetroPanel';
 import {
@@ -283,6 +288,10 @@ function expandRangeHighlights(
  *  follow-along highlight on sentence-restored versions. */
 const HIGHLIGHT_LEAD_MS = 1200;
 
+/** localStorage key for the "skip retrospectives" playback habit (see below).
+ *  Not per session — a coder either watches retros or doesn't. */
+const SKIP_RETRO_KEY = 'ta:skipretro';
+
 export default function SessionPlayer({
   id,
   pidLabel,
@@ -369,19 +378,22 @@ export default function SessionPlayer({
     apiRef.current = backendFor(layer);
   }, [layer]);
 
-  // --- Modes: COMMENT (default) vs CODE -----------------------------------
-  // Two selection grammars share one transcript. COMMENT mode: select → start
-  // typing → a marginalia composer captures the keystrokes; ⏎/⌘⏎ saves (a bare
-  // highlight with no comment cannot be saved — a highlight that says nothing IS
-  // nothing). CODE mode: select → the coding popup spawns at the release point.
-  // Defaulting to Comment makes the cheap, frequent act (reacting to the data)
-  // zero-friction and the schema-bearing act (coding) deliberate.
-  const [mode, setMode] = useState<'comment' | 'code' | 'retro'>('comment');
+  // --- Modes: CODE (default) vs COMMENT -----------------------------------
+  // Two selection grammars share one transcript. CODE mode: select → the coding
+  // popup spawns at the release point. COMMENT mode: select → start typing → a
+  // marginalia composer captures the keystrokes; ⏎/⌘⏎ saves (a bare highlight
+  // with no comment cannot be saved — a highlight that says nothing IS nothing).
+  // An editor opens a session to CODE it: coding is the work, commenting is the
+  // aside, so the default is the work. Viewers (comment-only) start in Comment —
+  // Code has no popup for them and no toggle to escape it.
+  const [mode, setMode] = useState<'comment' | 'code' | 'retro'>(
+    codingEnabled ? 'code' : 'comment',
+  );
   // Auto-shift bookkeeping for RETRO mode: the mode to return to when playback
   // leaves a retrospective episode, and the last computed in-retro boolean so
   // the shift fires only on boundary CROSSINGS (a manual mode click inside a
   // retrospective sticks until the next boundary).
-  const prevModeRef = useRef<'comment' | 'code'>('comment');
+  const prevModeRef = useRef<'comment' | 'code'>(codingEnabled ? 'code' : 'comment');
   const inRetroEpisodeRef = useRef(false);
   const episodeNamesRef = useRef<{ tStartMs: number; name: string }[]>([]);
   const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null);
@@ -642,6 +654,30 @@ export default function SessionPlayer({
   // selected mode, because coding a retro answer (manual flip to Coding while
   // the section plays) must still target the retrospective codebook.
   const [inRetroSection, setInRetroSection] = useState(false);
+  // --- Skip retrospectives (ON by default) ---------------------------------
+  // A retrospective stretch is the participant ANSWERING questions, not working;
+  // for a coding pass it is dead air. With skipping on, playback that reaches a
+  // retrospective episode jumps straight to the next NON-retro episode, using
+  // the materialized event timeline (cb_session_episodes, derived from the
+  // participant's own step advances) as the boundary source — no scrubbing, no
+  // separate span table. Only while PLAYING: a deliberate scrub into a
+  // retrospective (paused) is left alone, so the section stays reviewable
+  // without touching the toggle. The choice persists per browser, not per
+  // session, since it is a habit and not a property of the recording.
+  const [skipRetro, setSkipRetro] = useState(
+    () => typeof window === 'undefined' || window.localStorage.getItem(SKIP_RETRO_KEY) !== '0',
+  );
+  const toggleSkipRetro = useCallback(() => {
+    setSkipRetro((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(SKIP_RETRO_KEY, next ? '1' : '0');
+      } catch {
+        // Preference just doesn't survive the reload.
+      }
+      return next;
+    });
+  }, []);
   // The study's Retrospective codebook (+ popup-shaped codes); 'missing' when
   // no codebook named like /retro/i exists.
   const [retroCb, setRetroCb] = useState<
@@ -754,6 +790,40 @@ export default function SessionPlayer({
       ? findReadingIndex(segments, tMs + HIGHLIGHT_LEAD_MS)
       : findActiveIndex(segments, tMs);
     setActiveIdx((prev) => (prev === idx ? prev : idx));
+    // Which episode the playhead sits in: the last one whose start has passed.
+    // The ref (not the memo) because this handler is declared ABOVE it — see
+    // the mirroring effect near orderedEpisodes.
+    const eps = episodeNamesRef.current;
+    const epIdx = episodeIndexAt(eps, tMs);
+    const inRetro = epIdx >= 0 && isRetroEpisodeName(eps[epIdx].name);
+    // RETRO SKIP: while PLAYING with skipping on, landing in a retrospective
+    // jumps to where the work resumes (lib/sessions/retroSkip owns the boundary
+    // arithmetic). Assigning currentTime on a playing streamed source reloads it
+    // from 0, so this does the same pause → seek → resume dance as skipBy; the
+    // pause also makes the handler re-entrancy-safe (the seek's own timeupdate
+    // sees `paused` and bails). Paused means the coder went there on purpose —
+    // leave them there.
+    if (inRetro && skipRetro && !video.paused) {
+      const target = retroSkipTarget(eps, tMs);
+      const dur =
+        Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null;
+      // Land a hair short of the exact end: assigning the duration itself snaps
+      // the element into its ended state (same clamp as seekTo).
+      const end = dur !== null ? Math.max(0, dur - 0.3) : null;
+      let t = target?.kind === 'jump' ? target.toMs / 1000 : end;
+      if (t !== null && end !== null) t = Math.min(t, end);
+      if (t !== null && t > video.currentTime + 0.05) {
+        const resume = target?.kind === 'jump';
+        video.pause();
+        const onSeeked = () => {
+          video.removeEventListener('seeked', onSeeked);
+          if (resume) video.play().catch(() => {});
+        };
+        video.addEventListener('seeked', onSeeked);
+        video.currentTime = t;
+        return;
+      }
+    }
     // RETRO AUTO-SHIFT: crossing INTO a retrospective episode (canonical names
     // from the participant task's page advances) flips the mode to 'retro';
     // crossing OUT restores whatever mode was active before. Fires ONLY on
@@ -761,13 +831,6 @@ export default function SessionPlayer({
     // sticks until playback leaves it. Editors only — retro memos are an
     // editor instrument.
     if (codingEnabled) {
-      const eps = episodeNamesRef.current;
-      let epName: string | null = null;
-      for (const e of eps) {
-        if (e.tStartMs <= tMs) epName = e.name;
-        else break;
-      }
-      const inRetro = epName !== null && /retro/i.test(epName);
       if (inRetro !== inRetroEpisodeRef.current) {
         inRetroEpisodeRef.current = inRetro;
         setInRetroSection(inRetro);
@@ -796,7 +859,7 @@ export default function SessionPlayer({
         // Quota/private-mode failures just lose resume — never break playback.
       }
     }
-  }, [segments, id, codingEnabled, ensureRetroData, enforceWholeSentence]);
+  }, [segments, id, codingEnabled, ensureRetroData, enforceWholeSentence, skipRetro]);
 
   // Follow-along scrolling PAGES like a teleprompter instead of creeping.
   // scrollIntoView({block:'nearest'}) moved one line per cue advance — a
@@ -2325,6 +2388,13 @@ export default function SessionPlayer({
     () => [...sessionEpisodes].sort((a, b) => a.tStartMs - b.tStartMs),
     [sessionEpisodes],
   );
+  // Whether this session HAS retrospective stretches to skip. No marks (or none
+  // retrospective) → the skip toggle would be a control over nothing, so it
+  // isn't rendered.
+  const hasRetroEpisodes = useMemo(
+    () => orderedEpisodes.some((e) => isRetroEpisodeName(e.episodeName)),
+    [orderedEpisodes],
+  );
   const currentEpisodeIdx = useMemo(() => {
     let idx = -1;
     for (let i = 0; i < orderedEpisodes.length; i++) {
@@ -3230,6 +3300,26 @@ export default function SessionPlayer({
                   </button>
                 ))}
               </div>
+            )}
+            {hasRetroEpisodes && (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={skipRetro}
+                onClick={toggleSkipRetro}
+                title={
+                  skipRetro
+                    ? 'Playback jumps past the retrospective stretches — click to watch them'
+                    : 'Retrospectives play in full — click to skip them'
+                }
+                className={`rounded border px-2 py-1 text-xs ${
+                  skipRetro
+                    ? 'border-foreground/30 bg-foreground text-background'
+                    : 'border-foreground/20 text-foreground/60 hover:text-foreground'
+                }`}
+              >
+                Skip retro
+              </button>
             )}
             {(mode === 'retro' || inRetroSection) && (
               <span
@@ -4141,9 +4231,10 @@ export default function SessionPlayer({
           onto ONE annotation — and closes on Done/Esc/outside click. */}
       {/* ACTION LAYER (/coding/action): the same selection → popup gesture, but
           the picker lists ACTIONS (moves × objects) and offers "Add manually"
-          for an ad hoc combination. Same assign/unassign/bookmark/quote/notes
-          contract as the codebook popup — `codeId` is an action id on assign and
-          a coding row id on unassign (see annotationBackend.ts). */}
+          for an ad hoc combination — which can also mint a missing move/object
+          on the spot. Same assign/unassign/bookmark/quote/notes contract as the
+          codebook popup — `codeId` is an action id on assign and a coding row id
+          on unassign (see annotationBackend.ts). */}
       {popupPos && pending && layer === 'action' && actionSchema && (
         <ActionCodingPopup
           pos={popupPos}
@@ -4158,7 +4249,7 @@ export default function SessionPlayer({
           onAssignManual={(composition) => void handleAssignCode('', composition)}
           onUnassign={(codingId) => void handleUnassignCode(codingId)}
           onClose={clearSelection}
-          onActionCreated={() => router.refresh()}
+          onSchemaChanged={() => router.refresh()}
           onQuote={() => void handleQuoteSelection()}
           onBookmark={() => {
             if (assignedAnn?.kind === 'bookmark') {

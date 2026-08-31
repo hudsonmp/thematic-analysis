@@ -210,21 +210,26 @@ export async function getActionSchema(codebookId: string): Promise<ActionSchema>
 // Moves
 // ---------------------------------------------------------------------------
 
+/** Create a move and return it, so a caller can select it without a refetch. */
 export async function createMove(
   codebookId: string,
   { name, description, minObjects }: { name: string; description?: string; minObjects?: number },
-): Promise<void> {
+): Promise<ActionMove> {
   await requireEditor();
   const trimmed = name.trim();
   if (!trimmed) throw new Error('createMove: name is required.');
-  const { error } = await cbFrom('cb_action_moves').insert({
-    codebook_id: codebookId,
-    name: trimmed,
-    description: cleanText(description),
-    min_objects: cleanMin(minObjects ?? 1),
-    position: await nextPosition('cb_action_moves', codebookId),
-  });
+  const { data, error } = await cbFrom('cb_action_moves')
+    .insert({
+      codebook_id: codebookId,
+      name: trimmed,
+      description: cleanText(description),
+      min_objects: cleanMin(minObjects ?? 1),
+      position: await nextPosition('cb_action_moves', codebookId),
+    })
+    .select('id, name, description, min_objects, position')
+    .single();
   if (error) throw new Error(`createMove failed: ${error.message}`);
+  return { id: data.id, name: data.name, description: data.description, minObjects: data.min_objects, position: data.position };
 }
 
 export async function updateMove(
@@ -262,12 +267,13 @@ export async function reorderMoves(orderedIds: string[]): Promise<void> {
 /**
  * Create an object, optionally as a SUBCLASS of `parentId` (e.g. object
  * "Scenario" with subclasses "Given scenario" / "User story"). One level only:
- * the parent must be a top-level object in the same codebook.
+ * the parent must be a top-level object in the same codebook. Returns the new
+ * object so a caller can select it without a refetch.
  */
 export async function createObject(
   codebookId: string,
   { name, description, parentId }: { name: string; description?: string; parentId?: string | null },
-): Promise<void> {
+): Promise<ActionObject> {
   await requireEditor();
   const trimmed = name.trim();
   if (!trimmed) throw new Error('createObject: name is required.');
@@ -276,14 +282,18 @@ export async function createObject(
     const problem = parentProblem(await loadObjectLites(codebookId), null, parent);
     if (problem) throw new Error(`createObject: ${problem}`);
   }
-  const { error } = await cbFrom('cb_action_objects').insert({
-    codebook_id: codebookId,
-    name: trimmed,
-    description: cleanText(description),
-    parent_id: parent,
-    position: await nextPosition('cb_action_objects', codebookId),
-  });
+  const { data, error } = await cbFrom('cb_action_objects')
+    .insert({
+      codebook_id: codebookId,
+      name: trimmed,
+      description: cleanText(description),
+      parent_id: parent,
+      position: await nextPosition('cb_action_objects', codebookId),
+    })
+    .select('id, name, description, parent_id, position')
+    .single();
   if (error) throw new Error(`createObject failed: ${error.message}`);
+  return { id: data.id, name: data.name, description: data.description, parentId: data.parent_id, position: data.position };
 }
 
 /**

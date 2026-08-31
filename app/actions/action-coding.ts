@@ -10,6 +10,9 @@ import {
   cleanObjectRoles,
   compositionKey,
   compositionLabel,
+  findMoveByName,
+  findObjectByName,
+  parentProblem,
   validateComposition,
   type ActionCodingView,
   type ActionDraft,
@@ -23,7 +26,15 @@ import {
   coderStatusFromRow,
   type CoderStatus,
 } from '@/lib/codebook/sessionProgress';
-import { createAction, getActionSchema, type ActionSchema } from '@/app/actions/action-schema';
+import {
+  createAction,
+  createMove,
+  createObject,
+  getActionSchema,
+  type ActionMove,
+  type ActionObject,
+  type ActionSchema,
+} from '@/app/actions/action-schema';
 import type { AnnotationCommentView, MyAnnotationView } from '@/app/actions/annotations';
 
 // ---------------------------------------------------------------------------
@@ -643,4 +654,44 @@ export async function promoteToAction(
   if (existing) return { actionId: existing.id, created: false };
   const actionId = await createAction(codebookId, draft);
   return { actionId, created: true };
+}
+
+// ---------------------------------------------------------------------------
+// Mint vocabulary from the coding modal (moves / objects).
+//
+// The same contract promoteToAction holds for actions: a name that already
+// exists is RETURNED, never duplicated. Mid-coding is exactly when a coder is
+// most likely to retype an entry that is already there, and a split vocabulary
+// ("Goal" and "goal") is what makes agreement uncomputable later.
+// ---------------------------------------------------------------------------
+
+export async function mintMove(
+  codebookId: string,
+  { name, minObjects }: { name: string; minObjects?: number },
+): Promise<{ move: ActionMove; created: boolean }> {
+  await requireEditor();
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('mintMove: name is required.');
+  const schema = await schemaFor(codebookId);
+  const existing = findMoveByName(schema.moves, trimmed);
+  if (existing) return { move: existing, created: false };
+  const move = await createMove(codebookId, { name: trimmed, minObjects });
+  return { move, created: true };
+}
+
+export async function mintObject(
+  codebookId: string,
+  { name, parentId }: { name: string; parentId?: string | null },
+): Promise<{ object: ActionObject; created: boolean }> {
+  await requireEditor();
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('mintObject: name is required.');
+  const parent = parentId || null;
+  const schema = await schemaFor(codebookId);
+  const problem = parentProblem(schema.objects, null, parent);
+  if (problem) throw new Error(`mintObject: ${problem}`);
+  const existing = findObjectByName(schema.objects, trimmed, parent);
+  if (existing) return { object: existing, created: false };
+  const object = await createObject(codebookId, { name: trimmed, parentId: parent });
+  return { object, created: true };
 }

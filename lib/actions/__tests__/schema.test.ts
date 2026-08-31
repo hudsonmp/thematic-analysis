@@ -9,11 +9,14 @@ import {
   encodeTrigger,
   parseTrigger,
   triggerLabel,
+  findMoveByName,
+  findObjectByName,
   groupActive,
   groupObjects,
   keepParentSelection,
   objectLabel,
   parentProblem,
+  vocabKey,
   toggleObjectSelection,
   isAnswered,
   requiredObjectCount,
@@ -224,6 +227,31 @@ describe('object subclasses', () => {
     expect(parentProblem(OBJECTS, 'entity', 'missing')).toMatch(/exist/);
     expect(parentProblem(OBJECTS, 'entity', 'given')).toMatch(/one level/);
     expect(parentProblem(OBJECTS, 'scenario', 'entity')).toMatch(/has subclasses/);
+  });
+
+  describe('minting vocabulary from the coding modal', () => {
+    const MOVE_ROWS = [
+      { id: 'create', name: 'Create' },
+      { id: 'localize', name: 'Localize' },
+    ];
+
+    it('findMoveByName ignores case and surrounding/among whitespace', () => {
+      expect(findMoveByName(MOVE_ROWS, '  localize ')?.id).toBe('localize');
+      expect(findMoveByName(MOVE_ROWS, 'LOCALIZE')?.id).toBe('localize');
+      expect(findMoveByName(MOVE_ROWS, 'Revise')).toBeNull();
+    });
+
+    it('findObjectByName matches only within the same parent scope', () => {
+      expect(findObjectByName(OBJECTS, 'scenario', null)?.id).toBe('scenario');
+      expect(findObjectByName(OBJECTS, 'user story', 'scenario')?.id).toBe('story');
+      // Same name, different parent → a different object, so no match.
+      expect(findObjectByName(OBJECTS, 'User story', null)).toBeNull();
+      expect(findObjectByName(OBJECTS, 'Scenario', 'entity')).toBeNull();
+    });
+
+    it('vocabKey collapses the whitespace that would otherwise split a vocabulary', () => {
+      expect(vocabKey(' LLM   prompt ')).toBe('llm prompt');
+    });
   });
 });
 
